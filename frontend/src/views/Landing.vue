@@ -8,6 +8,7 @@
         <div class="row" style="margin-top: 18px">
           <router-link class="btn" to="/register">注册并试用</router-link>
           <router-link class="btn-ghost" to="/tutorial">查看绑定教程</router-link>
+          <router-link class="btn-ghost" to="/pricing">查看定价</router-link>
         </div>
       </div>
       <div class="card stack">
@@ -28,6 +29,7 @@
           <p>{{ plan.price_label }}</p>
           <p class="muted">每天 {{ plan.daily_quota }} 篇 · {{ periodLabel(plan) }} {{ plan.period_quota }} 篇</p>
           <p class="muted">{{ plan.max_accounts }} 个公众号 · 单篇上限 {{ plan.max_words }} 字</p>
+          <button class="btn" type="button" disabled>即将开通</button>
         </article>
       </div>
     </section>

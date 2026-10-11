@@ -10,6 +10,7 @@
     <p v-if="article.status === 'generating'" class="banner info">正在生成，完成后会自动刷新。模型较慢时可能要几分钟。</p>
     <p v-if="article.failure_reason" class="banner">{{ article.failure_reason }}</p>
     <p v-if="article.delivery_note" class="banner info">{{ article.delivery_note }}</p>
+    <p v-if="article.risk_level && article.risk_level !== 'low'" class="banner">{{ article.risk_label }}</p>
     <p v-if="article.draft_media_id" class="muted">草稿 media_id：{{ article.draft_media_id }}</p>
     <p v-if="themeNote" class="muted">{{ themeNote }}</p>
     <div class="row">
@@ -17,7 +18,12 @@
       <button class="btn-ghost" type="button" @click="copyHtml">复制 HTML</button>
       <button class="btn-ghost" type="button" @click="downloadHtml">下载 HTML</button>
       <button class="btn-ghost" type="button" @click="toggleTheme">{{ dark ? "浅色预览" : "暗色预览" }}</button>
+      <button class="btn-ghost" type="button" @click="reread">回读草稿</button>
+      <button class="btn-ghost" type="button" @click="feedback('published')">已发布</button>
+      <button class="btn-ghost" type="button" @click="feedback('edited_published')">修改后发布</button>
+      <button class="btn-ghost" type="button" @click="feedback('discarded')">弃用</button>
     </div>
+    <p v-if="feedbackNote" class="banner ok">{{ feedbackNote }}</p>
     <p v-if="error" class="banner">{{ error }}</p>
     <p v-if="copied" class="banner ok">已复制</p>
     <div v-if="article.alt_titles?.length" class="card">
@@ -42,6 +48,7 @@ const copied = ref(false);
 const loading = ref(false);
 const dark = ref(false);
 const themeNote = ref("");
+const feedbackNote = ref("");
 
 let pollTimer = 0;
 
@@ -81,6 +88,29 @@ async function regenerate() {
     error.value = err.message;
   } finally {
     loading.value = false;
+  }
+}
+
+async function reread() {
+  error.value = "";
+  feedbackNote.value = "";
+  try {
+    const data = await api(`/api/articles/${route.params.id}/reread`, { method: "POST" });
+    feedbackNote.value = data.note_text || "已记录回读结果";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function feedback(kind) {
+  error.value = "";
+  feedbackNote.value = "";
+  try {
+    await api(`/api/articles/${route.params.id}/feedback`, { method: "POST", body: { kind, score: 0, note: "" } });
+    const labels = { published: "已记下：已发布", edited_published: "已记下：修改后发布", discarded: "已记下：弃用" };
+    feedbackNote.value = labels[kind];
+  } catch (err) {
+    error.value = err.message;
   }
 }
 

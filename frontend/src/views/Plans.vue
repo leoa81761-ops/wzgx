@@ -65,6 +65,24 @@
         <p>{{ plan.style_name }} · {{ plan.template_name }} · {{ plan.schedule_label }} · {{ plan.window_label }}</p>
         <p class="muted" v-if="plan.pause_reason">原因：{{ plan.pause_reason }}</p>
         <p class="muted">下次生成：{{ formatTime(plan.next_run_at) }}</p>
+        <p v-if="plan.specified_title" class="muted">下一篇指定题目：{{ plan.specified_title }}。成功生成后会自动清掉。</p>
+        <label>指定下一篇题目
+          <input v-model="pins[plan.id]" maxlength="64" placeholder="不填则继续自动选题" />
+        </label>
+        <div class="row">
+          <button class="btn-ghost" type="button" @click="savePin(plan)">保存题目</button>
+          <button class="btn-ghost" type="button" @click="showCalendar(plan)">内容日历</button>
+        </div>
+        <p v-if="plan.vetoes?.length" class="muted">
+          已否决：
+          <button v-for="tag in plan.vetoes" :key="tag" class="text-btn" type="button" @click="unveto(plan, tag)">{{ tag }} ×</button>
+        </p>
+        <ul v-if="calendars[plan.id]" class="stack">
+          <li v-for="item in calendars[plan.id]" :key="item.at + item.topic_tag">
+            {{ formatTime(item.at) }} · {{ item.subtopic }} / {{ item.column }} / {{ item.angle }}
+            <button class="text-btn" type="button" @click="veto(plan, item.topic_tag)">否决</button>
+          </li>
+        </ul>
         <div class="row">
           <button class="btn" type="button" :disabled="busyId === plan.id" @click="generate(plan)">
             {{ busyId === plan.id ? "正在生成…" : "立即生成" }}
@@ -93,6 +111,8 @@ const quota = ref({});
 const error = ref("");
 const loading = ref(false);
 const busyId = ref(0);
+const pins = reactive({});
+const calendars = reactive({});
 const directionChoice = ref("职场成长");
 const customDirection = ref("");
 const form = reactive({
@@ -124,6 +144,9 @@ async function load() {
   quota.value = quotaData;
   accounts.value = accountData;
   plans.value = planData;
+  for (const plan of planData) {
+    if (pins[plan.id] === undefined) pins[plan.id] = plan.specified_title || "";
+  }
   if (!form.wx_account_id && accountData[0]) form.wx_account_id = accountData[0].id;
   if (quotaData.tier === "free") form.time_window = "night";
 }
@@ -160,6 +183,52 @@ async function toggle(plan) {
   try {
     await api(`/api/plans/${plan.id}/${action}`, { method: "POST" });
     await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function savePin(plan) {
+  error.value = "";
+  try {
+    const title = (pins[plan.id] || "").trim();
+    if (!title) await api(`/api/plans/${plan.id}/pin`, { method: "DELETE" });
+    else await api(`/api/plans/${plan.id}/pin`, { method: "PUT", body: { title } });
+    pins[plan.id] = title;
+    await load();
+    pins[plan.id] = title;
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function showCalendar(plan) {
+  error.value = "";
+  try {
+    const data = await api(`/api/plans/${plan.id}/calendar?count=8`);
+    calendars[plan.id] = data.items || [];
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function veto(plan, tag) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/veto`, { method: "POST", body: { topic_tag: tag } });
+    await load();
+    await showCalendar(plan);
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function unveto(plan, tag) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/unveto`, { method: "POST", body: { topic_tag: tag } });
+    await load();
+    if (calendars[plan.id]) await showCalendar(plan);
   } catch (err) {
     error.value = err.message;
   }

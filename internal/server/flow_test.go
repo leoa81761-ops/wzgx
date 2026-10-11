@@ -240,7 +240,7 @@ func waitArticle(t *testing.T, base, token string, id int64) map[string]any {
 		}
 		last = resp.JSON
 		switch last["status"] {
-		case "in_draft", "exported", "failed":
+		case "in_draft", "exported", "failed", "held":
 			return last
 		}
 		time.Sleep(20 * time.Millisecond)

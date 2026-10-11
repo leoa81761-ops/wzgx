@@ -146,6 +146,38 @@
       <p v-if="probeText" class="muted">{{ probeText }}</p>
     </section>
 
+    <section v-if="tab === 'tasks'" class="card stack">
+      <h2>最近任务</h2>
+      <table>
+        <thead><tr><th>ID</th><th>用户</th><th>状态</th><th>触发</th><th>耗时</th><th>原因</th></tr></thead>
+        <tbody>
+          <tr v-for="task in tasks" :key="task.id">
+            <td>{{ task.id }}</td>
+            <td>{{ task.user_id }}</td>
+            <td>{{ task.status }}</td>
+            <td>{{ task.trigger_type }}</td>
+            <td>{{ task.duration_ms }} ms</td>
+            <td>{{ task.failure_reason }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section v-if="tab === 'complaints'" class="stack">
+      <article v-for="item in complaints" :key="item.id" class="card stack">
+        <div class="split">
+          <strong>#{{ item.id }} · {{ item.kind }}</strong>
+          <span class="pill" :class="item.status === 'closed' ? 'ok' : 'warn'">{{ item.status === "closed" ? "已关闭" : "处理中" }}</span>
+        </div>
+        <p>{{ item.content }}</p>
+        <p class="muted">{{ item.contact }} · {{ formatTime(item.created_at) }}</p>
+        <p v-if="item.reply">回复：{{ item.reply }}</p>
+        <label>回复<textarea v-model="replies[item.id]" rows="3"></textarea></label>
+        <button class="btn" type="button" @click="replyComplaint(item)">保存回复并关闭</button>
+      </article>
+      <p v-if="!complaints.length" class="muted">暂无投诉。</p>
+    </section>
+
     <section v-if="tab === 'words'" class="card stack" style="max-width: 640px">
       <h2>敏感词</h2>
       <p class="muted">每行一个。内置词会始终生效，这里是额外补充。</p>
@@ -170,6 +202,8 @@ const tabs = [
   { key: "routes", label: "环节路由" },
   { key: "wechat", label: "微信" },
   { key: "words", label: "敏感词" },
+  { key: "tasks", label: "任务" },
+  { key: "complaints", label: "投诉" },
 ];
 const tab = ref("models");
 const error = ref("");
@@ -187,6 +221,9 @@ const editingId = ref(0);
 const words = ref("");
 const blockedDomains = ref("");
 const allowedDomains = ref("");
+const tasks = ref([]);
+const complaints = ref([]);
+const replies = reactive({});
 const probeText = ref("");
 const wechat = reactive({ mode: "mock", api_base: "https://api.weixin.qq.com", public_egress_ip: "" });
 const provider = reactive({
@@ -289,6 +326,23 @@ async function load() {
   const domainData = await api("/api/admin/source-domains");
   blockedDomains.value = (domainData.block || []).join("\n");
   allowedDomains.value = (domainData.allow || []).join("\n");
+  tasks.value = await api("/api/admin/tasks");
+  complaints.value = await api("/api/admin/complaints");
+}
+
+async function replyComplaint(item) {
+  error.value = "";
+  message.value = "";
+  try {
+    await api(`/api/admin/complaints/${item.id}`, {
+      method: "PUT",
+      body: { status: "closed", reply: replies[item.id] || item.reply || "" },
+    });
+    message.value = "已回复";
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
 }
 
 async function setActive(user, active) {

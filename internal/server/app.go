@@ -12,6 +12,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/notify"
 	"github.com/leoa81761-ops/wzgx/internal/pipeline"
 	"github.com/leoa81761-ops/wzgx/internal/runtime"
 	"github.com/leoa81761-ops/wzgx/internal/scheduler"
@@ -71,7 +72,10 @@ func Open(cfg config.Settings) (*App, error) {
 }
 
 func (a *App) deps() pipeline.Deps {
-	return pipeline.Deps{Store: a.Store, Settings: a.Cfg, Gateway: a.Gateway, HTTP: a.HTTP, Tokens: a.Tokens, Cache: a.Cache}
+	return pipeline.Deps{
+		Store: a.Store, Settings: a.Cfg, Gateway: a.Gateway, HTTP: a.HTTP, Tokens: a.Tokens, Cache: a.Cache,
+		Notifier: notify.Hook{URL: a.Cfg.NotifyWebhookURL, HTTP: a.HTTP, Log: log.Default()},
+	}
 }
 
 func (a *App) Close() error {

@@ -42,7 +42,13 @@ func SubtopicTree(direction, tier string) []string {
 	return out
 }
 
-func Pick(direction, tier string, history []Coverage, now time.Time) Choice {
+func Pick(direction, tier string, history []Coverage, now time.Time, vetoed ...string) Choice {
+	blocked := map[string]bool{}
+	for _, tag := range vetoed {
+		if tag != "" {
+			blocked[tag] = true
+		}
+	}
 	tree := SubtopicTree(direction, tier)
 	var combos [][3]string
 	for _, sub := range tree {
@@ -65,9 +71,10 @@ func Pick(direction, tier string, history []Coverage, now time.Time) Choice {
 	start := len(history)
 	for offset := 0; offset < len(combos); offset++ {
 		combo := combos[(start+offset)%len(combos)]
-		if !recent[combo] {
-			return choice(combo[0], combo[1], combo[2])
+		if recent[combo] || blocked[tagOf(combo)] {
+			continue
 		}
+		return choice(combo[0], combo[1], combo[2])
 	}
 	if len(history) > 0 {
 		oldest := history[0]
@@ -79,9 +86,57 @@ func Pick(direction, tier string, history []Coverage, now time.Time) Choice {
 				oldestAt = at
 			}
 		}
-		return choice(oldest.Subtopic, oldest.Column, oldest.Angle)
+		picked := choice(oldest.Subtopic, oldest.Column, oldest.Angle)
+		if !blocked[picked.TopicTag] {
+			return picked
+		}
+	}
+	for _, combo := range combos {
+		if !blocked[tagOf(combo)] {
+			return choice(combo[0], combo[1], combo[2])
+		}
 	}
 	return choice(combos[0][0], combos[0][1], combos[0][2])
+}
+
+func tagOf(combo [3]string) string {
+	return combo[0] + "|" + combo[1] + "|" + combo[2]
+}
+
+// Slot 是内容日历上的一次预计生成，不写 topic_coverage。
+type Slot struct {
+	At     time.Time
+	Choice Choice
+}
+
+func Project(direction, tier, scheduleType string, weekdays []int, window string, history []Coverage, start time.Time, count int, vetoed []string) ([]Slot, error) {
+	if count < 1 {
+		count = 8
+	}
+	if count > 30 {
+		count = 30
+	}
+	hist := append([]Coverage{}, history...)
+	cursor := start
+	var out []Slot
+	for len(out) < count {
+		at, err := schedule.ComputeNextRun(cursor, scheduleType, weekdays, window, schedule.ZeroRNG{})
+		if err != nil {
+			if len(out) > 0 {
+				return out, nil
+			}
+			return nil, err
+		}
+		picked := Pick(direction, tier, hist, at, vetoed...)
+		out = append(out, Slot{At: at, Choice: picked})
+		hist = append(hist, Coverage{Subtopic: picked.Subtopic, Column: picked.Column, Angle: picked.Angle, CreatedAt: at})
+		end, err := schedule.WindowEnd(schedule.ShanghaiDay(at), window)
+		if err != nil {
+			return out, nil
+		}
+		cursor = end
+	}
+	return out, nil
 }
 
 func choice(sub, column, angle string) Choice {

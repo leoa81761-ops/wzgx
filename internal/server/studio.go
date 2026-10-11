@@ -217,6 +217,7 @@ func articleDict(article *model.Article, includeHTML bool) map[string]any {
 	payload := map[string]any{
 		"id": article.ID, "title": article.Title, "summary": article.Summary, "status": article.Status,
 		"status_label": statusLabel(article.Status), "failure_reason": article.FailureReason, "delivery_note": article.DeliveryNote,
+		"risk_level": article.RiskLevel, "risk_label": riskLabel(article.RiskLevel),
 		"draft_media_id": article.DraftMediaID, "template_key": article.TemplateKey, "style_key": article.StyleKey,
 		"subtopic": article.Subtopic, "column_type": article.ColumnType, "topic_tag": article.TopicTag,
 		"regen_count": article.RegenCount, "alt_titles": alts, "created_at": jtimev(article.CreatedAt),
@@ -243,9 +244,45 @@ func statusLabel(status string) string {
 		return "已导出"
 	case "failed":
 		return "失败"
+	case "held":
+		return "未推送"
 	default:
 		return status
 	}
+}
+
+func riskLabel(level string) string {
+	switch level {
+	case "high":
+		return "高风险"
+	case "medium":
+		return "中风险"
+	case "low":
+		return "低风险"
+	default:
+		if level == "" {
+			return "低风险"
+		}
+		return level
+	}
+}
+
+func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string]any, error) {
+	view := planDict(plan)
+	title, err := a.Store.GetPin(ctx, nil, plan.ID)
+	if err != nil {
+		return nil, err
+	}
+	tags, err := a.Store.ListVetoTags(ctx, nil, plan.ID)
+	if err != nil {
+		return nil, err
+	}
+	if tags == nil {
+		tags = []string{}
+	}
+	view["specified_title"] = title
+	view["vetoes"] = tags
+	return view, nil
 }
 
 func (a *App) listAccounts(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -602,7 +639,11 @@ func (a *App) listPlans(w http.ResponseWriter, r *http.Request, user *model.User
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for i := range rows {
-		out = append(out, planDict(&rows[i]))
+		view, err := a.planView(r.Context(), &rows[i])
+		if err != nil {
+			return err
+		}
+		out = append(out, view)
 	}
 	writeJSON(w, 200, out)
 	return nil
@@ -708,7 +749,11 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 	if err != nil {
 		return err
 	}
-	writeJSON(w, 200, planDict(created))
+	view, err := a.planView(r.Context(), created)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, view)
 	return nil
 }
 
