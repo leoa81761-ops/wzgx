@@ -22,7 +22,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/security"
 )
 
-func (a *App) adminUsers(w http.ResponseWriter, r *http.Request, _ *model.User) error {
+func (a *App) adminUsers(w http.ResponseWriter, r *http.Request, admin *model.User) error {
 	rows, err := a.Store.ListUsers(r.Context(), 200)
 	if err != nil {
 		return err
@@ -39,7 +39,8 @@ func (a *App) adminUsers(w http.ResponseWriter, r *http.Request, _ *model.User) 
 		}
 		out = append(out, map[string]any{
 			"id": row.ID, "account": account, "tier": row.Tier, "tier_label": label,
-			"tier_expires_at": jtime(row.TierExpiresAt), "is_admin": row.IsAdmin, "created_at": jtimev(row.CreatedAt),
+			"tier_expires_at": jtime(row.TierExpiresAt), "is_admin": row.IsAdmin, "is_active": row.IsActive,
+			"is_self": admin != nil && row.ID == admin.ID, "created_at": jtimev(row.CreatedAt),
 		})
 	}
 	writeJSON(w, 200, out)
@@ -121,6 +122,121 @@ func (a *App) adminSetTier(w http.ResponseWriter, r *http.Request, admin *model.
 		return err
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "tier": stored, "tier_expires_at": jtime(expires)})
+	return nil
+}
+
+type activeBody struct {
+	Active *bool `json:"active"`
+}
+
+func (a *App) adminSetActive(w http.ResponseWriter, r *http.Request, admin *model.User) error {
+	id, err := pathID(r, "user_id", "找不到用户")
+	if err != nil {
+		return err
+	}
+	var body activeBody
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	if body.Active == nil {
+		return bad("请指定是否启用")
+	}
+	if id == admin.ID && !*body.Active {
+		return bad("不能停用当前登录的管理员")
+	}
+	now := time.Now().UTC()
+	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		user, err := a.Store.GetUser(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		if user == nil {
+			return &AppError{Status: 404, Message: "找不到用户"}
+		}
+		if user.IsAdmin && user.IsActive && !*body.Active {
+			n, err := a.Store.CountAdmins(r.Context(), tx, true)
+			if err != nil {
+				return err
+			}
+			if n <= 1 {
+				return bad("不能停用最后一位管理员")
+			}
+		}
+		user.IsActive = *body.Active
+		if err := a.Store.UpdateUser(r.Context(), tx, user); err != nil {
+			return err
+		}
+		action := "disable_user"
+		detail := "停用用户"
+		if user.IsActive {
+			action = "enable_user"
+			detail = "启用用户"
+		}
+		actor := admin.ID
+		return a.Store.InsertAudit(r.Context(), tx, model.AuditLog{
+			ActorID: &actor, Action: action, Target: "user:" + strconv.FormatInt(user.ID, 10),
+			Detail: detail, CreatedAt: now,
+		})
+	})
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "is_active": *body.Active})
+	return nil
+}
+
+func (a *App) adminDeleteUser(w http.ResponseWriter, r *http.Request, admin *model.User) error {
+	id, err := pathID(r, "user_id", "找不到用户")
+	if err != nil {
+		return err
+	}
+	if id == admin.ID {
+		return bad("不能删除当前登录的管理员")
+	}
+	now := time.Now().UTC()
+	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		user, err := a.Store.GetUser(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		if user == nil {
+			return &AppError{Status: 404, Message: "找不到用户"}
+		}
+		if user.IsAdmin {
+			n, err := a.Store.CountAdmins(r.Context(), tx, false)
+			if err != nil {
+				return err
+			}
+			if n <= 1 {
+				return bad("不能删除最后一位管理员")
+			}
+			if user.IsActive {
+				active, err := a.Store.CountAdmins(r.Context(), tx, true)
+				if err != nil {
+					return err
+				}
+				if active <= 1 {
+					return bad("不能删除最后一位启用的管理员")
+				}
+			}
+		}
+		actor := admin.ID
+		account := user.Email
+		if account == "" {
+			account = user.Phone
+		}
+		if err := a.Store.InsertAudit(r.Context(), tx, model.AuditLog{
+			ActorID: &actor, Action: "delete_user", Target: "user:" + strconv.FormatInt(user.ID, 10),
+			Detail: "删除用户 " + account, CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+		return a.Store.DeleteUserCascade(r.Context(), tx, user.ID)
+	})
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 	return nil
 }
 

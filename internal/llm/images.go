@@ -29,6 +29,9 @@ func GenerateCover(ctx context.Context, client *http.Client, provider Provider, 
 	if _, ok := body["n"]; !ok {
 		body["n"] = 1
 	}
+	if _, ok := body["response_format"]; !ok {
+		body["response_format"] = "b64_json"
+	}
 	body["model"] = provider.Model
 	body["prompt"] = prompt
 	payload, err := json.Marshal(body)

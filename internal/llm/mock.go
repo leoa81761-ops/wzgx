@@ -5,15 +5,39 @@ import (
 	"strings"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
+	"github.com/leoa81761-ops/wzgx/internal/content"
 )
+
+const lengthRule = "正文字数按汉字计：各小节的段落、列表和结尾都算，标题和摘要不算。这个数字要达到输入里 word_target 的九成以上，不要写成短摘要。" +
+	"每个小节最多四段，请把篇幅写进这些段落，把做法写具体，不要靠很多很短的句子凑数。"
 
 func StageMessages(stageLabel string, payload map[string]any) []map[string]string {
 	schema := StageSchema(stageLabel)
-	system := "你是公众号写作助手。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要输出解释或 HTML。" +
-		"字段必须和下面的 JSON Schema 完全一致，不要增加字段，字符串字段没有内容时用空字符串，数组没有内容时用空数组。" +
-		"不得编造具体政策、标准、新闻事件、统计数据、人名引语。输入里如果有 research_notes 或 research_sources，事实和 sources 只能来自这些材料，没有就不要写具体数据和网址。" +
-		"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
-		"免费或无来源时 sources 必须是空数组。\nJSON Schema：\n" + schemaText(schema)
+	var system string
+	switch stageLabel {
+	case "资料检索":
+		system = "你是资料检索助手。请立刻联网搜索，为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。" +
+			"每条都要有名称、标题、以 http:// 或 https:// 开头的真实网址、发布日期（知道再写）、类型（news、policy、standard、other 之一），以及一两句说明这条资料写了什么。" +
+			"优先最近一年的报道、政府或标准文件、机构原文。只写你实际搜到的网址，不要编造链接。" +
+			"请直接给出来源。如果确实搜不到，写明「未检索到可靠来源」。" +
+			"可以用 JSON：{\"notes\":\"事实摘要\",\"sources\":[{\"name\":\"\",\"title\":\"\",\"published_on\":\"\",\"url\":\"\",\"source_type\":\"news\",\"note\":\"简要说明\"}]}。" +
+			"也可以用 Markdown：每条写成 [标题](https://网址)，同一行或下一行写简要说明。"
+	case "扩写":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下，把正文扩写到大约 word_target 个汉字。" +
+			lengthRule +
+			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	default:
+		system = "你是公众号写作助手。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要输出解释或 HTML。" +
+			"字段必须和下面的 JSON Schema 完全一致，不要增加字段，字符串字段没有内容时用空字符串，数组没有内容时用空数组。" +
+			"不得编造具体政策、标准、新闻事件、统计数据、人名引语。输入里如果有 research_notes 或 research_sources，事实和 sources 只能来自这些材料，sources 必须保留这些来源，不要删掉网址。" +
+			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
+			"免费或无来源时 sources 必须是空数组。"
+		if stageLabel == "正文" || stageLabel == "审核" {
+			system += lengthRule
+		}
+		system += "\nJSON Schema：\n" + schemaText(schema)
+	}
 	body := map[string]any{"环节": stageLabel}
 	for key, value := range payload {
 		body[key] = value
@@ -86,9 +110,57 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 			draft = MockForStage("正文", payload)
 		}
 		return cleanDraft(draft)
+	case "扩写":
+		draft, _ := payload["draft"].(map[string]any)
+		if draft == nil {
+			draft = draftFromPayload(payload)
+		}
+		return padDraft(draft, intOf(payload["word_target"]))
 	default:
 		return draftFromPayload(payload)
 	}
+}
+
+func padDraft(draft map[string]any, target int) map[string]any {
+	if target < 1 {
+		target = 800
+	}
+	raw, _ := json.Marshal(draft)
+	var cloned map[string]any
+	if json.Unmarshal(raw, &cloned) != nil || cloned == nil {
+		cloned = draftFromPayload(map[string]any{})
+	}
+	sections, _ := cloned["sections"].([]any)
+	if len(sections) == 0 {
+		cloned = draftFromPayload(map[string]any{})
+		sections, _ = cloned["sections"].([]any)
+	}
+	filler := "把这一步写得再具体一些：先看清眼前的材料，再做一个最小的动作，做完后用一句话记下结果，明天再决定要不要继续。"
+	for content.BodyRunes(cloned) < target && len(sections) > 0 {
+		last, _ := sections[len(sections)-1].(map[string]any)
+		if last == nil {
+			break
+		}
+		paras, _ := last["paragraphs"].([]any)
+		if len(paras) >= 4 {
+			if text, ok := paras[len(paras)-1].(string); ok {
+				paras[len(paras)-1] = text + filler
+			}
+		} else {
+			paras = append(paras, filler)
+		}
+		last["paragraphs"] = paras
+		sections[len(sections)-1] = last
+		cloned["sections"] = sections
+		if content.BodyRunes(cloned) > target+fillerLen(filler)*2 {
+			break
+		}
+	}
+	return cloned
+}
+
+func fillerLen(s string) int {
+	return len([]rune(s))
 }
 
 func draftFromPayload(payload map[string]any) map[string]any {

@@ -492,6 +492,18 @@ func (c *LiveClient) do(ctx context.Context, method, path string, query map[stri
 	return parse(resp.StatusCode, raw)
 }
 
+func imageContentType(filename string) string {
+	lower := strings.ToLower(filename)
+	switch {
+	case strings.HasSuffix(lower, ".jpg"), strings.HasSuffix(lower, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(lower, ".gif"):
+		return "image/gif"
+	default:
+		return "image/png"
+	}
+}
+
 func (c *LiveClient) postFile(ctx context.Context, path, token string, extra map[string]string, image []byte, filename string) (map[string]any, error) {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()
@@ -502,7 +514,7 @@ func (c *LiveClient) postFile(ctx context.Context, path, token string, extra map
 	w := multipart.NewWriter(&buf)
 	hdr := textproto.MIMEHeader{}
 	hdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name="media"; filename="%s"`, filename))
-	hdr.Set("Content-Type", "image/png")
+	hdr.Set("Content-Type", imageContentType(filename))
 	part, err := w.CreatePart(hdr)
 	if err != nil {
 		return nil, err

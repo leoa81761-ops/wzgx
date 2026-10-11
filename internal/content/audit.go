@@ -2,6 +2,7 @@ package content
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
 )
@@ -21,6 +22,39 @@ func EffectiveWords(extra []string) []string {
 		words = append(words, cleaned)
 	}
 	return words
+}
+
+// BodyRunes 统计正文汉字：各小节段落、列表和结尾，不含标题与摘要。
+func BodyRunes(draft map[string]any) int {
+	if draft == nil {
+		return 0
+	}
+	n := 0
+	sections, _ := draft["sections"].([]any)
+	for _, raw := range sections {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		n += runesOf(section["paragraphs"])
+		n += runesOf(section["list"])
+	}
+	n += utf8.RuneCountInString(asText(draft["closing"]))
+	return n
+}
+
+func runesOf(raw any) int {
+	list, _ := raw.([]any)
+	n := 0
+	for _, item := range list {
+		n += utf8.RuneCountInString(asText(item))
+	}
+	return n
+}
+
+func asText(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 func FindSensitive(payload map[string]any, words []string) []string {

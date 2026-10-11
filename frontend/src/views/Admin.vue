@@ -13,12 +13,13 @@
       <h2>手工开通会员</h2>
       <p class="muted">没有在线支付。确认线下收款后在这里改档位，备注会写入权益记录和审计日志。</p>
       <table>
-        <thead><tr><th>账号</th><th>档位</th><th>到期</th><th>调整</th></tr></thead>
+        <thead><tr><th>账号</th><th>档位</th><th>到期</th><th>状态</th><th>调整</th></tr></thead>
         <tbody>
           <tr v-for="user in users" :key="user.id">
             <td>{{ user.account }}<div class="muted" v-if="user.is_admin">管理员</div></td>
             <td>{{ user.tier_label }}</td>
             <td>{{ formatTime(user.tier_expires_at) }}</td>
+            <td>{{ user.is_active ? "启用" : "已停用" }}</td>
             <td>
               <div class="stack">
                 <select v-model="edits[user.id].tier">
@@ -29,7 +30,11 @@
                 </select>
                 <input v-model="edits[user.id].expires" type="datetime-local" />
                 <input v-model="edits[user.id].note" placeholder="备注，例如线下收款 30 元" />
-                <button class="btn" type="button" @click="saveTier(user)">保存</button>
+                <div class="row">
+                  <button class="btn" type="button" @click="saveTier(user)">保存</button>
+                  <button v-if="!user.is_self" class="btn-ghost" type="button" @click="setActive(user, !user.is_active)">{{ user.is_active ? "停用" : "启用" }}</button>
+                  <button v-if="!user.is_self" class="btn-ghost" type="button" @click="removeUser(user)">删除</button>
+                </div>
               </div>
             </td>
           </tr>
@@ -274,6 +279,33 @@ async function load() {
   Object.assign(wechat, await api("/api/admin/wechat"));
   const wordData = await api("/api/admin/sensitive-words");
   words.value = (wordData.custom || []).join("\n");
+}
+
+async function setActive(user, active) {
+  error.value = "";
+  message.value = "";
+  const verb = active ? "启用" : "停用";
+  if (!active && !window.confirm(`停用账号「${user.account}」？停用后无法登录。`)) return;
+  try {
+    await api(`/api/admin/users/${user.id}/active`, { method: "PUT", body: { active } });
+    message.value = `已${verb}`;
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function removeUser(user) {
+  error.value = "";
+  message.value = "";
+  if (!window.confirm(`删除账号「${user.account}」及其文章、计划和额度记录？此操作不能恢复。`)) return;
+  try {
+    await api(`/api/admin/users/${user.id}`, { method: "DELETE" });
+    message.value = "账号已删除";
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
 }
 
 async function saveTier(user) {

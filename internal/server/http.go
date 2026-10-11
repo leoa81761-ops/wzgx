@@ -164,6 +164,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/articles/{article_id}/regenerate", a.withUser(false, a.regenerate))
 	mux.HandleFunc("GET /api/admin/users", a.withUser(true, a.adminUsers))
 	mux.HandleFunc("PUT /api/admin/users/{user_id}/tier", a.withUser(true, a.adminSetTier))
+	mux.HandleFunc("PUT /api/admin/users/{user_id}/active", a.withUser(true, a.adminSetActive))
+	mux.HandleFunc("DELETE /api/admin/users/{user_id}", a.withUser(true, a.adminDeleteUser))
 	mux.HandleFunc("GET /api/admin/providers", a.withUser(true, a.adminProviders))
 	mux.HandleFunc("POST /api/admin/providers", a.withUser(true, a.adminCreateProvider))
 	mux.HandleFunc("PUT /api/admin/providers/{provider_id}", a.withUser(true, a.adminUpdateProvider))

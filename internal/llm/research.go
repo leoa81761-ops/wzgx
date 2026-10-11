@@ -9,7 +9,7 @@ import (
 
 var (
 	markdownLink = regexp.MustCompile(`\[([^\]\n]{1,120})\]\((https?://[^)\s]+)\)`)
-	bareURL      = regexp.MustCompile(`https?://[^\s)>\]]+`)
+	bareURL      = regexp.MustCompile(`https?://[^\s)\]>"'\\,，。；]+`)
 )
 
 // InterpretResearch 从检索模型的输出里取出事实和来源。模型可能返回 JSON，也可能返回 Markdown。
@@ -26,9 +26,24 @@ func InterpretResearch(text string) (string, []map[string]any) {
 				notes = clipRunes(summary, 1500)
 			}
 		}
+		if !sourcesHaveURL(sources) {
+			sources = appendSources(sources, sourcesFromMarkdown(text))
+			if notes != "" {
+				sources = appendSources(sources, sourcesFromMarkdown(notes))
+			}
+		}
 		return notes, sources
 	}
 	return clipRunes(text, 1500), sourcesFromMarkdown(text)
+}
+
+func sourcesHaveURL(sources []map[string]any) bool {
+	for _, source := range sources {
+		if asString(source["url"]) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func sourcesFromList(raw any) []map[string]any {
@@ -36,11 +51,21 @@ func sourcesFromList(raw any) []map[string]any {
 	var out []map[string]any
 	seen := map[string]bool{}
 	for _, item := range list {
-		source, _ := item.(map[string]any)
-		if source == nil {
-			continue
+		var row map[string]any
+		switch source := item.(type) {
+		case string:
+			rawURL := source
+			if urls := bareURL.FindAllString(source, 1); len(urls) > 0 {
+				rawURL = urls[0]
+			}
+			row = normalizeSource("", "", "", rawURL, "other", "")
+		case map[string]any:
+			rawURL := asString(source["url"])
+			if rawURL == "" {
+				rawURL = asString(source["link"])
+			}
+			row = normalizeSource(asString(source["name"]), asString(source["title"]), asString(source["published_on"]), rawURL, asString(source["source_type"]), asString(source["note"]))
 		}
-		row := normalizeSource(asString(source["name"]), asString(source["title"]), asString(source["published_on"]), asString(source["url"]), asString(source["source_type"]))
 		if row == nil {
 			continue
 		}
@@ -60,8 +85,8 @@ func sourcesFromList(raw any) []map[string]any {
 func sourcesFromMarkdown(text string) []map[string]any {
 	var out []map[string]any
 	seen := map[string]bool{}
-	add := func(name, title, rawURL string) {
-		row := normalizeSource(name, title, "", rawURL, "other")
+	add := func(name, title, rawURL, note string) {
+		row := normalizeSource(name, title, "", rawURL, "other", note)
 		if row == nil {
 			return
 		}
@@ -72,24 +97,58 @@ func sourcesFromMarkdown(text string) []map[string]any {
 		seen[key] = true
 		out = append(out, row)
 	}
-	for _, match := range markdownLink.FindAllStringSubmatch(text, 8) {
-		if len(out) >= 8 {
+	for _, match := range markdownLink.FindAllStringSubmatchIndex(text, 8) {
+		if len(out) >= 8 || len(match) < 6 {
 			break
 		}
-		add("", strings.TrimSpace(match[1]), match[2])
+		title := strings.TrimSpace(text[match[2]:match[3]])
+		rawURL := text[match[4]:match[5]]
+		rest := text[match[1]:]
+		if nl := strings.IndexAny(rest, "\r\n"); nl >= 0 {
+			rest = rest[:nl]
+		}
+		rest = strings.TrimSpace(rest)
+		note := ""
+		if rest != "" && !strings.Contains(rest, "http") && utf8.RuneCountInString(rest) <= 200 {
+			note = rest
+		}
+		add("", title, rawURL, note)
 	}
 	if len(out) == 0 {
 		for _, match := range bareURL.FindAllString(text, 8) {
 			if len(out) >= 8 {
 				break
 			}
-			add("", "", match)
+			add("", "", match, "")
 		}
 	}
 	return out
 }
 
-func normalizeSource(name, title, published, rawURL, sourceType string) map[string]any {
+func appendSources(base, extra []map[string]any) []map[string]any {
+	seen := map[string]bool{}
+	for _, row := range base {
+		if url := asString(row["url"]); url != "" {
+			seen[url] = true
+		}
+	}
+	for _, row := range extra {
+		url := asString(row["url"])
+		if url != "" && seen[url] {
+			continue
+		}
+		if url != "" {
+			seen[url] = true
+		}
+		base = append(base, row)
+		if len(base) >= 8 {
+			break
+		}
+	}
+	return base
+}
+
+func normalizeSource(name, title, published, rawURL, sourceType, note string) map[string]any {
 	name = clipRunes(strings.TrimSpace(name), 80)
 	title = clipRunes(strings.TrimSpace(title), 120)
 	rawURL = strings.TrimRight(strings.TrimSpace(rawURL), ".,;，。；")
@@ -109,10 +168,14 @@ func normalizeSource(name, title, published, rawURL, sourceType string) map[stri
 	default:
 		sourceType = "other"
 	}
-	return map[string]any{
+	row := map[string]any{
 		"name": name, "title": title, "published_on": clipRunes(strings.TrimSpace(published), 32),
 		"url": clipRunes(rawURL, 300), "source_type": sourceType,
 	}
+	if note = clipRunes(strings.TrimSpace(note), 200); note != "" {
+		row["note"] = note
+	}
+	return row
 }
 
 func clipRunes(s string, n int) string {

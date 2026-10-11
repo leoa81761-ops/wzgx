@@ -41,8 +41,8 @@ func StageSchema(stageLabel string) *Schema {
 		return &Schema{Name: "research", Body: objectSchema(
 			[]string{"notes", "sources"},
 			map[string]any{
-				"notes":   strField("检索到的事实摘要。没有可靠来源时写空字符串，不要编造"),
-				"sources": sourceArrayField("可核对的来源，没有则为空数组"),
+				"notes":   strField("检索到的事实摘要，概括 3 到 5 条来源分别说了什么"),
+				"sources": sourceArrayField("3 到 5 条最近、相关、可核对的来源，每条都要有网址和简要说明"),
 			},
 		)}
 	default:
