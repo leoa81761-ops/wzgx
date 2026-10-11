@@ -5,6 +5,7 @@
       <p>当前档位：{{ quota.tier_label }}（{{ quota.state_label }}）</p>
       <p class="muted">今日 {{ quota.daily_used }} / {{ quota.daily_limit }} · {{ quota.period_label }} {{ quota.period_used }} / {{ quota.period_limit }}</p>
       <p v-if="quota.expires_at" class="muted">到期时间：{{ formatTime(quota.expires_at) }}。到期后有 7 天宽限期，宽限期内不能新增公众号和方向。</p>
+      <p v-if="quota.pending_tier" class="muted">到期后改为{{ quota.pending_label }}{{ quota.applies_at ? `（${formatTime(quota.applies_at)}）` : "" }}。</p>
     </div>
     <section class="card">
       <h2>开通方式</h2>

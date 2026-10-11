@@ -75,7 +75,10 @@ func Open(cfg config.Settings) (*App, error) {
 func (a *App) deps() pipeline.Deps {
 	return pipeline.Deps{
 		Store: a.Store, Settings: a.Cfg, Gateway: a.Gateway, HTTP: a.HTTP, Tokens: a.Tokens, Cache: a.Cache,
-		Notifier: notify.Hook{URL: a.Cfg.NotifyWebhookURL, HTTP: a.HTTP, Log: log.Default()},
+		Notifier: notify.Fanout{Senders: []notify.Sender{
+			notify.Hook{URL: a.Cfg.NotifyWebhookURL, HTTP: a.HTTP, Log: log.Default()},
+			notify.SMTP{Host: a.Cfg.SMTPHost, Port: a.Cfg.SMTPPort, User: a.Cfg.SMTPUser, Password: a.Cfg.SMTPPassword, From: a.Cfg.SMTPFrom, Log: log.Default()},
+		}},
 	}
 }
 
@@ -132,7 +135,7 @@ func (a *App) seed(ctx context.Context) error {
 				return err
 			}
 			if !ok {
-				if err := a.Store.InsertStyle(ctx, tx, item.Key, item.Name, item.Description); err != nil {
+				if err := a.Store.InsertStyle(ctx, tx, item.Key, item.Name, item.Description, item.Tone, item.MinTier); err != nil {
 					return err
 				}
 			}
@@ -143,9 +146,33 @@ func (a *App) seed(ctx context.Context) error {
 				return err
 			}
 			if !ok {
-				if err := a.Store.InsertTemplate(ctx, tx, item.Key, item.Name, item.Description); err != nil {
+				if err := a.Store.InsertTemplate(ctx, tx, item.Key, item.Name, item.Description, item.MinTier); err != nil {
 					return err
 				}
+			}
+		}
+		for _, item := range catalog.VerticalSeeds {
+			rows, err := a.Store.ListVerticals(ctx, tx, false)
+			if err != nil {
+				return err
+			}
+			found := false
+			for _, row := range rows {
+				if row.Key == item.Key {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			pack := &store.VerticalPack{
+				Key: item.Key, Name: item.Name, Keywords: item.Keywords, Subtopics: item.Subtopics,
+				RedLines: item.RedLines, SourceAllow: item.SourceAllow, ImageRules: item.ImageRules,
+				Disclaimer: item.Disclaimer, Enabled: true,
+			}
+			if err := a.Store.SaveVertical(ctx, tx, pack, time.Now().UTC()); err != nil {
+				return err
 			}
 		}
 		for _, doc := range catalog.LegalDocs {

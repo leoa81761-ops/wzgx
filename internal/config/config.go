@@ -29,6 +29,11 @@ type Settings struct {
 	HTTPIdleConns     int
 	HTTPIdlePerHost   int
 	NotifyWebhookURL  string
+	SMTPHost          string
+	SMTPPort          int
+	SMTPUser          string
+	SMTPPassword      string
+	SMTPFrom          string
 }
 
 func Load() Settings {
@@ -77,6 +82,11 @@ func Load() Settings {
 		HTTPIdleConns:     envInt("HTTP_CLIENT_MAX_IDLE_CONNS", 256),
 		HTTPIdlePerHost:   envInt("HTTP_CLIENT_MAX_IDLE_PER_HOST", 64),
 		NotifyWebhookURL:  strings.TrimSpace(os.Getenv("NOTIFY_WEBHOOK_URL")),
+		SMTPHost:          strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:          envInt("SMTP_PORT", 587),
+		SMTPUser:          strings.TrimSpace(os.Getenv("SMTP_USER")),
+		SMTPPassword:      os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:          strings.TrimSpace(os.Getenv("SMTP_FROM")),
 	}
 }
 

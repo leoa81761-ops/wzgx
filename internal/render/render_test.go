@@ -29,6 +29,34 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 	if !strings.Contains(html, "#1f6a4d") {
 		t.Fatal("fresh color missing")
 	}
+	tabled := RenderHTML(map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "对照",
+			"table": map[string]any{
+				"headers": []any{"做法", "说明"},
+				"rows":    []any{[]any{"先做 <b>", "记下"}},
+			},
+			"image_url": "https://mmbiz.qpic.cn/a.png",
+		}},
+	}, "card", false, false)
+	if !strings.Contains(tabled, "<table") || strings.Contains(tabled, "<b>") || strings.Contains(tabled, "class=") {
+		t.Fatal(tabled)
+	}
+	if !strings.Contains(tabled, "https://mmbiz.qpic.cn/a.png") {
+		t.Fatal(tabled)
+	}
+	wide := RenderHTML(map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "宽表",
+			"table": map[string]any{
+				"headers": []any{"甲", "乙", "丙", "丁", "戊"},
+				"rows":    []any{[]any{"1", "2", "3", "4", "5"}},
+			},
+		}},
+	}, "simple", false, false)
+	if strings.Contains(wide, "<table") || !strings.Contains(wide, "甲：1") {
+		t.Fatal(wide)
+	}
 	if DisplayURL("a.b.c") != "a点b点c" {
 		t.Fatal(DisplayURL("a.b.c"))
 	}

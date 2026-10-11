@@ -16,6 +16,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/security"
 	"github.com/leoa81761-ops/wzgx/internal/store"
 	"github.com/leoa81761-ops/wzgx/internal/topics"
+	"github.com/leoa81761-ops/wzgx/internal/vertical"
 	"github.com/leoa81761-ops/wzgx/internal/wechat"
 )
 
@@ -191,8 +192,17 @@ func (a *App) planCalendar(w http.ResponseWriter, r *http.Request, user *model.U
 	if err != nil {
 		return err
 	}
-	tier, _ := quota.Membership(fresh, time.Now().UTC())
-	slots, err := topics.Project(plan.Direction, tier, plan.ScheduleType, plan.Weekdays, plan.TimeWindow, history, time.Now().UTC(), count, vetoes)
+	now := time.Now().UTC()
+	if err := quota.ApplyPending(r.Context(), a.Store, nil, fresh, now); err != nil {
+		return err
+	}
+	tier, _ := quota.Membership(fresh, now)
+	packs, err := a.Store.ListVerticals(r.Context(), nil, true)
+	if err != nil {
+		return err
+	}
+	pack := vertical.Match(plan.Direction, packs)
+	slots, err := topics.ProjectTree(vertical.Subtopics(pack), plan.Direction, tier, plan.ScheduleType, plan.Weekdays, plan.TimeWindow, history, now, count, vetoes)
 	if err != nil {
 		return bad(err.Error())
 	}

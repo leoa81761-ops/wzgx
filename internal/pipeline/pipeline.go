@@ -23,6 +23,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/security"
 	"github.com/leoa81761-ops/wzgx/internal/store"
 	"github.com/leoa81761-ops/wzgx/internal/topics"
+	"github.com/leoa81761-ops/wzgx/internal/vertical"
 	"github.com/leoa81761-ops/wzgx/internal/wechat"
 	"math/rand"
 	"net/http"
@@ -64,6 +65,9 @@ type work struct {
 	RecentTitles    []string
 	Vetoed          []string
 	SpecifiedTitle  string
+	Pack            store.VerticalPack
+	StyleName       string
+	StyleHint       string
 }
 
 type Built struct {
@@ -152,6 +156,9 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			_ = quota.Release(ctx, deps.Store, tx, task.ID, "数据缺失，退回额度")
 			return nil
 		}
+		if err := quota.ApplyPending(ctx, deps.Store, tx, user, now); err != nil {
+			return err
+		}
 		historyRows, err := deps.Store.ListCoverage(ctx, tx, plan.ID)
 		if err != nil {
 			return err
@@ -167,6 +174,30 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		pinned, err := deps.Store.GetPin(ctx, tx, plan.ID)
 		if err != nil {
 			return err
+		}
+		packs, err := deps.Store.ListVerticals(ctx, tx, true)
+		if err != nil {
+			return err
+		}
+		pack := vertical.Match(plan.Direction, packs)
+		styleRows, err := deps.Store.ListStyles(ctx, tx)
+		if err != nil {
+			return err
+		}
+		styleName, styleHint := "", ""
+		for _, row := range styleRows {
+			if row.Key != plan.StyleKey {
+				continue
+			}
+			styleName = row.Name
+			styleHint = row.Description
+			if row.Tone != "" {
+				if styleHint != "" {
+					styleHint += "。"
+				}
+				styleHint += row.Tone
+			}
+			break
 		}
 		var article *model.Article
 		var locked *topics.Choice
@@ -233,7 +264,8 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			AccountID: account.ID, AppID: account.AppID, AppSecret: secret, DeliveryMode: account.DeliveryMode,
 			Trigger: task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
-			History: history, RecentTitles: titles, Vetoed: vetoed, SpecifiedTitle: pinned,
+			History: history, RecentTitles: titles, Vetoed: vetoed, SpecifiedTitle: pinned, Pack: pack,
+			StyleName: styleName, StyleHint: styleHint,
 		}
 		ok = true
 		return nil
@@ -320,28 +352,53 @@ type Input struct {
 	Locked         *topics.Choice
 	Vetoed         []string
 	SpecifiedTitle string
+	Pack           store.VerticalPack
+	StyleName      string
+	StyleHint      string
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint}
 }
 
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
-	topic := topics.Pick(w.Direction, w.Tier, w.History, now, w.Vetoed...)
+	topic := topics.PickTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.History, now, w.Vetoed...)
 	if w.Locked != nil {
 		topic = *w.Locked
 	}
 	style := catalog.StyleByKey(w.StyleKey)
-	if style.Key == "" {
-		style = catalog.StyleByKey("warm")
+	styleName := style.Name
+	styleHint := style.Description
+	if styleName == "" {
+		fallback := catalog.StyleByKey("warm")
+		styleName = fallback.Name
+		styleHint = fallback.Description
+	}
+	if w.StyleName != "" {
+		styleName = w.StyleName
+	}
+	if w.StyleHint != "" {
+		styleHint = w.StyleHint
 	}
 	base := map[string]any{
 		"direction": w.Direction, "subtopic": topic.Subtopic, "column": topic.Column, "angle": topic.Angle,
-		"style_key": w.StyleKey, "style_label": style.Name, "style_hint": style.Description,
+		"style_key": w.StyleKey, "style_label": styleName, "style_hint": styleHint,
 		"word_target": w.WordTarget, "recent_titles": w.RecentTitles, "tier": w.Tier,
 	}
 	if w.SpecifiedTitle != "" {
 		base["specified_title"] = w.SpecifiedTitle
+	}
+	if w.Pack.Name != "" {
+		base["vertical"] = w.Pack.Name
+	}
+	if w.Pack.RedLines != "" {
+		base["red_lines"] = w.Pack.RedLines
+	}
+	if w.Pack.SourceAllow != "" {
+		base["source_allow"] = w.Pack.SourceAllow
+	}
+	if w.Pack.ImageRules != "" {
+		base["image_rules"] = w.Pack.ImageRules
 	}
 	var trace []map[string]any
 	tokens := 0
@@ -458,7 +515,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	draft["title"] = clip(title, 64)
 	footnotes := []any{"请发布前审阅。"}
-	if strings.Contains(w.Direction, "母婴") {
+	if w.Pack.Disclaimer != "" {
+		footnotes = append(footnotes, w.Pack.Disclaimer)
+	} else if strings.Contains(w.Direction, "母婴") {
 		footnotes = append(footnotes, "本文仅供科普，不能替代医生诊疗意见。")
 	}
 	if level := risk.Grade(w.Direction, draft); level == "medium" || level == "high" {
@@ -491,7 +550,8 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	client := wechat.Build(w.AppID, w.AppSecret, mode, base, deps.HTTP, deps.Tokens)
 	html := article.HTML
 	outHTML := html
-	png, filename, coverTrace := chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey)
+	aiCover, inlineN := catalog.ImageAllowance(w.Tier)
+	png, filename, coverTrace := chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey, aiCover)
 	thumb, err := client.UploadThumb(ctx, png, filename)
 	if err != nil {
 		if authFailed(err) {
@@ -499,7 +559,14 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		}
 		return pushed{Status: "exported", HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level}, nil
 	}
-	if imageURL, err := client.UploadContentImage(ctx, cover.ContentPNG(), "inline.png"); err != nil {
+	if inlineN > 0 && image != nil {
+		if n := uploadInlineImages(ctx, deps, client, image, article.Draft, inlineN, w.Pack.ImageRules, w.Direction); n > 0 {
+			if rendered, err := render.RenderWithinLimit(article.Draft, w.TemplateKey, false); err == nil {
+				html = rendered
+				outHTML = rendered
+			}
+		}
+	} else if imageURL, err := client.UploadContentImage(ctx, cover.ContentPNG(), "inline.png"); err != nil {
 		if authFailed(err) {
 			return pushed{}, err
 		}
@@ -768,12 +835,55 @@ func generatedCover(ctx context.Context, deps Deps, image *llm.Provider, title, 
 	return llm.GenerateCover(ctx, deps.HTTP, *image, prompt)
 }
 
-func chooseCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction, templateKey string) ([]byte, string, map[string]any) {
+func uploadInlineImages(ctx context.Context, deps Deps, client wechat.Client, image *llm.Provider, draft map[string]any, limit int, rules, direction string) int {
+	if image == nil || deps.Gateway == nil || deps.Gateway.Mock || strings.HasPrefix(image.BaseURL, "mock://") {
+		return 0
+	}
+	sections := asList(draft["sections"])
+	used := 0
+	for _, raw := range sections {
+		if used >= limit {
+			break
+		}
+		section, _ := raw.(map[string]any)
+		if section == nil || str(section["heading"]) == "" {
+			continue
+		}
+		prompt := "公众号正文配图，正方形插画，不要文字，不要水印，不要品牌标识。小节：" + str(section["heading"]) + "。方向：" + direction
+		if rules != "" {
+			prompt += "。" + rules
+		}
+		rawImg, err := llm.GenerateImage(ctx, deps.HTTP, *image, prompt, "1:1")
+		if err != nil || len(rawImg) == 0 {
+			continue
+		}
+		body, filename, _, prepErr := cover.PrepareCover(rawImg)
+		if prepErr != nil {
+			continue
+		}
+		url, err := client.UploadContentImage(ctx, body, filename)
+		if err != nil || url == "" {
+			if authFailed(err) {
+				return used
+			}
+			continue
+		}
+		section["image_url"] = url
+		used++
+	}
+	return used
+}
+
+func chooseCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction, templateKey string, allowAI bool) ([]byte, string, map[string]any) {
 	builtin := cover.CoverPNG(templateKey)
 	raw := builtin
 	source := "builtin"
 	var errText string
-	generated, genErr := generatedCover(ctx, deps, image, title, direction)
+	var generated []byte
+	var genErr error
+	if allowAI {
+		generated, genErr = generatedCover(ctx, deps, image, title, direction)
+	}
 	if genErr != nil {
 		errText = genErr.Error()
 	} else if len(generated) > 0 {
@@ -1077,7 +1187,11 @@ func validateOutline(data map[string]any) (map[string]any, error) {
 		if heading == "" {
 			heading = "小节"
 		}
-		cleaned = append(cleaned, map[string]any{"heading": clip(heading, 40), "intent": clip(str(point["intent"]), 120)})
+		pointOut := map[string]any{"heading": clip(heading, 40), "intent": clip(str(point["intent"]), 120)}
+		if need, ok := point["need_table"].(bool); ok && need {
+			pointOut["need_table"] = true
+		}
+		cleaned = append(cleaned, pointOut)
 	}
 	if len(cleaned) < 2 {
 		return nil, errStr("大纲至少需要两个小节")
@@ -1121,7 +1235,11 @@ func validateDraft(data map[string]any) (map[string]any, error) {
 		if heading == "" && len(paragraphs) == 0 {
 			continue
 		}
-		normalized = append(normalized, map[string]any{"heading": clip(heading, 40), "paragraphs": paragraphs, "list": items})
+		row := map[string]any{"heading": clip(heading, 40), "paragraphs": paragraphs, "list": items}
+		if table := normalizeTable(section["table"]); table != nil {
+			row["table"] = table
+		}
+		normalized = append(normalized, row)
 	}
 	if len(normalized) == 0 {
 		return nil, errStr("正文没有可用小节")
@@ -1167,6 +1285,56 @@ type strErr string
 
 func (e strErr) Error() string { return string(e) }
 func errStr(s string) error    { return strErr(s) }
+
+func normalizeTable(raw any) map[string]any {
+	table, _ := raw.(map[string]any)
+	if table == nil {
+		return nil
+	}
+	var headers []any
+	for _, item := range asList(table["headers"]) {
+		text := strings.TrimSpace(str(item))
+		if text == "" {
+			continue
+		}
+		if len(headers) >= 4 {
+			break
+		}
+		headers = append(headers, clip(text, 20))
+	}
+	if len(headers) < 2 {
+		return nil
+	}
+	var rows []any
+	for _, rawRow := range asList(table["rows"]) {
+		if len(rows) >= 8 {
+			break
+		}
+		cells, _ := rawRow.([]any)
+		if cells == nil {
+			continue
+		}
+		line := make([]any, len(headers))
+		empty := true
+		for i := range headers {
+			text := ""
+			if i < len(cells) {
+				text = strings.TrimSpace(str(cells[i]))
+			}
+			if text != "" {
+				empty = false
+			}
+			line[i] = clip(text, 40)
+		}
+		if !empty {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return map[string]any{"headers": headers, "rows": rows}
+}
 
 func str(v any) string {
 	s, _ := v.(string)

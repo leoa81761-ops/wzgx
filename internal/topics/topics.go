@@ -43,13 +43,19 @@ func SubtopicTree(direction, tier string) []string {
 }
 
 func Pick(direction, tier string, history []Coverage, now time.Time, vetoed ...string) Choice {
+	return PickTree(nil, direction, tier, history, now, vetoed...)
+}
+
+func PickTree(tree []string, direction, tier string, history []Coverage, now time.Time, vetoed ...string) Choice {
 	blocked := map[string]bool{}
 	for _, tag := range vetoed {
 		if tag != "" {
 			blocked[tag] = true
 		}
 	}
-	tree := SubtopicTree(direction, tier)
+	if len(tree) == 0 {
+		tree = SubtopicTree(direction, tier)
+	}
 	var combos [][3]string
 	for _, sub := range tree {
 		for _, column := range catalog.Columns {
@@ -110,6 +116,10 @@ type Slot struct {
 }
 
 func Project(direction, tier, scheduleType string, weekdays []int, window string, history []Coverage, start time.Time, count int, vetoed []string) ([]Slot, error) {
+	return ProjectTree(nil, direction, tier, scheduleType, weekdays, window, history, start, count, vetoed)
+}
+
+func ProjectTree(tree []string, direction, tier, scheduleType string, weekdays []int, window string, history []Coverage, start time.Time, count int, vetoed []string) ([]Slot, error) {
 	if count < 1 {
 		count = 8
 	}
@@ -127,7 +137,7 @@ func Project(direction, tier, scheduleType string, weekdays []int, window string
 			}
 			return nil, err
 		}
-		picked := Pick(direction, tier, hist, at, vetoed...)
+		picked := PickTree(tree, direction, tier, hist, at, vetoed...)
 		out = append(out, Slot{At: at, Choice: picked})
 		hist = append(hist, Coverage{Subtopic: picked.Subtopic, Column: picked.Column, Angle: picked.Angle, CreatedAt: at})
 		end, err := schedule.WindowEnd(schedule.ShanghaiDay(at), window)

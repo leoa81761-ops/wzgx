@@ -114,9 +114,9 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		return map[string]any{
 			"hook": "先从「" + sub + "」里一个具体场景说起。",
 			"points": []any{
-				map[string]any{"heading": "先看清眼前的问题", "intent": "用一个很小的场景说明读者为什么会卡住"},
-				map[string]any{"heading": "一个今天就能做的做法", "intent": "给出可以立刻执行的步骤"},
-				map[string]any{"heading": "少踩一个常见坑", "intent": "提醒一个容易做错的地方"},
+				map[string]any{"heading": "先看清眼前的问题", "intent": "用一个很小的场景说明读者为什么会卡住", "need_table": false},
+				map[string]any{"heading": "一个今天就能做的做法", "intent": "给出可以立刻执行的步骤", "need_table": true},
+				map[string]any{"heading": "少踩一个常见坑", "intent": "提醒一个容易做错的地方", "need_table": false},
 			},
 			"closing": "选一个最小的步骤，做完再决定要不要继续。",
 		}
@@ -225,14 +225,21 @@ func draftFromPayload(payload map[string]any) map[string]any {
 		if point != nil && asString(point["heading"]) != "" {
 			heading = asString(point["heading"])
 		}
-		sections = append(sections, map[string]any{
+		section := map[string]any{
 			"heading": heading,
 			"paragraphs": []any{
 				"这篇文章用「" + style + "」的语气来写" + direction + "里的" + subtopic + "。",
 				"这一节顺着「" + angle + "」展开：把动作写小，读者才知道下一步做什么。",
 			},
 			"list": []any{"先做一个最小步骤", "做完后用一句话记下结果", "不追求一次到位"},
-		})
+		}
+		if point != nil && point["need_table"] == true {
+			section["table"] = map[string]any{
+				"headers": []any{"做法", "说明"},
+				"rows":    []any{[]any{"先做一个最小步骤", "做完后记一句话"}},
+			}
+		}
+		sections = append(sections, section)
 	}
 	closing := asString(outline["closing"])
 	if closing == "" {

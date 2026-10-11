@@ -13,6 +13,10 @@ import (
 // GenerateCover 调用 OpenAI 兼容的 /v1/images/generations。封面默认 16:9。
 // 上游文档写的是 b64_json，实际也可能返回 url，两种都接受。
 func GenerateCover(ctx context.Context, client *http.Client, provider Provider, prompt string) ([]byte, error) {
+	return GenerateImage(ctx, client, provider, prompt, "16:9")
+}
+
+func GenerateImage(ctx context.Context, client *http.Client, provider Provider, prompt, aspect string) ([]byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -23,9 +27,10 @@ func GenerateCover(ctx context.Context, client *http.Client, provider Provider, 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	body := PublicParams(provider.ExtraParams)
-	if _, ok := body["aspect_ratio"]; !ok {
-		body["aspect_ratio"] = "16:9"
+	if aspect == "" {
+		aspect = "16:9"
 	}
+	body["aspect_ratio"] = aspect
 	if _, ok := body["n"]; !ok {
 		body["n"] = 1
 	}

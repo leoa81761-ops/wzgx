@@ -324,6 +324,27 @@ CREATE TABLE IF NOT EXISTS plan_pin (
   specified_title TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS vertical_pack (
+  id {{PK}},
+  key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  keywords TEXT NOT NULL DEFAULT '',
+  subtopics TEXT NOT NULL DEFAULT '',
+  red_lines TEXT NOT NULL DEFAULT '',
+  source_allow TEXT NOT NULL DEFAULT '',
+  image_rules TEXT NOT NULL DEFAULT '',
+  disclaimer TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tier_change (
+  user_id BIGINT NOT NULL PRIMARY KEY,
+  pending_tier TEXT NOT NULL,
+  pending_expires_at TEXT,
+  created_at TEXT NOT NULL
+);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	for _, stmt := range strings.Split(schema, ";") {
@@ -335,5 +356,27 @@ CREATE TABLE IF NOT EXISTS plan_pin (
 			return err
 		}
 	}
+	for _, col := range []struct{ table, name, decl string }{
+		{"style_preset", "min_tier", "TEXT NOT NULL DEFAULT 'free'"},
+		{"style_preset", "tone", "TEXT NOT NULL DEFAULT ''"},
+		{"layout_template", "min_tier", "TEXT NOT NULL DEFAULT 'free'"},
+	} {
+		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (d *DB) ensureColumn(ctx context.Context, table, column, decl string) error {
+	stmt := "ALTER TABLE " + table + " ADD COLUMN " + column + " " + decl
+	_, err := d.SQL.ExecContext(ctx, stmt)
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "duplicate column") || strings.Contains(msg, "already exists") {
+		return nil
+	}
+	return err
 }

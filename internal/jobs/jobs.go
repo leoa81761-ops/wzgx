@@ -31,6 +31,9 @@ func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan
 	if running {
 		return nil, &quota.Error{Message: "已有文章正在生成，请稍后再试"}
 	}
+	if err := quota.ApplyPending(ctx, st, q, user, now); err != nil {
+		return nil, err
+	}
 	day := schedule.ShanghaiDay(now)
 	free := false
 	var idem string

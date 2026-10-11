@@ -138,7 +138,38 @@ func BlockReason(ctx context.Context, st *store.Store, q db.Q, user *model.User,
 	return "", nil
 }
 
+func ApplyPending(ctx context.Context, st *store.Store, q db.Q, user *model.User, now time.Time) error {
+	if user == nil {
+		return nil
+	}
+	pending, err := st.GetPendingTier(ctx, q, user.ID)
+	if err != nil || pending == nil {
+		return err
+	}
+	if user.TierExpiresAt == nil || schedule.AsUTC(*user.TierExpiresAt).After(schedule.AsUTC(now)) {
+		return nil
+	}
+	user.Tier = pending.Tier
+	switch pending.Tier {
+	case "free", "lifetime":
+		user.TierExpiresAt = nil
+	default:
+		user.TierExpiresAt = pending.ExpiresAt
+	}
+	if pending.Tier == "lifetime" {
+		started := schedule.AsUTC(now)
+		user.TierStartedAt = &started
+	}
+	if err := st.UpdateUser(ctx, q, user); err != nil {
+		return err
+	}
+	return st.ClearPendingTier(ctx, q, user.ID)
+}
+
 func Reserve(ctx context.Context, st *store.Store, q db.Q, user *model.User, taskID int64, now time.Time, free bool, note string) error {
+	if err := ApplyPending(ctx, st, q, user, now); err != nil {
+		return err
+	}
 	tier, _ := Membership(user, now)
 	limits, err := LimitsFor(ctx, st, q, tier)
 	if err != nil {
@@ -197,6 +228,9 @@ func Release(ctx context.Context, st *store.Store, q db.Q, taskID int64, note st
 }
 
 func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, now time.Time) (map[string]any, error) {
+	if err := ApplyPending(ctx, st, q, user, now); err != nil {
+		return nil, err
+	}
 	tier, state := Membership(user, now)
 	limits, err := LimitsFor(ctx, st, q, tier)
 	if err != nil {
@@ -224,15 +258,32 @@ func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, no
 	if label == "" {
 		label = tier
 	}
-	return map[string]any{
+	out := map[string]any{
 		"tier": tier, "tier_label": label, "stored_tier": user.Tier, "state": state, "state_label": stateLabel,
 		"expires_at": expires, "daily_used": daily, "daily_limit": limits.DailyQuota, "period_used": used, "period_limit": limits.PeriodQuota,
 		"period_unit": limits.PeriodUnit, "period_label": periodLabel, "max_words": limits.MaxWords, "max_accounts": limits.MaxAccounts,
 		"max_plans": limits.MaxPlans, "summary": limits.Summary,
-	}, nil
+	}
+	if pending, err := st.GetPendingTier(ctx, q, user.ID); err != nil {
+		return nil, err
+	} else if pending != nil {
+		pendingLabel := catalog.TierLabels[pending.Tier]
+		if pendingLabel == "" {
+			pendingLabel = pending.Tier
+		}
+		out["pending_tier"] = pending.Tier
+		out["pending_label"] = pendingLabel
+		if user.TierExpiresAt != nil {
+			out["applies_at"] = user.TierExpiresAt.UTC().Format(time.RFC3339)
+		}
+	}
+	return out, nil
 }
 
 func EnforceFreeLimits(ctx context.Context, st *store.Store, q db.Q, user *model.User, now time.Time) error {
+	if err := ApplyPending(ctx, st, q, user, now); err != nil {
+		return err
+	}
 	tier, _ := Membership(user, now)
 	if tier != "free" {
 		return nil

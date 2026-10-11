@@ -37,11 +37,23 @@ func (a *App) adminUsers(w http.ResponseWriter, r *http.Request, admin *model.Us
 		if label == "" {
 			label = row.Tier
 		}
-		out = append(out, map[string]any{
+		item := map[string]any{
 			"id": row.ID, "account": account, "tier": row.Tier, "tier_label": label,
 			"tier_expires_at": jtime(row.TierExpiresAt), "is_admin": row.IsAdmin, "is_active": row.IsActive,
 			"is_self": admin != nil && row.ID == admin.ID, "created_at": jtimev(row.CreatedAt),
-		})
+		}
+		if pending, err := a.Store.GetPendingTier(r.Context(), nil, row.ID); err != nil {
+			return err
+		} else if pending != nil {
+			pendingLabel := catalog.TierLabels[pending.Tier]
+			if pendingLabel == "" {
+				pendingLabel = pending.Tier
+			}
+			item["pending_tier"] = pending.Tier
+			item["pending_label"] = pendingLabel
+			item["applies_at"] = jtime(row.TierExpiresAt)
+		}
+		out = append(out, item)
 	}
 	writeJSON(w, 200, out)
 	return nil
@@ -51,6 +63,7 @@ type tierBody struct {
 	Tier      string     `json:"tier"`
 	ExpiresAt *time.Time `json:"expires_at"`
 	Note      string     `json:"note"`
+	When      string     `json:"when"`
 }
 
 func (a *App) adminSetTier(w http.ResponseWriter, r *http.Request, admin *model.User) error {
@@ -83,6 +96,9 @@ func (a *App) adminSetTier(w http.ResponseWriter, r *http.Request, admin *model.
 		note = string([]rune(note)[:500])
 	}
 	var stored string
+	var storedExpires *time.Time
+	var pendingTier string
+	var appliesAt *time.Time
 	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
 		user, err := a.Store.GetUser(r.Context(), tx, id)
 		if err != nil {
@@ -91,38 +107,91 @@ func (a *App) adminSetTier(w http.ResponseWriter, r *http.Request, admin *model.
 		if user == nil {
 			return &AppError{Status: 404, Message: "找不到用户"}
 		}
-		user.Tier = body.Tier
-		user.TierExpiresAt = expires
-		if body.Tier == "lifetime" {
-			started := now
-			user.TierStartedAt = &started
+		when := strings.TrimSpace(body.When)
+		future := user.TierExpiresAt != nil && schedule.AsUTC(*user.TierExpiresAt).After(now)
+		downgrade := catalog.TierRank(body.Tier) < catalog.TierRank(user.Tier)
+		scheduleEnd := downgrade && future && when != "now"
+		if when == "period_end" {
+			scheduleEnd = downgrade && future
 		}
-		if err := a.Store.UpdateUser(r.Context(), tx, user); err != nil {
-			return err
-		}
-		exp := ""
-		if expires != nil {
-			exp = schedule.Format(expires.UTC())
-		}
-		if err := a.Store.InsertEntitlement(r.Context(), tx, user.ID, admin.ID, body.Tier, note, exp, schedule.Format(now)); err != nil {
-			return err
+		if when == "" && downgrade && future {
+			scheduleEnd = true
 		}
 		short := note
 		if utf8.RuneCountInString(short) > 120 {
 			short = string([]rune(short)[:120])
 		}
 		actor := admin.ID
-		stored = user.Tier
+		detail := "档位改为" + catalog.TierLabels[body.Tier]
+		if scheduleEnd {
+			nextExpires := scheduledExpiry(now, user.TierExpiresAt, body.Tier, expires)
+			if err := a.Store.SetPendingTier(r.Context(), tx, user.ID, body.Tier, nextExpires, now); err != nil {
+				return err
+			}
+			exp := ""
+			if nextExpires != nil {
+				exp = schedule.Format(nextExpires.UTC())
+			}
+			if err := a.Store.InsertEntitlement(r.Context(), tx, user.ID, admin.ID, body.Tier, note, exp, schedule.Format(now)); err != nil {
+				return err
+			}
+			detail = "到期后改为" + catalog.TierLabels[body.Tier]
+			stored = user.Tier
+			storedExpires = user.TierExpiresAt
+			pendingTier = body.Tier
+			appliesAt = user.TierExpiresAt
+		} else {
+			user.Tier = body.Tier
+			user.TierExpiresAt = expires
+			if body.Tier == "lifetime" {
+				started := now
+				user.TierStartedAt = &started
+			}
+			if err := a.Store.UpdateUser(r.Context(), tx, user); err != nil {
+				return err
+			}
+			if err := a.Store.ClearPendingTier(r.Context(), tx, user.ID); err != nil {
+				return err
+			}
+			exp := ""
+			if expires != nil {
+				exp = schedule.Format(expires.UTC())
+			}
+			if err := a.Store.InsertEntitlement(r.Context(), tx, user.ID, admin.ID, body.Tier, note, exp, schedule.Format(now)); err != nil {
+				return err
+			}
+			stored = user.Tier
+			storedExpires = expires
+		}
 		return a.Store.InsertAudit(r.Context(), tx, model.AuditLog{
 			ActorID: &actor, Action: "set_tier", Target: "user:" + strconv.FormatInt(user.ID, 10),
-			Detail: "档位改为" + catalog.TierLabels[body.Tier] + "。备注：" + short, CreatedAt: now,
+			Detail: detail + "。备注：" + short, CreatedAt: now,
 		})
 	})
 	if err != nil {
 		return err
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "tier": stored, "tier_expires_at": jtime(expires)})
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "tier": stored, "tier_expires_at": jtime(storedExpires),
+		"pending_tier": pendingTier, "applies_at": jtime(appliesAt),
+	})
 	return nil
+}
+
+func scheduledExpiry(now time.Time, current *time.Time, tier string, requested *time.Time) *time.Time {
+	if tier == "free" || tier == "lifetime" {
+		return nil
+	}
+	base := now
+	if current != nil {
+		base = schedule.AsUTC(*current)
+	}
+	if requested != nil && schedule.AsUTC(*requested).After(base) {
+		t := schedule.AsUTC(*requested)
+		return &t
+	}
+	t := base.Add(31 * 24 * time.Hour)
+	return &t
 }
 
 type activeBody struct {

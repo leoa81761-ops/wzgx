@@ -150,6 +150,7 @@ func (s *Store) DeleteUserCascade(ctx context.Context, q db.Q, userID int64) err
 		`DELETE FROM wx_account WHERE user_id = ?`,
 		`DELETE FROM consent_log WHERE user_id = ?`,
 		`DELETE FROM entitlement WHERE user_id = ?`,
+		`DELETE FROM tier_change WHERE user_id = ?`,
 		`DELETE FROM users WHERE id = ?`,
 	}
 	for _, stmt := range stmts {
