@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/cover"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/pipeline"
@@ -110,7 +111,7 @@ func Run(ctx context.Context, cfg Config) ([]Step, error) {
 	}
 	providers := map[string][]llm.Provider{"topic": {provider}, "outline": {provider}, "draft": {provider}, "review": {provider}}
 	work := pipeline.Input{Direction: cfg.Direction, StyleKey: "warm", TemplateKey: "simple", WordTarget: 800, Tier: "free"}
-	built, err := pipeline.Build(ctx, gateway, work, nil, providers, time.Now())
+	built, err := pipeline.Build(ctx, gateway, work, nil, providers, content.DefaultSourcePolicy(), time.Now())
 	if err != nil {
 		_ = add("模型写作", "", err)
 		return steps, err

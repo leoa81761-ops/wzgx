@@ -79,6 +79,20 @@ type pushed struct {
 	CoverTrace   map[string]any
 }
 
+type tracedError struct {
+	err   error
+	trace []map[string]any
+}
+
+func (e *tracedError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *tracedError) Unwrap() error { return e.err }
+
 func Execute(ctx context.Context, deps Deps, taskID int64, claim bool, now time.Time) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -89,7 +103,7 @@ func Execute(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 	}
 	result, err := generate(ctx, deps, w, now)
 	if err != nil {
-		finishFailure(ctx, deps, taskID, clip(err.Error(), 500), now, authFailed(err))
+		finishFailure(ctx, deps, taskID, clip(err.Error(), 500), now, authFailed(err), traceOf(err))
 		return
 	}
 	finishSuccess(ctx, deps, taskID, result, now)
@@ -213,7 +227,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		return nil
 	})
 	if err != nil {
-		finishFailure(ctx, deps, taskID, clip(err.Error(), 500), now, false)
+		finishFailure(ctx, deps, taskID, clip(err.Error(), 500), now, false, nil)
 		return nil, false
 	}
 	return w, ok
@@ -223,6 +237,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	var sensitive []string
 	var wx runtime.WeChat
 	var image *llm.Provider
+	var policy content.SourcePolicy
 	providers := map[string][]llm.Provider{}
 	err := deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		var err error
@@ -248,18 +263,23 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 			provider := runtime.ToProvider(images[0], deps.Settings.MasterKey)
 			image = &provider
 		}
-		return nil
+		policy, err = loadSourcePolicy(ctx, deps.Store, tx)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	built, err := Build(ctx, deps.Gateway, w.input(), sensitive, providers, now)
+	built, err := Build(ctx, deps.Gateway, w.input(), sensitive, providers, policy, now)
 	if err != nil {
-		return nil, err
+		return nil, &tracedError{err: err, trace: built.Trace}
 	}
 	push, err := pushDraft(ctx, deps, w, built, wx, image)
 	if err != nil {
-		return nil, err
+		trace := append([]map[string]any{}, built.Trace...)
+		if push.CoverTrace != nil {
+			trace = append(trace, push.CoverTrace)
+		}
+		return nil, &tracedError{err: err, trace: trace}
 	}
 	html := built.HTML
 	if push.HTML != "" {
@@ -288,7 +308,7 @@ func (w *work) input() Input {
 	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked}
 }
 
-func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, now time.Time) (Built, error) {
+func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
 	topic := topics.Pick(w.Direction, w.Tier, w.History, now)
 	if w.Locked != nil {
 		topic = *w.Locked
@@ -306,7 +326,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	tokens := 0
 	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
 	if err != nil {
-		return Built{}, err
+		return stageFail(trace, "topic", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("topic", completion)...)
@@ -318,13 +338,17 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.Tier != "free" && len(providers["research"]) > 0 {
 		researchPayload := cloneMap(base)
 		researchPayload["topic_title"] = topicTitle
-		notes, listed, completion, err := fetchResearch(ctx, gateway, providers["research"], researchPayload)
+		blocked := policy.Block
+		if blocked == nil {
+			blocked = []string{}
+		}
+		researchPayload["blocked_domains"] = blocked
+		if len(policy.Allow) > 0 {
+			researchPayload["allowed_domains"] = policy.Allow
+		}
+		notes, listed, completion, err := fetchResearch(ctx, gateway, providers["research"], researchPayload, policy)
 		if err != nil {
-			if len(completion.Attempts) == 0 {
-				trace = append(trace, map[string]any{"stage": "research", "provider_name": completion.ProviderName, "model": completion.Model, "ok": false, "error": clip(err.Error(), 300)})
-			} else {
-				trace = append(trace, traceRows("research", completion)...)
-			}
+			trace = appendStage(trace, "research", completion, err)
 		} else {
 			if notes != "" {
 				base["research_notes"] = notes
@@ -341,7 +365,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	outlinePayload["topic_title"] = topicTitle
 	outline, completion, err := gateway.CompleteJSON(ctx, providers["outline"], llm.StageMessages("大纲", outlinePayload), llm.StageSchema("大纲"), validateOutline)
 	if err != nil {
-		return Built{}, err
+		return stageFail(trace, "outline", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("outline", completion)...)
@@ -349,23 +373,20 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draftPayload["outline"] = outline
 	draft, completion, err := gateway.CompleteJSON(ctx, providers["draft"], llm.StageMessages("正文", draftPayload), llm.StageSchema("正文"), validateDraft)
 	if err != nil {
-		return Built{}, err
+		return stageFail(trace, "draft", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("draft", completion)...)
-	if expanded, expandCompletion, expandedOK := expandIfShort(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget); expandedOK {
-		draft = expanded
-		tokens += expandCompletion.PromptTokens + expandCompletion.CompletionTokens
-		trace = append(trace, traceRows("expand", expandCompletion)...)
-	} else if len(expandCompletion.Attempts) > 0 {
-		trace = append(trace, traceRows("expand", expandCompletion)...)
-	}
+	fitted, fitTokens, fitTrace := fitBody(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget)
+	draft = fitted
+	tokens += fitTokens
+	trace = append(trace, fitTrace...)
 	reviewPayload := cloneMap(draftPayload)
 	reviewPayload["draft"] = draft
 	reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
 	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateDraft)
 	if err != nil {
-		return Built{}, err
+		return stageFail(trace, "review", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("review", completion)...)
@@ -377,7 +398,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		reviewPayload["issues"] = hits
 		reviewed, completion, err = gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateDraft)
 		if err != nil {
-			return Built{}, err
+			return stageFail(trace, "review", completion, err)
 		}
 		tokens += completion.PromptTokens + completion.CompletionTokens
 		trace = append(trace, traceRows("review", completion)...)
@@ -385,14 +406,23 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft = cleaned
 		hits = content.FindSensitive(draft, sensitive)
 		if len(hits) > 0 {
-			return Built{}, &llm.Error{Message: "审核未通过，命中敏感词：" + strings.Join(hits, "、")}
+			message := "审核未通过，命中敏感词：" + strings.Join(hits, "、")
+			trace = append(trace, map[string]any{"stage": "audit", "ok": false, "error": clip(message, 300)})
+			return Built{Trace: trace}, &llm.Error{Message: message}
 		}
 	}
-	if w.Tier != "free" && len(researchSources) > 0 {
-		draft["sources"] = mergeSources(asList(draft["sources"]), researchSources)
+	if w.Tier != "free" {
+		merged := asList(draft["sources"])
+		if len(researchSources) > 0 {
+			merged = mergeSources(merged, researchSources)
+		}
+		draft["sources"] = filterListed(merged, policy)
 	}
 	if w.Tier == "free" {
 		draft["sources"] = []any{}
+	}
+	if high := w.WordTarget * 130 / 100; w.WordTarget > 0 && content.BodyRunes(draft) > high {
+		draft = content.TrimToMax(draft, high)
 	}
 	title := str(draft["title"])
 	if title == "" {
@@ -406,7 +436,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft["footnotes"] = footnotes
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
 	if err != nil {
-		return Built{}, err
+		return Built{Trace: trace}, err
 	}
 	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace}, nil
 }
@@ -550,7 +580,7 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	})
 }
 
-func finishFailure(ctx context.Context, deps Deps, taskID int64, message string, now time.Time, auth bool) {
+func finishFailure(ctx context.Context, deps Deps, taskID int64, message string, now time.Time, auth bool, trace []map[string]any) {
 	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		task, err := deps.Store.GetTask(ctx, tx, taskID)
 		if err != nil || task == nil {
@@ -579,6 +609,9 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 				_ = deps.Store.UpdatePlan(ctx, tx, &plans[i])
 			}
 			message = "公众号授权失效，请重新绑定。未扣除额度。"
+		}
+		if len(trace) > 0 {
+			task.ModelTrace = trace
 		}
 		if retry {
 			task.Status = "pending"
@@ -656,18 +689,19 @@ func chooseCover(ctx context.Context, deps Deps, image *llm.Provider, title, dir
 	return body, filename, row
 }
 
-func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any) (string, []any, llm.Completion, error) {
+func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, policy content.SourcePolicy) (string, []any, llm.Completion, error) {
 	messages := llm.StageMessages("资料检索", payload)
-	first, err1 := gateway.CompleteText(ctx, providers, messages, nil, false)
+	first, err1 := gateway.CompleteResearch(ctx, providers, messages)
 	notes := ""
 	var sources []map[string]any
 	if err1 == nil {
 		notes, sources = llm.InterpretResearch(first.Content)
+		sources = policy.Filter(sources)
 		if sourcesHaveURL(sources) {
 			return notes, anySources(sources), first, nil
 		}
 	}
-	second, err2 := gateway.CompleteText(ctx, providers, messages, nil, false)
+	second, err2 := gateway.CompleteResearch(ctx, providers, messages)
 	merged := llm.Completion{
 		Attempts:         append(append([]map[string]any{}, first.Attempts...), second.Attempts...),
 		PromptTokens:     first.PromptTokens + second.PromptTokens,
@@ -675,6 +709,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	}
 	if err2 == nil {
 		notes2, sources2 := llm.InterpretResearch(second.Content)
+		sources2 = policy.Filter(sources2)
 		merged.ProviderID = second.ProviderID
 		merged.ProviderName = second.ProviderName
 		merged.Protocol = second.Protocol
@@ -721,21 +756,89 @@ func anySources(sources []map[string]any) []any {
 	return listed
 }
 
-func expandIfShort(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, target int) (map[string]any, llm.Completion, bool) {
-	if target <= 0 || content.BodyRunes(draft) >= target*9/10 {
-		return draft, llm.Completion{}, false
+func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, target int) (map[string]any, int, []map[string]any) {
+	if target <= 0 {
+		return draft, 0, nil
 	}
-	expandPayload := cloneMap(payload)
-	expandPayload["draft"] = draft
-	expandPayload["current_chars"] = content.BodyRunes(draft)
-	expanded, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("扩写", expandPayload), llm.StageSchema("正文"), validateDraft)
-	if err != nil {
-		if len(completion.Attempts) == 0 {
-			completion.Attempts = []map[string]any{{"ok": false, "error": clip(err.Error(), 300)}}
+	low := target * 85 / 100
+	high := target * 130 / 100
+	var trace []map[string]any
+	tokens := 0
+	if content.BodyRunes(draft) < low {
+		expandPayload := cloneMap(payload)
+		expandPayload["draft"] = draft
+		expandPayload["current_chars"] = content.BodyRunes(draft)
+		expanded, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("扩写", expandPayload), llm.StageSchema("正文"), validateDraft)
+		trace = appendStage(trace, "expand", completion, err)
+		if err == nil {
+			draft = expanded
+			tokens += completion.PromptTokens + completion.CompletionTokens
 		}
-		return draft, completion, false
 	}
-	return expanded, completion, true
+	if content.BodyRunes(draft) > high {
+		condensePayload := cloneMap(payload)
+		condensePayload["draft"] = draft
+		condensePayload["current_chars"] = content.BodyRunes(draft)
+		condensed, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("缩写", condensePayload), llm.StageSchema("正文"), validateDraft)
+		trace = appendStage(trace, "condense", completion, err)
+		if err == nil {
+			draft = condensed
+			tokens += completion.PromptTokens + completion.CompletionTokens
+		}
+	}
+	if content.BodyRunes(draft) > high {
+		draft = content.TrimToMax(draft, high)
+	}
+	return draft, tokens, trace
+}
+
+func loadSourcePolicy(ctx context.Context, st *store.Store, q db.Q) (content.SourcePolicy, error) {
+	row, err := st.FindService(ctx, q, "audit", "source_domains")
+	if err != nil {
+		return content.SourcePolicy{}, err
+	}
+	if row == nil {
+		return content.DefaultSourcePolicy(), nil
+	}
+	return content.PolicyFromParams(row.ExtraParams, true), nil
+}
+
+func stageFail(trace []map[string]any, stage string, completion llm.Completion, err error) (Built, error) {
+	return Built{Trace: appendStage(trace, stage, completion, err)}, err
+}
+
+func appendStage(trace []map[string]any, stage string, completion llm.Completion, err error) []map[string]any {
+	if err != nil && len(completion.Attempts) == 0 {
+		return append(trace, map[string]any{
+			"stage": stage, "provider_id": completion.ProviderID, "provider_name": completion.ProviderName,
+			"protocol": completion.Protocol, "model": completion.Model, "ok": false, "error": clip(err.Error(), 300),
+		})
+	}
+	return append(trace, traceRows(stage, completion)...)
+}
+
+func traceOf(err error) []map[string]any {
+	var traced *tracedError
+	if errors.As(err, &traced) && traced != nil {
+		return traced.trace
+	}
+	return nil
+}
+
+func filterListed(sources []any, policy content.SourcePolicy) []any {
+	maps := make([]map[string]any, 0, len(sources))
+	for _, raw := range sources {
+		source, _ := raw.(map[string]any)
+		if source != nil {
+			maps = append(maps, source)
+		}
+	}
+	filtered := policy.Filter(maps)
+	out := make([]any, len(filtered))
+	for i := range filtered {
+		out[i] = filtered[i]
+	}
+	return out
 }
 
 func mergeSources(existing, extra []any) []any {

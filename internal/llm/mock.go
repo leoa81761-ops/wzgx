@@ -8,8 +8,8 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
-const lengthRule = "正文字数按汉字计：各小节的段落、列表和结尾都算，标题和摘要不算。这个数字要达到输入里 word_target 的九成以上，不要写成短摘要。" +
-	"每个小节最多四段，请把篇幅写进这些段落，把做法写具体，不要靠很多很短的句子凑数。"
+const lengthRule = "正文字数只统计各小节的段落、列表和结尾，不含标题和摘要。这个数字要落在 word_target 的 85% 到 130% 之间：不要写成短摘要，也不要明显写超。" +
+	"每个小节最多四段，请把篇幅写进这些段落，把做法写具体。"
 
 func StageMessages(stageLabel string, payload map[string]any) []map[string]string {
 	schema := StageSchema(stageLabel)
@@ -18,15 +18,21 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "资料检索":
 		system = "你是资料检索助手。请立刻联网搜索，为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。" +
 			"每条都要有名称、标题、以 http:// 或 https:// 开头的真实网址、发布日期（知道再写）、类型（news、policy、standard、other 之一），以及一两句说明这条资料写了什么。" +
-			"优先最近一年的报道、政府或标准文件、机构原文。只写你实际搜到的网址，不要编造链接。" +
-			"请直接给出来源。如果确实搜不到，写明「未检索到可靠来源」。" +
+			"优先政府网站（.gov.cn）、标准组织、机构原文和主流媒体，不要用转载站、聚合站或内容农场。输入里的 blocked_domains 一律不要引用。" +
+			"如果输入里有 allowed_domains，只引用这些域名及其子域名。" +
+			"只写你实际搜到的网址，不要编造链接。请直接给出来源。如果确实搜不到，写明「未检索到可靠来源」。" +
 			"可以用 JSON：{\"notes\":\"事实摘要\",\"sources\":[{\"name\":\"\",\"title\":\"\",\"published_on\":\"\",\"url\":\"\",\"source_type\":\"news\",\"note\":\"简要说明\"}]}。" +
 			"也可以用 Markdown：每条写成 [标题](https://网址)，同一行或下一行写简要说明。"
 	case "扩写":
 		schema = StageSchema("正文")
-		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下，把正文扩写到大约 word_target 个汉字。" +
+		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写，使正文字数落到 word_target 的 85% 到 130% 之间，不要写超。" +
 			lengthRule +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "缩写":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。当前正文偏长。请压缩到 word_target 的 85% 到 130% 之间，删掉重复和空话，保留事实、步骤和 sources，不要新增材料或网址。" +
+			lengthRule +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	default:
 		system = "你是公众号写作助手。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要输出解释或 HTML。" +
 			"字段必须和下面的 JSON Schema 完全一致，不要增加字段，字符串字段没有内容时用空字符串，数组没有内容时用空数组。" +
@@ -116,6 +122,16 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 			draft = draftFromPayload(payload)
 		}
 		return padDraft(draft, intOf(payload["word_target"]))
+	case "缩写":
+		draft, _ := payload["draft"].(map[string]any)
+		if draft == nil {
+			draft = draftFromPayload(payload)
+		}
+		target := intOf(payload["word_target"])
+		if target < 1 {
+			target = 800
+		}
+		return content.TrimToMax(draft, target*130/100)
 	default:
 		return draftFromPayload(payload)
 	}

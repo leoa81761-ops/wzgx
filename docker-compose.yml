@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: gonghao
       POSTGRES_PASSWORD: gonghao
@@ -15,6 +16,7 @@ services:
 
   app:
     build: .
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:

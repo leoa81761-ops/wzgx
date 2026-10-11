@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/config"
+	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
@@ -103,6 +104,12 @@ func TestSensitiveFailureReleasesQuota(t *testing.T) {
 	reason, err := quota.BlockReason(ctx, st, nil, user, now)
 	if err != nil || reason != "" {
 		t.Fatalf("quota should be released, got %q %v", reason, err)
+	}
+	if len(task.ModelTrace) == 0 {
+		t.Fatal("failed task should keep model_trace")
+	}
+	if traceStage(task.ModelTrace, "topic")["ok"] != true {
+		t.Fatalf("%#v", task.ModelTrace)
 	}
 }
 
@@ -299,6 +306,235 @@ func TestDraftExpandsOnceWhenShort(t *testing.T) {
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
 	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "步骤写清楚。") {
 		t.Fatal(articles, err)
+	}
+}
+
+func TestResearchStopsAfterOneRetry(t *testing.T) {
+	var researchCalls int
+	body := strings.Repeat("合适的正文。", 120)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "检索失败也能写完", "angle": "今天就能做"})
+		case "资料检索":
+			researchCalls++
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("upstream"))
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "检索失败也能写完", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	user, account, plan := seedPaid(t, st, "research-524@example.com", srv.URL)
+	if _, err := st.DB.Exec(ctx, `UPDATE service_config SET timeout_seconds = 600 WHERE config_type = 'text_model'`); err != nil {
+		t.Fatal(err)
+	}
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if researchCalls != 2 {
+		t.Fatalf("research calls %d", researchCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 || strings.Contains(articles[0].BodyHTML, "参考来源") {
+		t.Fatal(articles, err)
+	}
+	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
+	if err != nil || task == nil || traceStage(task.ModelTrace, "research")["ok"] != false {
+		t.Fatalf("%#v %v", task, err)
+	}
+}
+
+func TestResearchDropsAggregatorDomains(t *testing.T) {
+	var researchCalls int
+	body := strings.Repeat("合适的正文。", 120)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "只要官方来源", "angle": "今天就能做"})
+		case "资料检索":
+			researchCalls++
+			msgs, _ := req["messages"].([]any)
+			last, _ := msgs[len(msgs)-1].(map[string]any)
+			content, _ := last["content"].(string)
+			if !strings.Contains(content, "xilu.com") {
+				t.Errorf("payload should list blocked domains: %s", content)
+			}
+			if researchCalls == 1 {
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [西陆](https://www.xilu.com/news/1)。"}}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [国务院](https://www.gov.cn/zhengce/2024)。"}}]}`))
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{
+				"title": "只要官方来源", "summary": "摘要",
+				"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}},
+				"closing":  "结束",
+				"sources":  []any{map[string]any{"name": "西陆", "title": "转载", "url": "https://fyun.com/a", "source_type": "news"}},
+			})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	user, account, plan := seedPaid(t, st, "domains@example.com", srv.URL)
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if researchCalls != 2 {
+		t.Fatalf("research calls %d", researchCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	html := articles[0].BodyHTML
+	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "gov点cn") || strings.Contains(html, "xilu") || strings.Contains(html, "fyun") {
+		t.Fatal(html)
+	}
+}
+
+func TestDraftCondensesWhenLong(t *testing.T) {
+	var expandCalls, condenseCalls int
+	long := strings.Repeat("这是一段很长的说明文字。", 200)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "写得太长了", "angle": "今天就能做"})
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		case "扩写":
+			expandCalls++
+			writeChoice(w, map[string]any{"title": "写得太长了", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		case "缩写":
+			condenseCalls++
+			writeChoice(w, map[string]any{"title": "写得太长了", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		default:
+			writeChoice(w, map[string]any{"title": "写得太长了", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "long@example.com")
+	plan.WordTarget = 800
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if expandCalls != 0 || condenseCalls != 1 {
+		t.Fatalf("expand %d condense %d", expandCalls, condenseCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	if n := content.BodyRunes(articles[0].BodyJSON); n > 800*130/100 || n < 1 {
+		t.Fatalf("body runes %d", n)
+	}
+}
+
+func TestDraftSkipsRewriteWhenInBand(t *testing.T) {
+	var expandCalls, condenseCalls int
+	text := strings.Repeat("合适的正文。", 120)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "长度刚好", "angle": "今天就能做"})
+			return
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+			return
+		case "扩写":
+			expandCalls++
+		case "缩写":
+			condenseCalls++
+		}
+		writeChoice(w, map[string]any{"title": "长度刚好", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{text}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "band@example.com")
+	plan.WordTarget = 800
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if expandCalls != 0 || condenseCalls != 0 {
+		t.Fatalf("expand %d condense %d", expandCalls, condenseCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	if n := content.BodyRunes(articles[0].BodyJSON); n < 800*85/100 || n > 800*130/100 {
+		t.Fatalf("body runes %d", n)
+	}
+}
+
+func TestFailedStageKeepsTrace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "选题成功", "angle": "今天就能做"})
+		default:
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("outline down"))
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "trace@example.com")
+	now := time.Now().UTC()
+	var taskID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "manual", now, nil)
+		if err != nil {
+			return err
+		}
+		taskID = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	Execute(ctx, deps, taskID, false, now)
+	task, err := st.GetTask(ctx, nil, taskID)
+	if err != nil || task == nil || task.Status != "failed" {
+		t.Fatalf("%#v %v", task, err)
+	}
+	if traceStage(task.ModelTrace, "topic")["ok"] != true || traceStage(task.ModelTrace, "outline")["ok"] != false {
+		t.Fatalf("%#v", task.ModelTrace)
 	}
 }
 
