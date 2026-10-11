@@ -28,6 +28,7 @@ type Settings struct {
 	StaticDir         string
 	HTTPIdleConns     int
 	HTTPIdlePerHost   int
+	NotifyWebhookURL  string
 }
 
 func Load() Settings {
@@ -75,6 +76,7 @@ func Load() Settings {
 		StaticDir:         os.Getenv("STATIC_DIR"),
 		HTTPIdleConns:     envInt("HTTP_CLIENT_MAX_IDLE_CONNS", 256),
 		HTTPIdlePerHost:   envInt("HTTP_CLIENT_MAX_IDLE_PER_HOST", 64),
+		NotifyWebhookURL:  strings.TrimSpace(os.Getenv("NOTIFY_WEBHOOK_URL")),
 	}
 }
 

@@ -112,6 +112,10 @@ func TestSensitiveFailureReleasesQuota(t *testing.T) {
 	if traceStage(task.ModelTrace, "topic")["ok"] != true {
 		t.Fatalf("%#v", task.ModelTrace)
 	}
+	notes, _, err := st.ListNotifications(ctx, user.ID, 20)
+	if err != nil || len(notes) == 0 || notes[0].Kind != "failure" {
+		t.Fatalf("failure should notify, %#v %v", notes, err)
+	}
 }
 
 func TestDurationMeasuresTheWholeTask(t *testing.T) {
@@ -1032,6 +1036,62 @@ func tinyJPEG(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func TestHighRiskStaysInAppAndNotifies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		stage := stageOf(req)
+		var data map[string]any
+		switch stage {
+		case "选题":
+			data = map[string]any{"title": "一个正常选题"}
+		case "大纲":
+			data = map[string]any{"points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"}
+		default:
+			data = map[string]any{"title": "用药备忘", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"这里写出了成人剂量，不应进草稿箱。"}, "list": []any{}}}}
+		}
+		body, _ := json.Marshal(data)
+		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(body)}}}})
+		_, _ = w.Write(out)
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "风险模型", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "risk",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "risk@example.com")
+	now := time.Now().UTC()
+	var taskID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "manual", now, nil)
+		if err != nil {
+			return err
+		}
+		taskID = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	Execute(ctx, deps, taskID, false, now)
+	task, err := st.GetTask(ctx, nil, taskID)
+	if err != nil || task == nil || task.Status != "success" {
+		t.Fatalf("%#v %v", task, err)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 || articles[0].Status != "held" || articles[0].RiskLevel != "high" || articles[0].DraftMediaID != "" {
+		t.Fatalf("%#v %v", articles, err)
+	}
+	notes, _, err := st.ListNotifications(ctx, user.ID, 10)
+	if err != nil || len(notes) == 0 || notes[0].Kind != "risk" {
+		t.Fatalf("%#v %v", notes, err)
+	}
 }
 
 func base64Encode(raw []byte) string {

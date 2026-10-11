@@ -274,6 +274,56 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS notification (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  read_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notice_user ON notification(user_id, id);
+
+CREATE TABLE IF NOT EXISTS feedback (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  article_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  score INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  draft_state TEXT NOT NULL DEFAULT '',
+  change_ratio REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_article ON feedback(article_id, id);
+
+CREATE TABLE IF NOT EXISTS complaint (
+  id {{PK}},
+  user_id INTEGER,
+  contact TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  reply TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  replied_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS topic_veto (
+  id {{PK}},
+  plan_id INTEGER NOT NULL,
+  topic_tag TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(plan_id, topic_tag)
+);
+
+CREATE TABLE IF NOT EXISTS plan_pin (
+  plan_id BIGINT NOT NULL PRIMARY KEY,
+  specified_title TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	for _, stmt := range strings.Split(schema, ";") {

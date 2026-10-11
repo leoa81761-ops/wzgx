@@ -27,6 +27,7 @@ function pillClass(status) {
   if (status === "in_draft") return "ok";
   if (status === "exported") return "warn";
   if (status === "failed") return "bad";
+  if (status === "held") return "warn";
   return "";
 }
 

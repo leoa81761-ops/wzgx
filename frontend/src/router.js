@@ -12,6 +12,10 @@ import Articles from "./views/Articles.vue";
 import ArticleDetail from "./views/ArticleDetail.vue";
 import Membership from "./views/Membership.vue";
 import Admin from "./views/Admin.vue";
+import Help from "./views/Help.vue";
+import Pricing from "./views/Pricing.vue";
+import Complaint from "./views/Complaint.vue";
+import Inbox from "./views/Inbox.vue";
 import Reconsent from "./views/Reconsent.vue";
 
 const router = createRouter({
@@ -22,6 +26,9 @@ const router = createRouter({
     { path: "/register", component: Register },
     { path: "/legal/:docType", component: Legal },
     { path: "/tutorial", component: Tutorial },
+    { path: "/help", component: Help },
+    { path: "/pricing", component: Pricing },
+    { path: "/complaint", component: Complaint },
     { path: "/reconsent", component: Reconsent, meta: { auth: true } },
     { path: "/app", component: Dashboard, meta: { auth: true } },
     { path: "/app/accounts", component: Accounts, meta: { auth: true } },
@@ -29,6 +36,7 @@ const router = createRouter({
     { path: "/app/articles", component: Articles, meta: { auth: true } },
     { path: "/app/articles/:id", component: ArticleDetail, meta: { auth: true } },
     { path: "/app/membership", component: Membership, meta: { auth: true } },
+    { path: "/app/inbox", component: Inbox, meta: { auth: true } },
     { path: "/admin", component: Admin, meta: { auth: true, admin: true } },
   ],
   scrollBehavior() {

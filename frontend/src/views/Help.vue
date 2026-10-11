@@ -1,0 +1,26 @@
+<template>
+  <div class="stack">
+    <h1 style="font-size: 32px">帮助中心</h1>
+    <p class="muted">这里只说明当前已经能用的功能。在线支付和认证号自动发布还没开通。</p>
+    <section class="card stack">
+      <h2>怎么开始</h2>
+      <p>注册时勾选《用户协议》和《隐私政策》。绑定公众号前，先看<router-link to="/tutorial">绑定教程</router-link>，把服务器出口 IP 加进公众平台的 IP 白名单。</p>
+      <p>写作计划只选方向、风格和排版。系统按子方向、栏目和角度轮换，90 天内尽量不重复。</p>
+    </section>
+    <section class="card stack">
+      <h2>草稿、失败和风险</h2>
+      <p>生成成功后会尝试写入公众号草稿箱。写不进去时保留可复制的 HTML。失败会在「通知」里留一条，并可以转发到管理员配置的通知地址。</p>
+      <p>高风险内容（剂量、诊断、偏方、处方、治疗方案、包治一类）不会写入草稿。免费版只自动推送低风险稿。中风险在付费档需要带来源。</p>
+      <p>文章页可以回读微信草稿，比较标题和正文是否改过。读不到只表示当前拿不到这篇草稿，不能据此认定已经发布。</p>
+    </section>
+    <section class="card stack">
+      <h2>指定题目和否决</h2>
+      <p>写作计划里可以指定下一篇题目，成功生成后自动清掉。内容日历列出接下来几次会写什么，点「否决」就跳过这个选题。</p>
+    </section>
+    <section class="card stack">
+      <h2>账号和投诉</h2>
+      <p>会员页可以导出个人数据，也可以注销账号。注销会立刻删除公众号密钥。投诉请走<router-link to="/complaint">投诉入口</router-link>，我们会在站内回复。</p>
+      <p>价格见<router-link to="/pricing">定价页</router-link>。购买按钮是「即将开通」，现在仍由管理员手工开通档位。</p>
+    </section>
+  </div>
+</template>

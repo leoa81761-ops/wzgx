@@ -14,8 +14,10 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/notify"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/render"
+	"github.com/leoa81761-ops/wzgx/internal/risk"
 	"github.com/leoa81761-ops/wzgx/internal/runtime"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 	"github.com/leoa81761-ops/wzgx/internal/security"
@@ -33,6 +35,7 @@ type Deps struct {
 	HTTP     *http.Client
 	Tokens   *wechat.TokenCache
 	Cache    *runtime.Cache
+	Notifier notify.Sender
 }
 
 type work struct {
@@ -59,6 +62,8 @@ type work struct {
 	ExistingMediaID string
 	History         []topics.Coverage
 	RecentTitles    []string
+	Vetoed          []string
+	SpecifiedTitle  string
 }
 
 type Built struct {
@@ -76,6 +81,7 @@ type pushed struct {
 	HTML         string
 	DeliveryNote string
 	CoverTrace   map[string]any
+	RiskLevel    string
 }
 
 type tracedError struct {
@@ -154,6 +160,14 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		if err != nil {
 			return err
 		}
+		vetoed, err := deps.Store.ListVetoTags(ctx, tx, plan.ID)
+		if err != nil {
+			return err
+		}
+		pinned, err := deps.Store.GetPin(ctx, tx, plan.ID)
+		if err != nil {
+			return err
+		}
 		var article *model.Article
 		var locked *topics.Choice
 		existingMedia := ""
@@ -219,7 +233,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			AccountID: account.ID, AppID: account.AppID, AppSecret: secret, DeliveryMode: account.DeliveryMode,
 			Trigger: task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
-			History: history, RecentTitles: titles,
+			History: history, RecentTitles: titles, Vetoed: vetoed, SpecifiedTitle: pinned,
 		}
 		ok = true
 		return nil
@@ -287,27 +301,33 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if push.CoverTrace != nil {
 		trace = append(trace, push.CoverTrace)
 	}
-	return map[string]any{"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace, "status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID, "delivery_note": push.DeliveryNote}, nil
+	level := push.RiskLevel
+	if level == "" {
+		level = "low"
+	}
+	return map[string]any{"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace, "status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID, "delivery_note": push.DeliveryNote, "risk_level": level}, nil
 }
 
 // Input 是一次写作需要的业务参数，连通测试和正式任务共用。
 type Input struct {
-	Direction    string
-	StyleKey     string
-	TemplateKey  string
-	WordTarget   int
-	Tier         string
-	History      []topics.Coverage
-	RecentTitles []string
-	Locked       *topics.Choice
+	Direction      string
+	StyleKey       string
+	TemplateKey    string
+	WordTarget     int
+	Tier           string
+	History        []topics.Coverage
+	RecentTitles   []string
+	Locked         *topics.Choice
+	Vetoed         []string
+	SpecifiedTitle string
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle}
 }
 
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
-	topic := topics.Pick(w.Direction, w.Tier, w.History, now)
+	topic := topics.Pick(w.Direction, w.Tier, w.History, now, w.Vetoed...)
 	if w.Locked != nil {
 		topic = *w.Locked
 	}
@@ -319,6 +339,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		"direction": w.Direction, "subtopic": topic.Subtopic, "column": topic.Column, "angle": topic.Angle,
 		"style_key": w.StyleKey, "style_label": style.Name, "style_hint": style.Description,
 		"word_target": w.WordTarget, "recent_titles": w.RecentTitles, "tier": w.Tier,
+	}
+	if w.SpecifiedTitle != "" {
+		base["specified_title"] = w.SpecifiedTitle
 	}
 	var trace []map[string]any
 	tokens := 0
@@ -427,6 +450,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft = content.TrimToMax(draft, high)
 	}
 	title := str(draft["title"])
+	if w.SpecifiedTitle != "" {
+		title = w.SpecifiedTitle
+	}
 	if title == "" {
 		title = topicTitle
 	}
@@ -434,6 +460,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	footnotes := []any{"请发布前审阅。"}
 	if strings.Contains(w.Direction, "母婴") {
 		footnotes = append(footnotes, "本文仅供科普，不能替代医生诊疗意见。")
+	}
+	if level := risk.Grade(w.Direction, draft); level == "medium" || level == "high" {
+		footnotes = append(footnotes, "涉及健康或专业判断时，请自行核对来源，本文不能替代专业意见。")
 	}
 	draft["footnotes"] = footnotes
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
@@ -444,8 +473,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 }
 
 func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
+	level := risk.Grade(w.Direction, article.Draft)
+	if hold, note := risk.ShouldHold(level, w.Tier, len(asList(article.Draft["sources"])) > 0); hold {
+		return pushed{Status: "held", HTML: article.HTML, DeliveryNote: note, RiskLevel: level}, nil
+	}
 	if w.DeliveryMode != "draft" {
-		return pushed{Status: "exported", HTML: article.HTML, DeliveryNote: "当前公众号为手动导出模式，请复制排版 HTML 后粘贴到公众号编辑器。"}, nil
+		return pushed{Status: "exported", HTML: article.HTML, DeliveryNote: "当前公众号为手动导出模式，请复制排版 HTML 后粘贴到公众号编辑器。", RiskLevel: level}, nil
 	}
 	mode := "live"
 	if wx.Mode == "mock" || strings.HasPrefix(w.AppID, "wx_mock") {
@@ -464,7 +497,7 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		if authFailed(err) {
 			return pushed{}, err
 		}
-		return pushed{Status: "exported", HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace}, nil
+		return pushed{Status: "exported", HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level}, nil
 	}
 	if imageURL, err := client.UploadContentImage(ctx, cover.ContentPNG(), "inline.png"); err != nil {
 		if authFailed(err) {
@@ -480,9 +513,9 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		if authFailed(err) {
 			return pushed{}, err
 		}
-		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace}, nil
+		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level}, nil
 	}
-	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, CoverTrace: coverTrace}, nil
+	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, CoverTrace: coverTrace, RiskLevel: level}, nil
 }
 
 // placeDraft 先尝试更新仍在草稿箱里的稿件。media_id 或封面失效时重新上传封面，再新建一篇草稿。
@@ -567,7 +600,10 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		article.Subtopic = topic.Subtopic
 		article.ColumnType = topic.Column
 		article.TopicTag = topic.TopicTag
-		article.RiskLevel = "low"
+		article.RiskLevel = str(result["risk_level"])
+		if article.RiskLevel == "" {
+			article.RiskLevel = "low"
+		}
 		if task.TriggerType == "regenerate" {
 			article.RegenCount++
 		}
@@ -614,11 +650,27 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 			plan.Status = "active"
 			plan.PauseReason = ""
 		}
+		if err := deps.Store.ClearPin(ctx, tx, plan.ID); err != nil {
+			return err
+		}
 		return deps.Store.UpdatePlan(ctx, tx, plan)
 	})
+	if str(result["status"]) == "held" {
+		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "risk", "有一篇稿没有写入草稿", str(result["delivery_note"]))
+	}
+}
+
+func taskUserID(ctx context.Context, deps Deps, taskID int64) int64 {
+	task, err := deps.Store.GetTask(ctx, nil, taskID)
+	if err != nil || task == nil {
+		return 0
+	}
+	return task.UserID
 }
 
 func finishFailure(ctx context.Context, deps Deps, taskID int64, message string, now time.Time, auth bool, trace []map[string]any) {
+	final := false
+	var userID int64
 	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		task, err := deps.Store.GetTask(ctx, tx, taskID)
 		if err != nil || task == nil {
@@ -678,8 +730,34 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 		if err := deps.Store.UpdateTask(ctx, tx, task); err != nil {
 			return err
 		}
+		final = true
+		userID = task.UserID
 		return quota.Release(ctx, deps.Store, tx, task.ID, "失败退回额度")
 	})
+	if final && userID > 0 {
+		emitNotice(ctx, deps, userID, "failure", "生成失败", message)
+	}
+}
+
+func emitNotice(ctx context.Context, deps Deps, userID int64, kind, title, body string) {
+	if userID == 0 {
+		return
+	}
+	note := &store.Notification{UserID: userID, Kind: kind, Title: title, Body: clip(body, 500), CreatedAt: time.Now().UTC()}
+	if err := deps.Store.InsertNotification(ctx, nil, note); err != nil {
+		return
+	}
+	if deps.Notifier == nil {
+		return
+	}
+	account := ""
+	if user, err := deps.Store.GetUser(ctx, nil, userID); err == nil && user != nil {
+		account = user.Email
+		if account == "" {
+			account = user.Phone
+		}
+	}
+	_ = deps.Notifier.Send(ctx, notify.Message{UserID: userID, Kind: kind, Title: title, Body: note.Body, Account: account})
 }
 
 func generatedCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction string) ([]byte, error) {
