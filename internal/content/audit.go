@@ -1,6 +1,7 @@
 package content
 
 import (
+	"encoding/json"
 	"strings"
 	"unicode/utf8"
 
@@ -55,6 +56,88 @@ func runesOf(raw any) int {
 func asText(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// TrimToMax 把正文压到最多 max 个字。从结尾往前删，标题和摘要不动。
+func TrimToMax(draft map[string]any, max int) map[string]any {
+	if draft == nil || max <= 0 || BodyRunes(draft) <= max {
+		return draft
+	}
+	cloned, ok := cloneDraft(draft)
+	if !ok {
+		return draft
+	}
+	for BodyRunes(cloned) > max {
+		if !shortenTail(cloned, BodyRunes(cloned)-max) {
+			break
+		}
+	}
+	return cloned
+}
+
+func cloneDraft(draft map[string]any) (map[string]any, bool) {
+	buf, err := json.Marshal(draft)
+	if err != nil {
+		return nil, false
+	}
+	var out map[string]any
+	if json.Unmarshal(buf, &out) != nil || out == nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func shortenTail(draft map[string]any, overflow int) bool {
+	if overflow < 1 {
+		return false
+	}
+	if cutText(draft, "closing", overflow) {
+		return true
+	}
+	sections, _ := draft["sections"].([]any)
+	for i := len(sections) - 1; i >= 0; i-- {
+		section, _ := sections[i].(map[string]any)
+		if section == nil {
+			continue
+		}
+		if cutList(section, "list", overflow) || cutList(section, "paragraphs", overflow) {
+			return true
+		}
+	}
+	return false
+}
+
+func cutText(holder map[string]any, key string, overflow int) bool {
+	text := asText(holder[key])
+	if text == "" {
+		return false
+	}
+	n := utf8.RuneCountInString(text)
+	if n <= overflow {
+		holder[key] = ""
+		return true
+	}
+	holder[key] = string([]rune(text)[:n-overflow])
+	return true
+}
+
+func cutList(section map[string]any, key string, overflow int) bool {
+	list, _ := section[key].([]any)
+	for i := len(list) - 1; i >= 0; i-- {
+		text := asText(list[i])
+		if text == "" {
+			continue
+		}
+		n := utf8.RuneCountInString(text)
+		if n <= overflow {
+			list[i] = ""
+		} else {
+			list[i] = string([]rune(text)[:n-overflow])
+		}
+		section[key] = list
+		return true
+	}
+	return false
 }
 
 func FindSensitive(payload map[string]any, words []string) []string {

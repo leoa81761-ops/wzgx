@@ -178,6 +178,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/connectivity-test", a.withUser(true, a.adminConnectivity))
 	mux.HandleFunc("GET /api/admin/sensitive-words", a.withUser(true, a.adminGetWords))
 	mux.HandleFunc("PUT /api/admin/sensitive-words", a.withUser(true, a.adminSaveWords))
+	mux.HandleFunc("GET /api/admin/source-domains", a.withUser(true, a.adminGetSourceDomains))
+	mux.HandleFunc("PUT /api/admin/source-domains", a.withUser(true, a.adminSaveSourceDomains))
 	mux.HandleFunc("GET /api/admin/audit-logs", a.withUser(true, a.adminAudit))
 	mux.HandleFunc("GET /{$}", a.spa)
 	mux.HandleFunc("GET /{path...}", a.spa)

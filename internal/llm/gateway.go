@@ -39,6 +39,7 @@ type Completion struct {
 	ProviderName     string
 	Protocol         string
 	Model            string
+	ReasoningEffort  string
 	Attempts         []map[string]any
 }
 
@@ -114,6 +115,11 @@ func AnthropicURL(base string) string {
 	return base + "/v1/messages"
 }
 
+type callLimit struct {
+	timeout  time.Duration
+	attempts int
+}
+
 func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messages []map[string]string, schema *Schema, validate func(map[string]any) (map[string]any, error)) (map[string]any, Completion, error) {
 	if len(providers) == 0 {
 		return nil, Completion{}, &Error{Message: "没有可用的模型服务。请管理员在配置中心添加供应商，或使用模拟模式。"}
@@ -127,11 +133,11 @@ func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messag
 			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "protocol": provider.Protocol, "ok": false, "error": message})
 			continue
 		}
-		completion, err := g.complete(ctx, provider, messages, schema, true)
+		completion, err := g.complete(ctx, provider, messages, schema, true, callLimit{})
 		if err != nil {
 			message := fmt.Sprintf("%s: %s", provider.Name, err.Error())
 			errorsFound = append(errorsFound, message)
-			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": false, "error": clip(err.Error(), 300)})
+			attempts = append(attempts, failureAttempts(provider, completion, err)...)
 			continue
 		}
 		data, err := ParseJSONContent(completion.Content)
@@ -148,7 +154,8 @@ func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messag
 			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": false, "error": clip(err.Error(), 300)})
 			continue
 		}
-		attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": true})
+		attempts = append(attempts, completion.Attempts...)
+		attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": completion.Protocol, "model": provider.Model, "reasoning_effort": completion.ReasoningEffort, "ok": true})
 		completion.Attempts = attempts
 		return validated, completion, nil
 	}
@@ -156,7 +163,7 @@ func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messag
 }
 
 func (g *Gateway) Complete(ctx context.Context, provider Provider, messages []map[string]string) (Completion, error) {
-	return g.complete(ctx, provider, messages, nil, true)
+	return g.complete(ctx, provider, messages, nil, true, callLimit{})
 }
 
 // CompleteFirst 按顺序调用供应商，返回第一份文本。不要求输出是 JSON。默认流式。
@@ -164,8 +171,17 @@ func (g *Gateway) CompleteFirst(ctx context.Context, providers []Provider, messa
 	return g.CompleteText(ctx, providers, messages, schema, true)
 }
 
+// CompleteResearch 用 90 秒超时，并且这一次调用内部不再重试。资料检索自己最多再试一次。
+func (g *Gateway) CompleteResearch(ctx context.Context, providers []Provider, messages []map[string]string) (Completion, error) {
+	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: 90 * time.Second, attempts: 1})
+}
+
 // CompleteText 按顺序调用供应商。stream 为 false 时请求体里写 stream:false。schema 为空时不附带 json_schema。
 func (g *Gateway) CompleteText(ctx context.Context, providers []Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, error) {
+	return g.completeText(ctx, providers, messages, schema, stream, callLimit{})
+}
+
+func (g *Gateway) completeText(ctx context.Context, providers []Provider, messages []map[string]string, schema *Schema, stream bool, limit callLimit) (Completion, error) {
 	if len(providers) == 0 {
 		return Completion{}, &Error{Message: "没有可用的模型服务"}
 	}
@@ -178,31 +194,39 @@ func (g *Gateway) CompleteText(ctx context.Context, providers []Provider, messag
 			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": false, "error": message})
 			continue
 		}
-		completion, err := g.complete(ctx, provider, messages, schema, stream)
+		completion, err := g.complete(ctx, provider, messages, schema, stream, limit)
 		if err != nil {
 			message := provider.Name + ": " + err.Error()
 			errorsFound = append(errorsFound, message)
-			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": false, "error": clip(err.Error(), 300)})
+			attempts = append(attempts, failureAttempts(provider, completion, err)...)
 			continue
 		}
-		attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": true})
+		attempts = append(attempts, completion.Attempts...)
+		attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": completion.Protocol, "model": provider.Model, "reasoning_effort": completion.ReasoningEffort, "ok": true})
 		completion.Attempts = attempts
 		return completion, nil
 	}
 	return Completion{Attempts: attempts}, &Error{Message: "全部模型服务失败：" + strings.Join(errorsFound, "；")}
 }
 
-func (g *Gateway) complete(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, error) {
+func (g *Gateway) complete(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool, limit callLimit) (Completion, error) {
 	if g.Mock || strings.HasPrefix(provider.BaseURL, "mock://") {
 		return mockComplete(provider, messages)
 	}
 	attempts := g.MaxAttempts
+	if limit.attempts > 0 {
+		attempts = limit.attempts
+	}
 	if attempts < 1 {
 		attempts = 1
 	}
+	effort := requestEffort(provider, messages)
+	protocol := provider.Protocol
+	var failed []map[string]any
 	var last error
+	retriedIdle := false
 	for try := 0; try < attempts; try++ {
-		if try > 0 {
+		if try > 0 && !retriedIdle {
 			wait := g.Backoff
 			if wait > 0 {
 				wait = wait * time.Duration(1<<(try-1))
@@ -211,16 +235,31 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 				select {
 				case <-ctx.Done():
 					timer.Stop()
-					return Completion{}, ctx.Err()
+					return Completion{Attempts: failed}, ctx.Err()
 				case <-timer.C:
 				}
 			}
 		}
-		completion, status, err := g.call(ctx, provider, messages, schema, stream)
+		completion, status, err := g.call(ctx, provider, messages, schema, stream, limit.timeout, effort, protocol)
 		if err == nil {
+			completion.Attempts = failed
+			completion.ReasoningEffort = effort
 			return completion, nil
 		}
 		last = err
+		failed = append(failed, map[string]any{
+			"provider_id": provider.ID, "provider_name": provider.Name, "protocol": protocol,
+			"model": provider.Model, "reasoning_effort": effort, "ok": false, "error": clip(err.Error(), 300),
+		})
+		if idleCut(status, err) {
+			if !retriedIdle && try+1 < attempts && canDegrade(effort, protocol, provider) {
+				retriedIdle = true
+				effort, protocol = degrade(effort, protocol, provider)
+				continue
+			}
+			break
+		}
+		retriedIdle = false
 		if !retryable(status, err) || try == attempts-1 {
 			break
 		}
@@ -228,7 +267,112 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 	if last == nil {
 		last = &Error{Message: "模型调用失败"}
 	}
-	return Completion{}, last
+	return Completion{Attempts: failed, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: protocol, Model: provider.Model, ReasoningEffort: effort}, last
+}
+
+func failureAttempts(provider Provider, completion Completion, err error) []map[string]any {
+	if len(completion.Attempts) > 0 {
+		return completion.Attempts
+	}
+	return []map[string]any{{
+		"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol,
+		"model": provider.Model, "ok": false, "error": clip(err.Error(), 300),
+	}}
+}
+
+func applyEffort(body map[string]any, effort string) {
+	if effort == "" {
+		delete(body, "reasoning_effort")
+		return
+	}
+	body["reasoning_effort"] = effort
+}
+
+func requestEffort(provider Provider, messages []map[string]string) string {
+	effort := ""
+	if provider.ExtraParams != nil {
+		effort, _ = provider.ExtraParams["reasoning_effort"].(string)
+	}
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	switch effort {
+	case "low", "medium", "high":
+	default:
+		effort = ""
+	}
+	if effort == "" && longStage(stageFromMessages(messages)) && !skipsEffort(provider.Model) {
+		return "low"
+	}
+	return effort
+}
+
+func stageFromMessages(messages []map[string]string) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i]["role"] != "user" {
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal([]byte(messages[i]["content"]), &payload) != nil || payload == nil {
+			return ""
+		}
+		return asString(payload["环节"])
+	}
+	return ""
+}
+
+func longStage(stage string) bool {
+	switch stage {
+	case "大纲", "正文", "审核", "扩写", "缩写":
+		return true
+	default:
+		return false
+	}
+}
+
+func skipsEffort(model string) bool {
+	name := strings.ToLower(model)
+	return strings.Contains(name, "chat-fast") || strings.Contains(name, "non-reasoning")
+}
+
+func reasoningModel(model string) bool {
+	if skipsEffort(model) {
+		return false
+	}
+	name := strings.ToLower(model)
+	if strings.Contains(name, "imagine") || strings.Contains(name, "image") {
+		return false
+	}
+	return strings.Contains(name, "grok-4") || strings.Contains(name, "grok-composer") || strings.Contains(name, "grok-build")
+}
+
+func canDegrade(effort, protocol string, provider Provider) bool {
+	if effort == "high" || effort == "medium" {
+		return true
+	}
+	return protocol == "openai" && reasoningModel(provider.Model)
+}
+
+func degrade(effort, protocol string, provider Provider) (string, string) {
+	if effort == "high" || effort == "medium" {
+		effort = "low"
+	}
+	if protocol == "openai" && reasoningModel(provider.Model) {
+		protocol = "responses"
+	}
+	return effort, protocol
+}
+
+func idleCut(status int, err error) bool {
+	if status == 522 || status == 524 {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "524") || strings.Contains(msg, "522") {
+		return true
+	}
+	return strings.Contains(msg, "internal_error") || strings.Contains(msg, "stream error")
 }
 
 func retryable(status int, err error) bool {
@@ -245,30 +389,33 @@ func retryable(status int, err error) bool {
 	return false
 }
 
-func (g *Gateway) call(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, int, error) {
-	timeout := provider.Timeout
+func (g *Gateway) call(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool, timeout time.Duration, effort, protocol string) (Completion, int, error) {
+	if timeout <= 0 {
+		timeout = provider.Timeout
+	}
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	switch provider.Protocol {
+	switch protocol {
 	case "anthropic":
-		return g.callAnthropic(ctx, provider, messages, stream)
+		return g.callAnthropic(ctx, provider, messages, stream, effort)
 	case "responses":
-		return g.callResponses(ctx, provider, messages, schema, stream)
+		return g.callResponses(ctx, provider, messages, schema, stream, effort)
 	default:
-		return g.callOpenAI(ctx, provider, messages, schema, stream)
+		return g.callOpenAI(ctx, provider, messages, schema, stream, effort)
 	}
 }
 
-func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, int, error) {
+func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool, effort string) (Completion, int, error) {
 	body := PublicParams(provider.ExtraParams)
 	msgs := make([]map[string]string, len(messages))
 	copy(msgs, messages)
 	body["model"] = provider.Model
 	body["messages"] = msgs
 	body["stream"] = stream
+	applyEffort(body, effort)
 	applyChatSchema(body, schema)
 	raw, status, err := g.post(ctx, OpenAIURL(provider.BaseURL), openAIHeaders(provider), body)
 	if err != nil {
@@ -278,10 +425,10 @@ func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []
 	if err != nil {
 		return Completion{}, status, err
 	}
-	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "openai", Model: provider.Model}, status, nil
+	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "openai", Model: provider.Model, ReasoningEffort: effort}, status, nil
 }
 
-func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages []map[string]string, stream bool) (Completion, int, error) {
+func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages []map[string]string, stream bool, effort string) (Completion, int, error) {
 	var systemParts []string
 	var chat []map[string]string
 	for _, message := range messages {
@@ -306,6 +453,7 @@ func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages
 	}
 	body["messages"] = chat
 	body["stream"] = stream
+	applyEffort(body, effort)
 	if len(systemParts) > 0 {
 		body["system"] = strings.Join(systemParts, "\n")
 	}
@@ -317,10 +465,10 @@ func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages
 	if err != nil {
 		return Completion{}, status, err
 	}
-	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "anthropic", Model: provider.Model}, status, nil
+	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "anthropic", Model: provider.Model, ReasoningEffort: effort}, status, nil
 }
 
-func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, int, error) {
+func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool, effort string) (Completion, int, error) {
 	body := PublicParams(provider.ExtraParams)
 	input := make([]map[string]string, 0, len(messages))
 	for _, message := range messages {
@@ -333,6 +481,7 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 	body["model"] = provider.Model
 	body["input"] = input
 	body["stream"] = stream
+	applyEffort(body, effort)
 	delete(body, "messages")
 	if schema != nil && schema.Body != nil {
 		if _, exists := body["text"]; !exists {
@@ -354,7 +503,7 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 	if err != nil {
 		return Completion{}, status, err
 	}
-	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "responses", Model: provider.Model}, status, nil
+	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "responses", Model: provider.Model, ReasoningEffort: effort}, status, nil
 }
 
 func openAIHeaders(provider Provider) map[string]string {
@@ -484,6 +633,8 @@ func readResponses(raw []byte) (string, int, int, error) {
 			return nil
 		}
 		switch asString(chunk["type"]) {
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			// 思考过程的增量会刷新 Cloudflare 的空闲窗口。正文只取 output_text。
 		case "response.output_text.delta":
 			text.WriteString(asString(chunk["delta"]))
 		case "response.output_text.done":

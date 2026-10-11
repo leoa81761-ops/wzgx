@@ -192,6 +192,9 @@ func TestStagePromptCarriesSchemaAndOpenAISendsIt(t *testing.T) {
 	if _, ok := seen["max_tokens"]; ok {
 		t.Fatal("openai adapter should not invent max_tokens")
 	}
+	if _, ok := seen["reasoning_effort"]; ok {
+		t.Fatalf("topic should not set reasoning_effort: %#v", seen["reasoning_effort"])
+	}
 }
 
 func TestResponsesStreamingShape(t *testing.T) {
@@ -229,5 +232,129 @@ func TestResponsesStreamingShape(t *testing.T) {
 	}
 	if ResponsesURL("https://ai.1so.org/v1") != "https://ai.1so.org/v1/responses" {
 		t.Fatal(ResponsesURL("https://ai.1so.org/v1"))
+	}
+}
+
+func TestLongStageDefaultsEffortLow(t *testing.T) {
+	seen := map[string]map[string]any{}
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		model, _ := body["model"].(string)
+		seen[model] = body
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":\"好\"}"}}]}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1}
+	messages := StageMessages("正文", map[string]any{"word_target": 1500})
+	accept := func(item map[string]any) (map[string]any, error) { return item, nil }
+	_, _, err := gw.CompleteJSON(context.Background(), []Provider{{
+		Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7", Timeout: 5 * time.Second,
+	}}, messages, nil, accept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = gw.CompleteJSON(context.Background(), []Provider{{
+		Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-chat-fast", Timeout: 5 * time.Second,
+	}}, messages, nil, accept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 || !strings.Contains(paths[0], "/chat/completions") || !strings.Contains(paths[1], "/chat/completions") {
+		t.Fatalf("paths %#v", paths)
+	}
+	if seen["grok-4.7"]["reasoning_effort"] != "low" || seen["grok-4.7"]["stream"] != true {
+		t.Fatalf("%#v", seen["grok-4.7"])
+	}
+	if _, ok := seen["grok-chat-fast"]["reasoning_effort"]; ok {
+		t.Fatalf("chat-fast should not receive reasoning_effort: %#v", seen["grok-chat-fast"]["reasoning_effort"])
+	}
+}
+
+func TestIdleCutRetriesWithResponses(t *testing.T) {
+	var calls int
+	var efforts []any
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		paths = append(paths, r.URL.Path)
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		efforts = append(efforts, body["reasoning_effort"])
+		if calls == 1 {
+			if !strings.Contains(r.URL.Path, "/chat/completions") {
+				t.Errorf("first path %s", r.URL.Path)
+			}
+			w.WriteHeader(524)
+			_, _ = w.Write([]byte("error code: 524"))
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			t.Errorf("retry path %s", r.URL.Path)
+		}
+		if body["stream"] != true || body["reasoning_effort"] != "low" {
+			t.Errorf("retry body %#v", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先想一下\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"title\\\":\\\"好\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 3, Backoff: time.Second}
+	messages := StageMessages("正文", map[string]any{"word_target": 1500})
+	_, completion, err := gw.CompleteJSON(context.Background(), []Provider{{
+		ID: 7, Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
+		ExtraParams: map[string]any{"reasoning_effort": "high"}, Timeout: 5 * time.Second,
+	}}, messages, nil, func(item map[string]any) (map[string]any, error) {
+		return item, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || efforts[0] != "high" || efforts[1] != "low" {
+		t.Fatalf("calls %d efforts %#v paths %#v", calls, efforts, paths)
+	}
+	if len(completion.Attempts) != 2 || completion.Attempts[0]["ok"] != false || completion.Attempts[1]["ok"] != true {
+		t.Fatalf("%#v", completion.Attempts)
+	}
+	if completion.Attempts[0]["protocol"] != "openai" || completion.Attempts[1]["protocol"] != "responses" {
+		t.Fatalf("%#v", completion.Attempts)
+	}
+	if completion.Protocol != "responses" || completion.ReasoningEffort != "low" {
+		t.Fatalf("%#v", completion)
+	}
+}
+
+func TestIdleCutDetection(t *testing.T) {
+	if !idleCut(524, nil) || !idleCut(522, nil) {
+		t.Fatal("status")
+	}
+	if !idleCut(0, &Error{Message: "网络错误：http2: stream error: stream ID 1; INTERNAL_ERROR; received from peer"}) {
+		t.Fatal("stream")
+	}
+	if idleCut(400, &Error{Message: "HTTP 400：bad request"}) {
+		t.Fatal("plain 400 should not look like an idle cut")
+	}
+}
+
+func TestCompleteResearchDoesNotRetryInsideGateway(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte("upstream"))
+	}))
+	defer srv.Close()
+	gw := NewGateway(false, srv.Client())
+	gw.MaxAttempts = 3
+	gw.Backoff = time.Millisecond
+	_, err := gw.CompleteResearch(context.Background(), []Provider{{
+		Name: "检索", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 30 * time.Second,
+	}}, []map[string]string{{"role": "user", "content": "{}"}})
+	if err == nil || calls != 1 {
+		t.Fatalf("calls %d err %v", calls, err)
 	}
 }

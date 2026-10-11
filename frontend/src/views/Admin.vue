@@ -151,6 +151,11 @@
       <p class="muted">每行一个。内置词会始终生效，这里是额外补充。</p>
       <textarea v-model="words" rows="8"></textarea>
       <button class="btn" type="button" @click="saveWords">保存</button>
+      <h2>来源域名</h2>
+      <p class="muted">资料检索会丢掉屏蔽名单里的网站。允许名单不为空时，只保留这些域名。每行一个，例如 xilu.com。还没保存过时，屏蔽名单使用内置的聚合站。</p>
+      <label>屏蔽<textarea v-model="blockedDomains" rows="6"></textarea></label>
+      <label>允许<textarea v-model="allowedDomains" rows="4"></textarea></label>
+      <button class="btn" type="button" @click="saveDomains">保存来源域名</button>
     </section>
   </div>
 </template>
@@ -180,6 +185,8 @@ const orders = reactive({});
 const pick = reactive({});
 const editingId = ref(0);
 const words = ref("");
+const blockedDomains = ref("");
+const allowedDomains = ref("");
 const probeText = ref("");
 const wechat = reactive({ mode: "mock", api_base: "https://api.weixin.qq.com", public_egress_ip: "" });
 const provider = reactive({
@@ -279,6 +286,9 @@ async function load() {
   Object.assign(wechat, await api("/api/admin/wechat"));
   const wordData = await api("/api/admin/sensitive-words");
   words.value = (wordData.custom || []).join("\n");
+  const domainData = await api("/api/admin/source-domains");
+  blockedDomains.value = (domainData.block || []).join("\n");
+  allowedDomains.value = (domainData.allow || []).join("\n");
 }
 
 async function setActive(user, active) {
@@ -438,6 +448,25 @@ async function saveWords() {
     const list = words.value.split(/\n+/).map((item) => item.trim()).filter(Boolean);
     await api("/api/admin/sensitive-words", { method: "PUT", body: { words: list } });
     message.value = "敏感词已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+function domainLines(text) {
+  return text.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+}
+
+async function saveDomains() {
+  error.value = "";
+  try {
+    const saved = await api("/api/admin/source-domains", {
+      method: "PUT",
+      body: { block: domainLines(blockedDomains.value), allow: domainLines(allowedDomains.value) },
+    });
+    blockedDomains.value = (saved.block || []).join("\n");
+    allowedDomains.value = (saved.allow || []).join("\n");
+    message.value = "来源域名已保存";
   } catch (err) {
     error.value = err.message;
   }

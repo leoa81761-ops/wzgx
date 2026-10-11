@@ -937,6 +937,75 @@ func (a *App) adminSaveWords(w http.ResponseWriter, r *http.Request, admin *mode
 	return nil
 }
 
+func (a *App) adminGetSourceDomains(w http.ResponseWriter, r *http.Request, _ *model.User) error {
+	row, err := a.Store.FindService(r.Context(), nil, "audit", "source_domains")
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		writeJSON(w, 200, map[string]any{"block": content.DefaultBlockedDomains, "allow": []string{}, "using_defaults": true})
+		return nil
+	}
+	block := stringList(row.ExtraParams["block"])
+	allow := stringList(row.ExtraParams["allow"])
+	if block == nil {
+		block = []string{}
+	}
+	if allow == nil {
+		allow = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"block": block, "allow": allow, "using_defaults": false})
+	return nil
+}
+
+type domainsBody struct {
+	Block []string `json:"block"`
+	Allow []string `json:"allow"`
+}
+
+func (a *App) adminSaveSourceDomains(w http.ResponseWriter, r *http.Request, admin *model.User) error {
+	var body domainsBody
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	block := content.NormalizeDomains(body.Block)
+	allow := content.NormalizeDomains(body.Allow)
+	now := time.Now().UTC()
+	err := a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		row, err := a.Store.FindService(r.Context(), tx, "audit", "source_domains")
+		if err != nil {
+			return err
+		}
+		params := map[string]any{"block": block, "allow": allow}
+		if row == nil {
+			row = &model.ServiceConfig{
+				ConfigType: "audit", Name: "source_domains", Protocol: "local", Enabled: true,
+				UpdatedAt: now, ExtraHeaders: map[string]string{}, ExtraParams: params,
+			}
+			if err := a.Store.InsertService(r.Context(), tx, row); err != nil {
+				return err
+			}
+		} else {
+			row.ExtraParams = params
+			row.UpdatedAt = now
+			if err := a.Store.UpdateService(r.Context(), tx, row); err != nil {
+				return err
+			}
+		}
+		actor := admin.ID
+		return a.Store.InsertAudit(r.Context(), tx, model.AuditLog{
+			ActorID: &actor, Action: "source_domains", Target: "audit",
+			Detail: strconv.Itoa(len(block)) + " 个屏蔽，" + strconv.Itoa(len(allow)) + " 个允许", CreatedAt: now,
+		})
+	})
+	if err != nil {
+		return err
+	}
+	a.Cache.Invalidate()
+	writeJSON(w, 200, map[string]any{"block": block, "allow": allow, "using_defaults": false})
+	return nil
+}
+
 func stringList(v any) []string {
 	switch items := v.(type) {
 	case []string:
