@@ -12,6 +12,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/pipeline"
+	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 )
@@ -161,6 +162,9 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 		}(id)
 	}
 	wg.Wait()
+	publish.Drain(ctx, publish.Deps{
+		Store: r.Deps.Store, Settings: r.Deps.Settings, HTTP: r.Deps.HTTP, Tokens: r.Deps.Tokens, Notifier: r.Deps.Notifier,
+	}, now)
 	return claimed, nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/notify"
+	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/render"
 	"github.com/leoa81761-ops/wzgx/internal/risk"
@@ -634,6 +635,7 @@ func placeDraft(ctx context.Context, client wechat.Client, existing string, draf
 }
 
 func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[string]any, now time.Time) {
+	var publishNow int64
 	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		task, err := deps.Store.GetTask(ctx, tx, taskID)
 		if err != nil || task == nil || task.ArticleID == nil {
@@ -676,6 +678,18 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		}
 		if err := deps.Store.UpdateArticle(ctx, tx, article); err != nil {
 			return err
+		}
+		if article.Status == "in_draft" {
+			id, immediate, armErr := publish.Arm(ctx, publishDeps(deps), tx, article, plan, now)
+			if armErr != nil {
+				article.Status = "in_draft"
+				article.DeliveryNote = joinNote(article.DeliveryNote, "自动发布未能排上，稿件已在草稿箱")
+				if err := deps.Store.UpdateArticle(ctx, tx, article); err != nil {
+					return err
+				}
+			} else if immediate {
+				publishNow = id
+			}
 		}
 		if task.TriggerType != "regenerate" {
 			if err := deps.Store.InsertCoverage(ctx, tx, &model.TopicCoverage{PlanID: plan.ID, Subtopic: topic.Subtopic, ColumnType: topic.Column, Angle: topic.Angle, TopicTag: topic.TopicTag, CreatedAt: now}); err != nil {
@@ -722,6 +736,9 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		}
 		return deps.Store.UpdatePlan(ctx, tx, plan)
 	})
+	if publishNow > 0 {
+		publish.TryArticle(ctx, publishDeps(deps), publishNow)
+	}
 	if str(result["status"]) == "held" {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "risk", "有一篇稿没有写入草稿", str(result["delivery_note"]))
 	}
@@ -804,6 +821,22 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 	if final && userID > 0 {
 		emitNotice(ctx, deps, userID, "failure", "生成失败", message)
 	}
+}
+
+func publishDeps(deps Deps) publish.Deps {
+	return publish.Deps{Store: deps.Store, Settings: deps.Settings, HTTP: deps.HTTP, Tokens: deps.Tokens, Notifier: deps.Notifier}
+}
+
+func joinNote(a, b string) string {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" {
+		return b
+	}
+	if b == "" || strings.Contains(a, b) {
+		return a
+	}
+	return a + " " + b
 }
 
 func emitNotice(ctx context.Context, deps Deps, userID int64, kind, title, body string) {

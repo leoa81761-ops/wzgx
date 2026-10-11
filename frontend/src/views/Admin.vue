@@ -179,6 +179,19 @@
       <p v-if="!complaints.length" class="muted">暂无投诉。</p>
     </section>
 
+    <section v-if="tab === 'orders'" class="stack">
+      <p class="muted">退款只改订单标记，不改会员档位。真正退款请到微信商户平台或支付宝后台操作。</p>
+      <article v-for="item in payOrders" :key="item.id" class="card stack">
+        <div class="split">
+          <strong>{{ item.account || item.user_id }} · {{ item.tier }} / {{ item.period }}</strong>
+          <span class="pill">{{ item.status }}</span>
+        </div>
+        <p class="muted">{{ item.provider }} · {{ item.out_trade_no }} · {{ (item.amount_cents / 100).toFixed(2) }} 元</p>
+        <button v-if="item.status === 'paid'" class="btn-ghost" type="button" @click="refundOrder(item)">标记已退款</button>
+      </article>
+      <p v-if="!payOrders.length" class="muted">暂无订单。</p>
+    </section>
+
     <section v-if="tab === 'words'" class="card stack" style="max-width: 640px">
       <h2>敏感词</h2>
       <p class="muted">每行一个。内置词会始终生效，这里是额外补充。</p>
@@ -275,6 +288,7 @@ const tabs = [
   { key: "words", label: "敏感词" },
   { key: "tasks", label: "任务" },
   { key: "complaints", label: "投诉" },
+  { key: "orders", label: "订单" },
   { key: "library", label: "内容库" },
 ];
 const tab = ref("models");
@@ -295,6 +309,7 @@ const blockedDomains = ref("");
 const allowedDomains = ref("");
 const tasks = ref([]);
 const complaints = ref([]);
+const payOrders = ref([]);
 const styles = ref([]);
 const templates = ref([]);
 const verticals = ref([]);
@@ -406,9 +421,22 @@ async function load() {
   allowedDomains.value = (domainData.allow || []).join("\n");
   tasks.value = await api("/api/admin/tasks");
   complaints.value = await api("/api/admin/complaints");
+  payOrders.value = await api("/api/admin/orders");
   styles.value = await api("/api/admin/styles");
   templates.value = await api("/api/admin/templates");
   verticals.value = await api("/api/admin/verticals");
+}
+
+async function refundOrder(item) {
+  error.value = "";
+  message.value = "";
+  try {
+    const saved = await api(`/api/admin/orders/${item.id}/refund`, { method: "POST" });
+    message.value = saved.message || "已标记退款";
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
 }
 
 async function replyComplaint(item) {

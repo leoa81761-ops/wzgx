@@ -125,12 +125,22 @@ type Client interface {
 	GetDraft(ctx context.Context, mediaID string) (map[string]any, error)
 	DeleteDraft(ctx context.Context, mediaID string) error
 	DraftCount(ctx context.Context) (int, error)
+	ProbePublish(ctx context.Context) (bool, string, error)
+	SubmitPublish(ctx context.Context, mediaID string) (string, error)
+	GetPublish(ctx context.Context, publishID string) (PublishState, error)
+}
+
+// PublishState 是 freepublish/get 的结果。Status 0 成功，1 发布中，其余为失败。
+type PublishState struct {
+	Status int
+	URL    string
 }
 
 type PermissionReport struct {
 	OK           bool
 	AuthFailed   bool
 	CanDraft     bool
+	CanPublish   bool
 	DeliveryMode string
 	Checks       []map[string]any
 }
@@ -140,6 +150,7 @@ type mockBox struct {
 	materials map[string]int
 	drafts    map[string]map[string]any
 	images    map[string]string
+	publishes map[string]PublishState
 	token     string
 }
 
@@ -165,7 +176,7 @@ func newMock(appID, secret, base string) *MockClient {
 	mockMu.Lock()
 	box := mockStore[appID]
 	if box == nil {
-		box = &mockBox{materials: map[string]int{}, drafts: map[string]map[string]any{}, images: map[string]string{}, token: "mock-token-" + appID}
+		box = &mockBox{materials: map[string]int{}, drafts: map[string]map[string]any{}, images: map[string]string{}, publishes: map[string]PublishState{}, token: "mock-token-" + appID}
 		mockStore[appID] = box
 	}
 	mockMu.Unlock()
@@ -254,6 +265,32 @@ func (c *MockClient) DraftCount(context.Context) (int, error) {
 	c.box.mu.Lock()
 	defer c.box.mu.Unlock()
 	return len(c.box.drafts), nil
+}
+
+func (c *MockClient) ProbePublish(context.Context) (bool, string, error) {
+	return true, "模拟环境不调用发布接口，是否可发布以绑定的企业已认证信息为准", nil
+}
+
+func (c *MockClient) SubmitPublish(_ context.Context, mediaID string) (string, error) {
+	c.box.mu.Lock()
+	defer c.box.mu.Unlock()
+	if _, ok := c.box.drafts[mediaID]; !ok {
+		return "", &Error{Message: "找不到草稿"}
+	}
+	delete(c.box.drafts, mediaID)
+	id := "mock_pub_" + shortID()
+	c.box.publishes[id] = PublishState{Status: 0, URL: "https://mp.weixin.qq.com/s/" + id}
+	return id, nil
+}
+
+func (c *MockClient) GetPublish(_ context.Context, publishID string) (PublishState, error) {
+	c.box.mu.Lock()
+	defer c.box.mu.Unlock()
+	state, ok := c.box.publishes[publishID]
+	if !ok {
+		return PublishState{}, &Error{Message: "找不到发布单"}
+	}
+	return state, nil
 }
 
 var idMu sync.Mutex
@@ -408,6 +445,54 @@ func (c *LiveClient) GetDraft(ctx context.Context, mediaID string) (map[string]a
 func (c *LiveClient) DeleteDraft(ctx context.Context, mediaID string) error {
 	_, err := c.request(ctx, http.MethodPost, "/cgi-bin/draft/delete", map[string]any{"media_id": mediaID}, true)
 	return err
+}
+
+func (c *LiveClient) ProbePublish(ctx context.Context) (bool, string, error) {
+	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/account/getaccountbasicinfo", map[string]any{}, true)
+	if err != nil {
+		return false, err.Error(), nil
+	}
+	principal := intOf(data["principal_type"])
+	verified := false
+	if info, ok := data["wx_verify_info"].(map[string]any); ok {
+		verified, _ = info["qualification_verify"].(bool)
+	}
+	if verified && principal != 0 {
+		return true, "已认证且不是个人主体", nil
+	}
+	return false, "未认证或个人主体，不能自动发布", nil
+}
+
+func (c *LiveClient) SubmitPublish(ctx context.Context, mediaID string) (string, error) {
+	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/freepublish/submit", map[string]any{"media_id": mediaID}, true)
+	if err != nil {
+		return "", err
+	}
+	switch id := data["publish_id"].(type) {
+	case string:
+		if id != "" {
+			return id, nil
+		}
+	case float64:
+		return fmt.Sprintf("%.0f", id), nil
+	}
+	return "", &Error{Message: "发布接口没有返回 publish_id，为避免重复发布不再重试"}
+}
+
+func (c *LiveClient) GetPublish(ctx context.Context, publishID string) (PublishState, error) {
+	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/freepublish/get", map[string]any{"publish_id": publishID}, true)
+	if err != nil {
+		return PublishState{}, err
+	}
+	state := PublishState{Status: intOf(data["publish_status"])}
+	if detail, ok := data["article_detail"].(map[string]any); ok {
+		if items, ok := detail["item"].([]any); ok && len(items) > 0 {
+			if item, ok := items[0].(map[string]any); ok {
+				state.URL, _ = item["article_url"].(string)
+			}
+		}
+	}
+	return state, nil
 }
 
 func (c *LiveClient) DraftCount(ctx context.Context) (int, error) {
@@ -645,10 +730,31 @@ func CheckPermissions(ctx context.Context, client Client, cover []byte) Permissi
 		return PermissionReport{OK: true, AuthFailed: false, CanDraft: false, DeliveryMode: "export", Checks: checks}
 	}
 	checks = append(checks, map[string]any{"name": "draft_write", "ok": true, "detail": "草稿写入与读取成功"})
+	canPublish, detail, err := client.ProbePublish(ctx)
+	if err != nil {
+		detail = err.Error()
+	}
+	if detail == "" {
+		detail = "未探测发布权限"
+	}
+	checks = append(checks, map[string]any{"name": "publish_probe", "ok": canPublish, "detail": detail})
 	if err := client.DeleteDraft(ctx, probeID); err != nil {
 		checks = append(checks, map[string]any{"name": "draft_cleanup", "ok": false, "detail": "检测草稿未能删除：" + err.Error()})
 	} else {
 		checks = append(checks, map[string]any{"name": "draft_cleanup", "ok": true, "detail": "检测草稿已删除"})
 	}
-	return PermissionReport{OK: true, AuthFailed: false, CanDraft: true, DeliveryMode: "draft", Checks: checks}
+	return PermissionReport{OK: true, AuthFailed: false, CanDraft: true, CanPublish: canPublish, DeliveryMode: "draft", Checks: checks}
+}
+
+// MockPublishCount 返回模拟环境里已经提交过的发布单数量，测试用来确认没有重复提交。
+func MockPublishCount(appID string) int {
+	mockMu.Lock()
+	box := mockStore[appID]
+	mockMu.Unlock()
+	if box == nil {
+		return 0
+	}
+	box.mu.Lock()
+	defer box.mu.Unlock()
+	return len(box.publishes)
 }

@@ -23,7 +23,7 @@
       </label>
       <label class="check" v-if="form.subject_type === 'enterprise'">
         <input v-model="form.verified" type="checkbox" />
-        <span>已认证（自动发布尚未开放，仍然只写草稿箱）</span>
+        <span>已认证（可在写作计划里开启自动发布，默认关闭）</span>
       </label>
       <label class="check">
         <input v-model="form.consent" type="checkbox" />

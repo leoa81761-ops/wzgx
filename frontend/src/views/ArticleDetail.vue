@@ -5,13 +5,14 @@
         <p class="muted">{{ article.subtopic }} · {{ article.column_type }}</p>
         <h1 style="font-size: 32px">{{ article.title }}</h1>
       </div>
-      <span class="pill" :class="article.status === 'in_draft' ? 'ok' : article.status === 'failed' ? 'bad' : 'warn'">{{ article.status_label }}</span>
+      <span class="pill" :class="article.status === 'in_draft' || article.status === 'published' ? 'ok' : article.status === 'failed' || article.status === 'publish_failed' ? 'bad' : 'warn'">{{ article.status_label }}</span>
     </div>
     <p v-if="article.status === 'generating'" class="banner info">正在生成，完成后会自动刷新。模型较慢时可能要几分钟。</p>
     <p v-if="article.failure_reason" class="banner">{{ article.failure_reason }}</p>
     <p v-if="article.delivery_note" class="banner info">{{ article.delivery_note }}</p>
     <p v-if="article.risk_level && article.risk_level !== 'low'" class="banner">{{ article.risk_label }}</p>
     <p v-if="article.draft_media_id" class="muted">草稿 media_id：{{ article.draft_media_id }}</p>
+    <p v-if="article.article_url" class="muted">发布链接：{{ article.article_url }}</p>
     <p v-if="themeNote" class="muted">{{ themeNote }}</p>
     <label>排版预览
       <select v-model="previewTemplate" @change="load(dark ? 'dark' : 'light')">

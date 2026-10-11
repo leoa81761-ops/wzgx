@@ -345,6 +345,50 @@ CREATE TABLE IF NOT EXISTS tier_change (
   pending_expires_at TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS plan_publish (
+  plan_id BIGINT NOT NULL PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  delay_minutes INTEGER NOT NULL DEFAULT 30,
+  consented_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS article_publish (
+  article_id BIGINT NOT NULL PRIMARY KEY,
+  status TEXT NOT NULL,
+  publish_id TEXT NOT NULL DEFAULT '',
+  article_url TEXT NOT NULL DEFAULT '',
+  scheduled_at TEXT NOT NULL,
+  submitted_at TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  polls INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS publish_usage (
+  wx_account_id INTEGER NOT NULL,
+  day_key TEXT NOT NULL,
+  calls INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (wx_account_id, day_key)
+);
+
+CREATE TABLE IF NOT EXISTS pay_order (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  out_trade_no TEXT NOT NULL UNIQUE,
+  provider TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'qr',
+  tier TEXT NOT NULL,
+  period TEXT NOT NULL DEFAULT 'month',
+  amount_cents INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  code_url TEXT NOT NULL DEFAULT '',
+  pay_url TEXT NOT NULL DEFAULT '',
+  provider_trade_no TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  paid_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pay_user ON pay_order(user_id, id);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	for _, stmt := range strings.Split(schema, ";") {

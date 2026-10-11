@@ -1,7 +1,6 @@
 package server
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
-	"github.com/leoa81761-ops/wzgx/internal/pay"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 	"github.com/leoa81761-ops/wzgx/internal/security"
@@ -519,33 +517,5 @@ func (a *App) deleteMe(w http.ResponseWriter, r *http.Request, user *model.User)
 		return err
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
-	return nil
-}
-
-func (a *App) checkout(w http.ResponseWriter, r *http.Request, user *model.User) error {
-	var body struct {
-		Tier string `json:"tier"`
-	}
-	if err := readJSON(r, &body); err != nil {
-		return err
-	}
-	tier := strings.TrimSpace(body.Tier)
-	switch tier {
-	case "standard", "premium", "lifetime":
-	default:
-		return bad("请选择要开通的档位")
-	}
-	provider := pay.Get("manual")
-	result, err := provider.Create(r.Context(), pay.Order{UserID: user.ID, Tier: tier})
-	if err != nil && !errors.Is(err, pay.ErrComingSoon) {
-		return err
-	}
-	message := result.Message
-	if message == "" {
-		message = "即将开通"
-	}
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"detail": message, "provider": provider.Name(), "status": "coming_soon",
-	})
 	return nil
 }
