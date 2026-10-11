@@ -8,10 +8,12 @@ import (
 )
 
 func StageMessages(stageLabel string, payload map[string]any) []map[string]string {
-	system := "你是公众号写作助手。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要输出 HTML。" +
-		"不得编造具体政策、标准、新闻事件、统计数据、人名引语。" +
+	schema := StageSchema(stageLabel)
+	system := "你是公众号写作助手。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要输出解释或 HTML。" +
+		"字段必须和下面的 JSON Schema 完全一致，不要增加字段，字符串字段没有内容时用空字符串，数组没有内容时用空数组。" +
+		"不得编造具体政策、标准、新闻事件、统计数据、人名引语。输入里如果有 research_notes 或 research_sources，事实和 sources 只能来自这些材料，没有就不要写具体数据和网址。" +
 		"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
-		"免费或无来源时不要给出参考网址。"
+		"免费或无来源时 sources 必须是空数组。\nJSON Schema：\n" + schemaText(schema)
 	body := map[string]any{"环节": stageLabel}
 	for key, value := range payload {
 		body[key] = value
@@ -48,6 +50,8 @@ func mockComplete(provider Provider, messages []map[string]string) (Completion, 
 
 func MockForStage(stage string, payload map[string]any) map[string]any {
 	switch stage {
+	case "资料检索":
+		return map[string]any{"notes": "", "sources": []any{}}
 	case "选题":
 		title := asString(payload["subtopic"])
 		if title == "" {

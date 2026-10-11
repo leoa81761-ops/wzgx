@@ -42,7 +42,7 @@ func Load() Settings {
 	if interval < 5 {
 		interval = 5
 	}
-	stale := envInt("STALE_TASK_SECONDS", 900)
+	stale := envInt("STALE_TASK_SECONDS", 3600)
 	if stale < 60 {
 		stale = 60
 	}

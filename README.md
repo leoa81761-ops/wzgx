@@ -40,21 +40,42 @@ P0 里每个公众号每天仍然只有 1 批。高级版「一个号一天多�
 
 | 字段 | 说明 |
 | --- | --- |
-| 协议 | `openai`：OpenAI 兼容 Chat Completions。`anthropic`：Anthropic Messages API |
-| Base URL | 自定义地址。`https://host/v1` 会分别补成 `/chat/completions` 或 `/v1/messages`；如果已经写到完整路径则原样使用 |
+| 用途 | 文本写作，或封面生图 |
+| 协议 | `openai`：Chat Completions。`responses`：OpenAI Responses API（`/v1/responses`）。`anthropic`：Messages API。封面生图固定走 OpenAI 兼容的 `/v1/images/generations` |
+| Base URL | 自定义地址。`https://host/v1` 会补成 `/chat/completions`、`/responses` 或 `/images/generations`；`anthropic` 在没有 `/v1` 时补 `/v1/messages`。已经写到完整路径则原样使用 |
 | API Key | 加密后存进 `service_config`。界面只显示末四位。留空表示修改其他字段时不更换密钥 |
 | 模型名 | 写入请求体的 `model`。即使额外参数里也带了 `model`，也以这个字段为准 |
+| 推理档位 | 不发送 / `low` / `medium` / `high`。会写成请求里的 `reasoning_effort`。推理模型不要再在额外参数里放很小的 `max_tokens` |
+| 超时 | 5 到 600 秒。流式响应用来避开前置代理大约 120 秒的空闲切断，推理模型建议 300 秒或更长 |
 | 额外请求头 | JSON 对象，合并进请求头，可以覆盖适配器默认的 `Authorization` 或 `x-api-key` |
 | 额外参数 | JSON 对象，合并进请求体，例如 `{"temperature": 0.7}`。以 `_` 开头的键是内部保留字段，不会发给上游 |
 
-环节路由在「配置中心 → 环节路由」。选题、大纲、正文、审核可以各自指定一串模型，**顺序就是回退顺序**：前一个超时、HTTP 错误或返回的不是合法 JSON，就换下一个。路由可以按会员档位区分；某一档没有专属路由时，使用「全部档位」。
+每个环节的提示词都写明了要输出的 JSON Schema。`openai` 和 `responses` 会自动带上 `response_format` / `text.format` 的 `json_schema`（`strict: true`）。模型如果忽略它、返回 Markdown，程序仍会从文本里抽出 JSON；资料检索还会从 Markdown 链接里提取来源。
+
+环节路由在「配置中心 → 环节路由」。选题、资料检索、大纲、正文、审核可以各自指定一串模型，**顺序就是回退顺序**：前一个超时、HTTP 错误或返回的不是合法 JSON，就换下一个。路由可以按会员档位区分；某一档没有专属路由时，使用「全部档位」。资料检索是例外：没有单独配置就不会联网，也不会借用其它环节的模型。免费档不检索。
 
 如果一个环节既没有路由，也没有启用的模型：
 
 - `LLM_MODE=mock`（默认）：使用内置模拟写手，不访问网络，本地和测试能走完「立即生成」。
 - `LLM_MODE=live`：任务失败并退回额度，提示管理员先配置模型。
 
-真实调用使用流式响应（`stream: true`），带超时和指数退避。429 / 5xx / 网络错误会重试；模型把内容返回成无法解析的 JSON 时不重试，直接换下一个供应商。`access_token` 和后台配置都有进程内缓存。
+真实调用使用流式响应（`stream: true`），带超时和指数退避。429 / 5xx / 网络错误会重试；模型把内容返回成无法解析的 JSON 时不重试，直接换下一个供应商。Chat Completions 不会擅自加上很小的 `max_tokens`。Anthropic 在管理员没写 `max_tokens` 时用 16384，避免推理把额度花完后没有正文。`access_token` 和后台配置都有进程内缓存。
+
+「立即生成」和「重新生成」只负责入队，接口马上返回「生成中」。文章页和文章列表会轮询，完成后刷新。任务的 `duration_ms` 从开始写到结束，而不是只记入队那一瞬间。
+
+## 封面和资料检索
+
+封面：在模型里把用途选成「封面生图」，协议用 `openai`，Base URL 写到 `/v1`，模型名填生图模型。请求会带 `aspect_ratio: 16:9`。返回 `b64_json` 或图片 URL 都可以（URL 会再下载）。失败时改用内置纯色封面，文章仍然可以进草稿箱。
+
+资料检索：给「资料检索」单独配一个会联网的文本模型。付费档会在选题之后先检索，把摘要交给大纲和正文，并把来源写进文末「参考来源」。检索模型返回 Markdown 而不是 JSON 时，仍会提取链接。没配这个环节就跳过，不因此失败。
+
+以 `https://ai.1so.org` 为例（密钥只放后台或环境变量）：
+
+| 用途 | 协议 | Base URL | 模型 |
+| --- | --- | --- | --- |
+| 选题 / 大纲 / 正文 / 审核 | `openai` 或 `responses` | `https://ai.1so.org/v1` | `grok-4.7`，推理档位按需要选 `low` / `medium` / `high`，超时 300–600 秒 |
+| 资料检索 | `openai` | `https://ai.1so.org/v1` | `grok-chat-fast` |
+| 封面生图 | `openai`（用途选封面） | `https://ai.1so.org/v1` | `grok-imagine-image-2.0` |
 
 ## 本地运行
 
@@ -197,9 +218,9 @@ Compose 和 `.env.example` 里的 `MAX_CONCURRENCY` 就是 1024。单机 `go run
 | `PUBLIC_EGRESS_IP` | 展示在绑定教程中，方便用户去填 IP 白名单 |
 | `SCHEDULER_ENABLED` | 是否在进程内跑定时扫描 |
 | `SCHEDULER_INTERVAL_SECONDS` | 扫描间隔，默认 60，最小 5 |
-| `STALE_TASK_SECONDS` | 卡在「生成中」超过这个秒数就重新排队，默认 900 |
+| `STALE_TASK_SECONDS` | 卡在「生成中」超过这个秒数就重新排队，默认 3600。推理模型单篇可能要好几分钟，不要改回几十秒 |
 | `WX_APP_ID` / `WX_APP_SECRET` | 只给 `gonghao probe` 和后台真实连通测试用 |
-| `LLM_PROTOCOL` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 连通测试使用的模型。协议是 `openai` 或 `anthropic` |
+| `LLM_PROTOCOL` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 连通测试使用的模型。协议是 `openai`、`responses` 或 `anthropic` |
 | `LLM_TIMEOUT_SECONDS` | 连通测试的模型超时，默认 120 |
 | `LLM_EXTRA_HEADERS` | 可选，JSON 对象 |
 | `PROBE_DIRECTION` | 连通测试的写作方向，默认「职场成长」 |

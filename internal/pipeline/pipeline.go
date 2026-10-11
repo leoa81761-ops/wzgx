@@ -221,6 +221,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[string]any, error) {
 	var sensitive []string
 	var wx runtime.WeChat
+	var image *llm.Provider
 	providers := map[string][]llm.Provider{}
 	err := deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		var err error
@@ -232,11 +233,19 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		if err != nil {
 			return err
 		}
-		for _, stage := range []string{"topic", "outline", "draft", "review"} {
+		for _, stage := range []string{"topic", "research", "outline", "draft", "review"} {
 			providers[stage], err = deps.Cache.Providers(ctx, tx, stage, w.Tier)
 			if err != nil {
 				return err
 			}
+		}
+		images, err := deps.Store.ListImageModels(ctx, tx, true)
+		if err != nil {
+			return err
+		}
+		if len(images) > 0 {
+			provider := runtime.ToProvider(images[0], deps.Settings.MasterKey)
+			image = &provider
 		}
 		return nil
 	})
@@ -247,7 +256,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	push, err := pushDraft(ctx, deps, w, built, wx)
+	push, err := pushDraft(ctx, deps, w, built, wx, image)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +299,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	var trace []map[string]any
 	tokens := 0
-	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), validateTopic)
+	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
 	if err != nil {
 		return Built{}, err
 	}
@@ -300,9 +309,33 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if topicTitle == "" {
 		topicTitle = clip(topic.Subtopic+"："+topic.Angle, 64)
 	}
+	var researchSources []any
+	if w.Tier != "free" && len(providers["research"]) > 0 {
+		researchPayload := cloneMap(base)
+		researchPayload["topic_title"] = topicTitle
+		completion, err = gateway.CompleteFirst(ctx, providers["research"], llm.StageMessages("资料检索", researchPayload), llm.StageSchema("资料检索"))
+		if err != nil {
+			trace = append(trace, map[string]any{"stage": "research", "ok": false, "error": clip(err.Error(), 300)})
+		} else {
+			notes, sources := llm.InterpretResearch(completion.Content)
+			if notes != "" {
+				base["research_notes"] = notes
+			}
+			if len(sources) > 0 {
+				listed := make([]any, len(sources))
+				for i := range sources {
+					listed[i] = sources[i]
+				}
+				base["research_sources"] = listed
+				researchSources = listed
+			}
+			tokens += completion.PromptTokens + completion.CompletionTokens
+			trace = append(trace, traceRows("research", completion)...)
+		}
+	}
 	outlinePayload := cloneMap(base)
 	outlinePayload["topic_title"] = topicTitle
-	outline, completion, err := gateway.CompleteJSON(ctx, providers["outline"], llm.StageMessages("大纲", outlinePayload), validateOutline)
+	outline, completion, err := gateway.CompleteJSON(ctx, providers["outline"], llm.StageMessages("大纲", outlinePayload), llm.StageSchema("大纲"), validateOutline)
 	if err != nil {
 		return Built{}, err
 	}
@@ -310,7 +343,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	trace = append(trace, traceRows("outline", completion)...)
 	draftPayload := cloneMap(outlinePayload)
 	draftPayload["outline"] = outline
-	draft, completion, err := gateway.CompleteJSON(ctx, providers["draft"], llm.StageMessages("正文", draftPayload), validateDraft)
+	draft, completion, err := gateway.CompleteJSON(ctx, providers["draft"], llm.StageMessages("正文", draftPayload), llm.StageSchema("正文"), validateDraft)
 	if err != nil {
 		return Built{}, err
 	}
@@ -319,7 +352,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	reviewPayload := cloneMap(draftPayload)
 	reviewPayload["draft"] = draft
 	reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
-	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), validateDraft)
+	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateDraft)
 	if err != nil {
 		return Built{}, err
 	}
@@ -331,7 +364,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if len(hits) > 0 {
 		reviewPayload["draft"] = draft
 		reviewPayload["issues"] = hits
-		reviewed, completion, err = gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), validateDraft)
+		reviewed, completion, err = gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateDraft)
 		if err != nil {
 			return Built{}, err
 		}
@@ -343,6 +376,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if len(hits) > 0 {
 			return Built{}, &llm.Error{Message: "审核未通过，命中敏感词：" + strings.Join(hits, "、")}
 		}
+	}
+	if w.Tier != "free" && len(researchSources) > 0 {
+		draft["sources"] = mergeSources(asList(draft["sources"]), researchSources)
 	}
 	if w.Tier == "free" {
 		draft["sources"] = []any{}
@@ -364,7 +400,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace}, nil
 }
 
-func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat) (pushed, error) {
+func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
 	thumb := w.ExistingThumbID
 	if w.DeliveryMode != "draft" {
 		return pushed{Status: "exported", HTML: article.HTML, DeliveryNote: "当前公众号为手动导出模式，请复制排版 HTML 后粘贴到公众号编辑器。"}, nil
@@ -381,7 +417,11 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	html := article.HTML
 	outHTML := html
 	if thumb == "" {
-		id, err := client.UploadThumb(ctx, cover.CoverPNG(w.TemplateKey), "cover.png")
+		png := cover.CoverPNG(w.TemplateKey)
+		if generated := generatedCover(ctx, deps, image, str(article.Draft["title"]), w.Direction); len(generated) > 0 {
+			png = generated
+		}
+		id, err := client.UploadThumb(ctx, png, "cover.png")
 		if err != nil {
 			if authFailed(err) {
 				return pushed{}, err
@@ -478,17 +518,11 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		}
 		task.Status = "success"
 		task.FailureReason = ""
-		task.FinishedAt = &now
 		task.Tokens = intOf(result["tokens"])
 		if trace, ok := result["trace"].([]map[string]any); ok {
 			task.ModelTrace = trace
 		}
-		if task.StartedAt != nil {
-			task.DurationMs = int(now.Sub(task.StartedAt.UTC()).Milliseconds())
-			if task.DurationMs < 0 {
-				task.DurationMs = 0
-			}
-		}
+		stampDuration(task, time.Now().UTC())
 		if err := deps.Store.UpdateTask(ctx, tx, task); err != nil {
 			return err
 		}
@@ -554,7 +588,7 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 			task.Status = "failed"
 		}
 		task.FailureReason = message
-		task.FinishedAt = &now
+		stampDuration(task, time.Now().UTC())
 		if article != nil {
 			article.Status = "failed"
 			article.FailureReason = message
@@ -565,6 +599,61 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 		}
 		return quota.Release(ctx, deps.Store, tx, task.ID, "失败退回额度")
 	})
+}
+
+func generatedCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction string) []byte {
+	if image == nil || deps.Gateway == nil || deps.Gateway.Mock || strings.HasPrefix(image.BaseURL, "mock://") {
+		return nil
+	}
+	prompt := "公众号封面，横图，干净的插画风格，不要文字，不要水印。主题：" + title + "。方向：" + direction
+	png, err := llm.GenerateCover(ctx, deps.HTTP, *image, prompt)
+	if err != nil || len(png) == 0 {
+		return nil
+	}
+	return png
+}
+
+func mergeSources(existing, extra []any) []any {
+	seen := map[string]bool{}
+	for _, raw := range existing {
+		source, _ := raw.(map[string]any)
+		if source == nil {
+			continue
+		}
+		if url := str(source["url"]); url != "" {
+			seen[url] = true
+		}
+	}
+	for _, raw := range extra {
+		if len(existing) >= 8 {
+			break
+		}
+		source, _ := raw.(map[string]any)
+		if source == nil {
+			continue
+		}
+		url := str(source["url"])
+		if url != "" && seen[url] {
+			continue
+		}
+		existing = append(existing, source)
+		if url != "" {
+			seen[url] = true
+		}
+	}
+	return existing
+}
+
+func stampDuration(task *model.ArticleTask, finished time.Time) {
+	task.FinishedAt = &finished
+	if task.StartedAt == nil {
+		return
+	}
+	ms := finished.Sub(task.StartedAt.UTC()).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	task.DurationMs = int(ms)
 }
 
 func traceRows(stage string, completion llm.Completion) []map[string]any {

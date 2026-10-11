@@ -165,6 +165,9 @@ func resolve(ctx context.Context, st *store.Store, q db.Q, cfg config.Settings, 
 	if len(chosen) > 0 {
 		return chosen, nil
 	}
+	if stage == "research" {
+		return nil, nil
+	}
 	rows, err := st.ListTextModels(ctx, q, true)
 	if err != nil {
 		return nil, err

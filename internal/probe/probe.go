@@ -75,8 +75,8 @@ func (c Config) Missing() string {
 	if strings.TrimSpace(c.LLMBase) == "" || strings.TrimSpace(c.LLMKey) == "" || strings.TrimSpace(c.LLMModel) == "" {
 		miss = append(miss, "LLM_BASE_URL / LLM_API_KEY / LLM_MODEL")
 	}
-	if c.Protocol != "openai" && c.Protocol != "anthropic" {
-		miss = append(miss, "LLM_PROTOCOL（openai 或 anthropic）")
+	if c.Protocol != "openai" && c.Protocol != "anthropic" && c.Protocol != "responses" {
+		miss = append(miss, "LLM_PROTOCOL（openai、responses 或 anthropic）")
 	}
 	return strings.Join(miss, "、")
 }

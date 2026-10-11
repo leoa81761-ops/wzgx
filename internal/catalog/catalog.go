@@ -46,6 +46,7 @@ type PlanDefault struct {
 
 var Stages = [][2]string{
 	{"topic", "选题"},
+	{"research", "资料检索"},
 	{"outline", "大纲"},
 	{"draft", "正文"},
 	{"review", "审核"},

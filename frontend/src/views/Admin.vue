@@ -41,10 +41,17 @@
       <form class="card stack" @submit.prevent="saveProvider">
         <h2>{{ editingId ? "编辑模型服务" : "添加模型服务" }}</h2>
         <label>名称<input v-model="provider.name" required /></label>
+        <label>用途
+          <select v-model="provider.kind">
+            <option value="text">文本写作</option>
+            <option value="image">封面生图</option>
+          </select>
+        </label>
         <label>协议
           <select v-model="provider.protocol">
             <option value="openai">OpenAI 兼容 Chat Completions</option>
-            <option value="anthropic">Anthropic Messages</option>
+            <option value="responses">OpenAI Responses</option>
+            <option value="anthropic" :disabled="provider.kind === 'image'">Anthropic Messages</option>
           </select>
         </label>
         <label>Base URL<input v-model="provider.base_url" required placeholder="https://api.openai.com/v1" /></label>
@@ -52,8 +59,17 @@
         <label>模型名<input v-model="provider.model" required /></label>
         <label>额外请求头 JSON<textarea v-model="provider.headersText" placeholder='{"X-Tenant":"demo"}'></textarea></label>
         <label>额外参数 JSON<textarea v-model="provider.paramsText" placeholder='{"temperature":0.7}'></textarea></label>
+        <label>推理档位
+          <select v-model="provider.reasoning_effort">
+            <option value="">不发送</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </label>
+        <p class="muted">推理模型不要把 max_tokens 设得很小。档位会写入 reasoning_effort。流式调用时超时可以放到 600 秒。</p>
         <label>优先级（数字小的先作为默认回退）<input v-model.number="provider.priority" type="number" /></label>
-        <label>超时（秒）<input v-model.number="provider.timeout_seconds" type="number" min="5" max="180" /></label>
+        <label>超时（秒）<input v-model.number="provider.timeout_seconds" type="number" min="5" max="600" /></label>
         <label class="check"><input v-model="provider.enabled" type="checkbox" /> 启用</label>
         <div class="row">
           <button class="btn" type="submit">保存</button>
@@ -66,7 +82,7 @@
             <strong>{{ item.name }}</strong>
             <span class="pill" :class="item.enabled ? 'ok' : ''">{{ item.enabled ? "启用" : "停用" }}</span>
           </div>
-          <p>{{ item.protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions" }} · {{ item.model }}</p>
+          <p>{{ providerLabel(item) }} · {{ item.model }}</p>
           <p class="muted">{{ item.base_url }}</p>
           <p class="muted">密钥 {{ item.key_hint || "未设置" }} · 优先级 {{ item.priority }}</p>
           <div class="row">
@@ -81,7 +97,7 @@
 
     <section v-if="tab === 'routes'" class="card stack">
       <h2>环节回退顺序</h2>
-      <p class="muted">每个写作环节按从上到下的顺序调用。上面的失败或返回无法解析时，自动换下一个。未配置时，按优先级使用全部已启用的模型；模拟模式且没有任何模型时，使用内置模拟。</p>
+      <p class="muted">每个写作环节按从上到下的顺序调用。上面的失败或返回无法解析时，自动换下一个。选题、大纲、正文、审核未配置时，按优先级使用全部已启用的文本模型。资料检索不配置就不会联网，也不会借用其它环节的模型。封面在「模型」里把用途选成「封面生图」。</p>
       <label>应用到
         <select v-model="routeTier" @change="syncOrders">
           <option v-for="item in tiers" :key="item.key" :value="item.key">{{ item.label }}</option>
@@ -100,7 +116,7 @@
         <div class="row">
           <select v-model="pick[stage.key]">
             <option value="">添加模型</option>
-            <option v-for="item in providers" :key="item.id" :value="item.id">{{ item.name }}</option>
+            <option v-for="item in textProviders" :key="item.id" :value="item.id">{{ item.name }}</option>
           </select>
           <button class="btn-ghost" type="button" @click="addRoute(stage.key)">加入</button>
           <button class="btn" type="button" @click="saveRoute(stage.key)">保存此环节</button>
@@ -135,7 +151,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { api, formatTime } from "../api";
 
 const tabs = [
@@ -169,13 +185,24 @@ const provider = reactive({
   model: "",
   headersText: "{}",
   paramsText: "{}",
+  reasoning_effort: "",
+  kind: "text",
   priority: 100,
   enabled: true,
-  timeout_seconds: 60,
+  timeout_seconds: 120,
 });
+
+const textProviders = computed(() => providers.value.filter((item) => item.kind !== "image" && item.config_type !== "image_model"));
 
 function providerName(id) {
   return providers.value.find((item) => item.id === id)?.name || `#${id}`;
+}
+
+function providerLabel(item) {
+  if (item.kind === "image" || item.config_type === "image_model") return "封面生图";
+  if (item.protocol === "anthropic") return "Anthropic Messages";
+  if (item.protocol === "responses") return "OpenAI Responses";
+  return "OpenAI Chat Completions";
 }
 
 function resetProvider() {
@@ -188,9 +215,11 @@ function resetProvider() {
     model: "",
     headersText: "{}",
     paramsText: "{}",
+    reasoning_effort: "",
+    kind: "text",
     priority: 100,
     enabled: true,
-    timeout_seconds: 60,
+    timeout_seconds: 120,
   });
 }
 
@@ -204,6 +233,8 @@ function editProvider(item) {
     model: item.model,
     headersText: JSON.stringify(item.extra_headers || {}, null, 2),
     paramsText: JSON.stringify(item.extra_params || {}, null, 2),
+    reasoning_effort: item.reasoning_effort || "",
+    kind: item.kind || (item.config_type === "image_model" ? "image" : "text"),
     priority: item.priority,
     enabled: item.enabled,
     timeout_seconds: item.timeout_seconds,
@@ -269,6 +300,7 @@ async function saveProvider() {
   error.value = "";
   message.value = "";
   try {
+    if (provider.kind === "image") provider.protocol = "openai";
     const body = {
       name: provider.name,
       protocol: provider.protocol,
@@ -277,6 +309,8 @@ async function saveProvider() {
       model: provider.model,
       extra_headers: parseObject(provider.headersText, "额外请求头"),
       extra_params: parseObject(provider.paramsText, "额外参数"),
+      kind: provider.kind,
+      reasoning_effort: provider.reasoning_effort,
       priority: provider.priority,
       enabled: provider.enabled,
       timeout_seconds: provider.timeout_seconds,

@@ -97,16 +97,45 @@ func (s *Store) FindService(ctx context.Context, q db.Q, configType, name string
 	return c, err
 }
 
-func (s *Store) ListTextModels(ctx context.Context, q db.Q, enabledOnly bool) ([]model.ServiceConfig, error) {
+func (s *Store) ListAdminModels(ctx context.Context, q db.Q) ([]model.ServiceConfig, error) {
 	if q == nil {
 		q = s.DB
 	}
-	query := `SELECT ` + serviceCols + ` FROM service_config WHERE config_type = 'text_model'`
+	rows, err := q.Query(ctx, `SELECT `+serviceCols+` FROM service_config WHERE config_type IN ('text_model', 'image_model') ORDER BY priority ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.ServiceConfig
+	for rows.Next() {
+		c, err := scanService(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListImageModels(ctx context.Context, q db.Q, enabledOnly bool) ([]model.ServiceConfig, error) {
+	return s.listModels(ctx, q, "image_model", enabledOnly)
+}
+
+func (s *Store) ListTextModels(ctx context.Context, q db.Q, enabledOnly bool) ([]model.ServiceConfig, error) {
+	return s.listModels(ctx, q, "text_model", enabledOnly)
+}
+
+func (s *Store) listModels(ctx context.Context, q db.Q, configType string, enabledOnly bool) ([]model.ServiceConfig, error) {
+	if q == nil {
+		q = s.DB
+	}
+	query := `SELECT ` + serviceCols + ` FROM service_config WHERE config_type = ?`
+	args := []any{configType}
 	if enabledOnly {
 		query += ` AND enabled = 1`
 	}
 	query += ` ORDER BY priority ASC, id ASC`
-	rows, err := q.Query(ctx, query)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -136,8 +165,8 @@ func (s *Store) UpdateService(ctx context.Context, q db.Q, c *model.ServiceConfi
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `UPDATE service_config SET name=?, protocol=?, base_url=?, api_key_encrypted=?, model_name=?, extra_headers=?, extra_params=?, priority=?, enabled=?, timeout_seconds=?, updated_at=? WHERE id=?`,
-		c.Name, c.Protocol, c.BaseURL, c.APIKeyEncrypted, c.ModelName, jsonStr(c.ExtraHeaders), jsonStr(c.ExtraParams), c.Priority, bint(c.Enabled), c.TimeoutSeconds, timeReq(c.UpdatedAt), c.ID)
+	_, err := q.Exec(ctx, `UPDATE service_config SET config_type=?, name=?, protocol=?, base_url=?, api_key_encrypted=?, model_name=?, extra_headers=?, extra_params=?, priority=?, enabled=?, timeout_seconds=?, updated_at=? WHERE id=?`,
+		c.ConfigType, c.Name, c.Protocol, c.BaseURL, c.APIKeyEncrypted, c.ModelName, jsonStr(c.ExtraHeaders), jsonStr(c.ExtraParams), c.Priority, bint(c.Enabled), c.TimeoutSeconds, timeReq(c.UpdatedAt), c.ID)
 	return err
 }
 
