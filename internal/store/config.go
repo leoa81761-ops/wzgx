@@ -288,6 +288,12 @@ func (s *Store) InsertLegal(ctx context.Context, q db.Q, d model.LegalDoc) error
 	return err
 }
 
+func (s *Store) HasConsentVersion(ctx context.Context, userID int64, docType, version string) (bool, error) {
+	var n int
+	err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM consent_log WHERE user_id = ? AND doc_type = ? AND version = ?`, userID, docType, version).Scan(&n)
+	return n > 0, err
+}
+
 func (s *Store) InsertConsent(ctx context.Context, q db.Q, c *model.Consent) error {
 	if q == nil {
 		q = s.DB
