@@ -76,6 +76,7 @@ type pushed struct {
 	ThumbID      string
 	HTML         string
 	DeliveryNote string
+	CoverTrace   map[string]any
 }
 
 func Execute(ctx context.Context, deps Deps, taskID int64, claim bool, now time.Time) {
@@ -264,7 +265,11 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if push.HTML != "" {
 		html = push.HTML
 	}
-	return map[string]any{"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": built.Trace, "status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID, "delivery_note": push.DeliveryNote}, nil
+	trace := built.Trace
+	if push.CoverTrace != nil {
+		trace = append(trace, push.CoverTrace)
+	}
+	return map[string]any{"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace, "status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID, "delivery_note": push.DeliveryNote}, nil
 }
 
 // Input 是一次写作需要的业务参数，连通测试和正式任务共用。
@@ -313,19 +318,18 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.Tier != "free" && len(providers["research"]) > 0 {
 		researchPayload := cloneMap(base)
 		researchPayload["topic_title"] = topicTitle
-		completion, err = gateway.CompleteFirst(ctx, providers["research"], llm.StageMessages("资料检索", researchPayload), llm.StageSchema("资料检索"))
+		notes, listed, completion, err := fetchResearch(ctx, gateway, providers["research"], researchPayload)
 		if err != nil {
-			trace = append(trace, map[string]any{"stage": "research", "ok": false, "error": clip(err.Error(), 300)})
+			if len(completion.Attempts) == 0 {
+				trace = append(trace, map[string]any{"stage": "research", "provider_name": completion.ProviderName, "model": completion.Model, "ok": false, "error": clip(err.Error(), 300)})
+			} else {
+				trace = append(trace, traceRows("research", completion)...)
+			}
 		} else {
-			notes, sources := llm.InterpretResearch(completion.Content)
 			if notes != "" {
 				base["research_notes"] = notes
 			}
-			if len(sources) > 0 {
-				listed := make([]any, len(sources))
-				for i := range sources {
-					listed[i] = sources[i]
-				}
+			if len(listed) > 0 {
 				base["research_sources"] = listed
 				researchSources = listed
 			}
@@ -349,6 +353,13 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("draft", completion)...)
+	if expanded, expandCompletion, expandedOK := expandIfShort(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget); expandedOK {
+		draft = expanded
+		tokens += expandCompletion.PromptTokens + expandCompletion.CompletionTokens
+		trace = append(trace, traceRows("expand", expandCompletion)...)
+	} else if len(expandCompletion.Attempts) > 0 {
+		trace = append(trace, traceRows("expand", expandCompletion)...)
+	}
 	reviewPayload := cloneMap(draftPayload)
 	reviewPayload["draft"] = draft
 	reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
@@ -416,17 +427,16 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	client := wechat.Build(w.AppID, w.AppSecret, mode, base, deps.HTTP, deps.Tokens)
 	html := article.HTML
 	outHTML := html
+	var coverTrace map[string]any
 	if thumb == "" {
-		png := cover.CoverPNG(w.TemplateKey)
-		if generated := generatedCover(ctx, deps, image, str(article.Draft["title"]), w.Direction); len(generated) > 0 {
-			png = generated
-		}
-		id, err := client.UploadThumb(ctx, png, "cover.png")
+		png, filename, traceRow := chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey)
+		coverTrace = traceRow
+		id, err := client.UploadThumb(ctx, png, filename)
 		if err != nil {
 			if authFailed(err) {
 				return pushed{}, err
 			}
-			return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error()}, nil
+			return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace}, nil
 		}
 		thumb = id
 	}
@@ -450,9 +460,9 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		if authFailed(err) {
 			return pushed{}, err
 		}
-		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error()}, nil
+		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace}, nil
 	}
-	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML}, nil
+	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, CoverTrace: coverTrace}, nil
 }
 
 func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[string]any, now time.Time) {
@@ -601,44 +611,165 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 	})
 }
 
-func generatedCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction string) []byte {
+func generatedCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction string) ([]byte, error) {
 	if image == nil || deps.Gateway == nil || deps.Gateway.Mock || strings.HasPrefix(image.BaseURL, "mock://") {
-		return nil
+		return nil, nil
 	}
 	prompt := "公众号封面，横图，干净的插画风格，不要文字，不要水印。主题：" + title + "。方向：" + direction
-	png, err := llm.GenerateCover(ctx, deps.HTTP, *image, prompt)
-	if err != nil || len(png) == 0 {
+	return llm.GenerateCover(ctx, deps.HTTP, *image, prompt)
+}
+
+func chooseCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction, templateKey string) ([]byte, string, map[string]any) {
+	builtin := cover.CoverPNG(templateKey)
+	raw := builtin
+	source := "builtin"
+	var errText string
+	generated, genErr := generatedCover(ctx, deps, image, title, direction)
+	if genErr != nil {
+		errText = genErr.Error()
+	} else if len(generated) > 0 {
+		raw = generated
+		source = "ai"
+	}
+	body, filename, contentType, prepErr := cover.PrepareCover(raw)
+	if prepErr != nil && source == "ai" {
+		if errText != "" {
+			errText += "；"
+		}
+		errText += prepErr.Error()
+		source = "builtin"
+		body, filename, contentType, prepErr = cover.PrepareCover(builtin)
+	}
+	if prepErr != nil || len(body) == 0 {
+		body, filename, contentType = builtin, "cover.png", "image/png"
+		if errText == "" {
+			errText = "封面处理失败"
+		}
+	}
+	row := map[string]any{
+		"stage": "cover", "source": source, "bytes": len(body),
+		"filename": filename, "content_type": contentType, "ok": errText == "",
+	}
+	if errText != "" {
+		row["error"] = clip(errText, 300)
+	}
+	return body, filename, row
+}
+
+func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any) (string, []any, llm.Completion, error) {
+	messages := llm.StageMessages("资料检索", payload)
+	first, err1 := gateway.CompleteText(ctx, providers, messages, nil, false)
+	notes := ""
+	var sources []map[string]any
+	if err1 == nil {
+		notes, sources = llm.InterpretResearch(first.Content)
+		if sourcesHaveURL(sources) {
+			return notes, anySources(sources), first, nil
+		}
+	}
+	second, err2 := gateway.CompleteText(ctx, providers, messages, nil, false)
+	merged := llm.Completion{
+		Attempts:         append(append([]map[string]any{}, first.Attempts...), second.Attempts...),
+		PromptTokens:     first.PromptTokens + second.PromptTokens,
+		CompletionTokens: first.CompletionTokens + second.CompletionTokens,
+	}
+	if err2 == nil {
+		notes2, sources2 := llm.InterpretResearch(second.Content)
+		merged.ProviderID = second.ProviderID
+		merged.ProviderName = second.ProviderName
+		merged.Protocol = second.Protocol
+		merged.Model = second.Model
+		merged.Content = second.Content
+		if sourcesHaveURL(sources2) {
+			if notes2 != "" {
+				notes = notes2
+			}
+			sources = sources2
+		} else if notes == "" {
+			notes = notes2
+		}
+		return notes, anySources(sources), merged, nil
+	}
+	if err1 != nil {
+		return "", nil, merged, err2
+	}
+	merged.ProviderID = first.ProviderID
+	merged.ProviderName = first.ProviderName
+	merged.Protocol = first.Protocol
+	merged.Model = first.Model
+	merged.Content = first.Content
+	return notes, anySources(sources), merged, nil
+}
+
+func sourcesHaveURL(sources []map[string]any) bool {
+	for _, source := range sources {
+		if str(source["url"]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func anySources(sources []map[string]any) []any {
+	if len(sources) == 0 {
 		return nil
 	}
-	return png
+	listed := make([]any, len(sources))
+	for i := range sources {
+		listed[i] = sources[i]
+	}
+	return listed
+}
+
+func expandIfShort(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, target int) (map[string]any, llm.Completion, bool) {
+	if target <= 0 || content.BodyRunes(draft) >= target*9/10 {
+		return draft, llm.Completion{}, false
+	}
+	expandPayload := cloneMap(payload)
+	expandPayload["draft"] = draft
+	expandPayload["current_chars"] = content.BodyRunes(draft)
+	expanded, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("扩写", expandPayload), llm.StageSchema("正文"), validateDraft)
+	if err != nil {
+		if len(completion.Attempts) == 0 {
+			completion.Attempts = []map[string]any{{"ok": false, "error": clip(err.Error(), 300)}}
+		}
+		return draft, completion, false
+	}
+	return expanded, completion, true
 }
 
 func mergeSources(existing, extra []any) []any {
-	seen := map[string]bool{}
-	for _, raw := range existing {
+	index := map[string]int{}
+	for i, raw := range existing {
 		source, _ := raw.(map[string]any)
 		if source == nil {
 			continue
 		}
 		if url := str(source["url"]); url != "" {
-			seen[url] = true
+			index[url] = i
 		}
 	}
 	for _, raw := range extra {
-		if len(existing) >= 8 {
-			break
-		}
 		source, _ := raw.(map[string]any)
 		if source == nil {
 			continue
 		}
 		url := str(source["url"])
-		if url != "" && seen[url] {
-			continue
+		if url != "" {
+			if i, ok := index[url]; ok {
+				prev, _ := existing[i].(map[string]any)
+				if prev != nil && str(prev["note"]) == "" && str(source["note"]) != "" {
+					prev["note"] = source["note"]
+				}
+				continue
+			}
+		}
+		if len(existing) >= 8 {
+			break
 		}
 		existing = append(existing, source)
 		if url != "" {
-			seen[url] = true
+			index[url] = len(existing) - 1
 		}
 	}
 	return existing
@@ -658,7 +789,10 @@ func stampDuration(task *model.ArticleTask, finished time.Time) {
 
 func traceRows(stage string, completion llm.Completion) []map[string]any {
 	if len(completion.Attempts) == 0 {
-		return []map[string]any{{"stage": stage, "provider_id": completion.ProviderID, "protocol": completion.Protocol, "ok": true}}
+		return []map[string]any{{
+			"stage": stage, "provider_id": completion.ProviderID, "provider_name": completion.ProviderName,
+			"protocol": completion.Protocol, "model": completion.Model, "ok": true,
+		}}
 	}
 	out := make([]map[string]any, 0, len(completion.Attempts))
 	for _, attempt := range completion.Attempts {
@@ -777,10 +911,14 @@ func validateDraft(data map[string]any) (map[string]any, error) {
 		}
 		name := strings.TrimSpace(str(source["name"]))
 		sourceTitle := strings.TrimSpace(str(source["title"]))
-		if name == "" && sourceTitle == "" {
+		if name == "" && sourceTitle == "" && url == "" {
 			continue
 		}
-		sources = append(sources, map[string]any{"name": clip(name, 80), "title": clip(sourceTitle, 120), "published_on": clip(str(source["published_on"]), 32), "url": clip(url, 300), "source_type": clip(strOr(source["source_type"], "other"), 32)})
+		row := map[string]any{"name": clip(name, 80), "title": clip(sourceTitle, 120), "published_on": clip(str(source["published_on"]), 32), "url": clip(url, 300), "source_type": clip(strOr(source["source_type"], "other"), 32)}
+		if note := strings.TrimSpace(str(source["note"])); note != "" {
+			row["note"] = clip(note, 200)
+		}
+		sources = append(sources, row)
 	}
 	alts := []any{}
 	for _, item := range asList(data["alt_titles"]) {

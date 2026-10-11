@@ -127,7 +127,7 @@ func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messag
 			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "protocol": provider.Protocol, "ok": false, "error": message})
 			continue
 		}
-		completion, err := g.complete(ctx, provider, messages, schema)
+		completion, err := g.complete(ctx, provider, messages, schema, true)
 		if err != nil {
 			message := fmt.Sprintf("%s: %s", provider.Name, err.Error())
 			errorsFound = append(errorsFound, message)
@@ -152,35 +152,47 @@ func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messag
 		completion.Attempts = attempts
 		return validated, completion, nil
 	}
-	return nil, Completion{}, &Error{Message: "全部模型服务失败：" + strings.Join(errorsFound, "；")}
+	return nil, Completion{Attempts: attempts}, &Error{Message: "全部模型服务失败：" + strings.Join(errorsFound, "；")}
 }
 
 func (g *Gateway) Complete(ctx context.Context, provider Provider, messages []map[string]string) (Completion, error) {
-	return g.complete(ctx, provider, messages, nil)
+	return g.complete(ctx, provider, messages, nil, true)
 }
 
-// CompleteFirst 按顺序调用供应商，返回第一份文本。不要求输出是 JSON。
+// CompleteFirst 按顺序调用供应商，返回第一份文本。不要求输出是 JSON。默认流式。
 func (g *Gateway) CompleteFirst(ctx context.Context, providers []Provider, messages []map[string]string, schema *Schema) (Completion, error) {
+	return g.CompleteText(ctx, providers, messages, schema, true)
+}
+
+// CompleteText 按顺序调用供应商。stream 为 false 时请求体里写 stream:false。schema 为空时不附带 json_schema。
+func (g *Gateway) CompleteText(ctx context.Context, providers []Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, error) {
 	if len(providers) == 0 {
 		return Completion{}, &Error{Message: "没有可用的模型服务"}
 	}
 	var errorsFound []string
+	var attempts []map[string]any
 	for _, provider := range providers {
 		if provider.Protocol != "openai" && provider.Protocol != "anthropic" && provider.Protocol != "responses" {
-			errorsFound = append(errorsFound, provider.Name+": 不支持的协议 "+provider.Protocol)
+			message := provider.Name + ": 不支持的协议 " + provider.Protocol
+			errorsFound = append(errorsFound, message)
+			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": false, "error": message})
 			continue
 		}
-		completion, err := g.complete(ctx, provider, messages, schema)
+		completion, err := g.complete(ctx, provider, messages, schema, stream)
 		if err != nil {
-			errorsFound = append(errorsFound, provider.Name+": "+err.Error())
+			message := provider.Name + ": " + err.Error()
+			errorsFound = append(errorsFound, message)
+			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": false, "error": clip(err.Error(), 300)})
 			continue
 		}
+		attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": true})
+		completion.Attempts = attempts
 		return completion, nil
 	}
-	return Completion{}, &Error{Message: "全部模型服务失败：" + strings.Join(errorsFound, "；")}
+	return Completion{Attempts: attempts}, &Error{Message: "全部模型服务失败：" + strings.Join(errorsFound, "；")}
 }
 
-func (g *Gateway) complete(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema) (Completion, error) {
+func (g *Gateway) complete(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, error) {
 	if g.Mock || strings.HasPrefix(provider.BaseURL, "mock://") {
 		return mockComplete(provider, messages)
 	}
@@ -204,7 +216,7 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 				}
 			}
 		}
-		completion, status, err := g.call(ctx, provider, messages, schema)
+		completion, status, err := g.call(ctx, provider, messages, schema, stream)
 		if err == nil {
 			return completion, nil
 		}
@@ -233,7 +245,7 @@ func retryable(status int, err error) bool {
 	return false
 }
 
-func (g *Gateway) call(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema) (Completion, int, error) {
+func (g *Gateway) call(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, int, error) {
 	timeout := provider.Timeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
@@ -242,21 +254,21 @@ func (g *Gateway) call(ctx context.Context, provider Provider, messages []map[st
 	defer cancel()
 	switch provider.Protocol {
 	case "anthropic":
-		return g.callAnthropic(ctx, provider, messages)
+		return g.callAnthropic(ctx, provider, messages, stream)
 	case "responses":
-		return g.callResponses(ctx, provider, messages, schema)
+		return g.callResponses(ctx, provider, messages, schema, stream)
 	default:
-		return g.callOpenAI(ctx, provider, messages, schema)
+		return g.callOpenAI(ctx, provider, messages, schema, stream)
 	}
 }
 
-func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema) (Completion, int, error) {
+func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, int, error) {
 	body := PublicParams(provider.ExtraParams)
 	msgs := make([]map[string]string, len(messages))
 	copy(msgs, messages)
 	body["model"] = provider.Model
 	body["messages"] = msgs
-	body["stream"] = true
+	body["stream"] = stream
 	applyChatSchema(body, schema)
 	raw, status, err := g.post(ctx, OpenAIURL(provider.BaseURL), openAIHeaders(provider), body)
 	if err != nil {
@@ -269,7 +281,7 @@ func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []
 	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "openai", Model: provider.Model}, status, nil
 }
 
-func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages []map[string]string) (Completion, int, error) {
+func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages []map[string]string, stream bool) (Completion, int, error) {
 	var systemParts []string
 	var chat []map[string]string
 	for _, message := range messages {
@@ -293,7 +305,7 @@ func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages
 		body["max_tokens"] = 16384
 	}
 	body["messages"] = chat
-	body["stream"] = true
+	body["stream"] = stream
 	if len(systemParts) > 0 {
 		body["system"] = strings.Join(systemParts, "\n")
 	}
@@ -308,7 +320,7 @@ func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages
 	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "anthropic", Model: provider.Model}, status, nil
 }
 
-func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema) (Completion, int, error) {
+func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool) (Completion, int, error) {
 	body := PublicParams(provider.ExtraParams)
 	input := make([]map[string]string, 0, len(messages))
 	for _, message := range messages {
@@ -320,7 +332,7 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 	}
 	body["model"] = provider.Model
 	body["input"] = input
-	body["stream"] = true
+	body["stream"] = stream
 	delete(body, "messages")
 	if schema != nil && schema.Body != nil {
 		if _, exists := body["text"]; !exists {

@@ -185,6 +185,9 @@ func sourceLine(index int, source map[string]any) string {
 	if date != "" {
 		bits = append(bits, date)
 	}
+	if note := strings.TrimSpace(asString(source["note"])); note != "" {
+		bits = append(bits, note)
+	}
 	if url != "" {
 		bits = append(bits, url)
 	}

@@ -235,6 +235,12 @@ func TestErrcodeMessagesAndPermission(t *testing.T) {
 	}
 }
 
+func TestImageContentTypeFollowsFilename(t *testing.T) {
+	if imageContentType("cover.jpg") != "image/jpeg" || imageContentType("cover.jpeg") != "image/jpeg" || imageContentType("cover.png") != "image/png" {
+		t.Fatal(imageContentType("cover.jpg"), imageContentType("cover.png"))
+	}
+}
+
 func multipartName(t *testing.T, r *http.Request) (string, string) {
 	t.Helper()
 	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))

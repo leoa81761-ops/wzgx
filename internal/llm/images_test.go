@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +25,9 @@ func TestGenerateCoverURLAndBase64(t *testing.T) {
 			if body["model"] != "grok-imagine-image-2.0" {
 				t.Errorf("model %#v", body["model"])
 			}
+			if body["response_format"] != "b64_json" {
+				t.Errorf("response_format %#v", body["response_format"])
+			}
 			if r.Header.Get("Authorization") != "Bearer img-key" {
 				t.Errorf("auth %s", r.Header.Get("Authorization"))
 			}
@@ -36,6 +40,9 @@ func TestGenerateCoverURLAndBase64(t *testing.T) {
 			_ = json.Unmarshal(raw, &body)
 			if body["aspect_ratio"] != "16:9" {
 				t.Errorf("ratio %#v", body["aspect_ratio"])
+			}
+			if body["response_format"] != "b64_json" {
+				t.Errorf("response_format %#v", body["response_format"])
 			}
 			encoded := base64.StdEncoding.EncodeToString(png)
 			_, _ = w.Write([]byte(`{"data":[{"b64_json":"` + encoded + `"}]}`))
@@ -68,8 +75,28 @@ func TestInterpretResearchMarkdown(t *testing.T) {
 	if notes == "" || len(sources) != 1 || sources[0]["url"] != "https://www.example.com/notice" {
 		t.Fatalf("%q %#v", notes, sources)
 	}
-	notes, sources = InterpretResearch(`{"notes":"只有这一条","sources":[{"name":"甲","title":"乙","url":"https://a.example/x","published_on":"2026-01-02","source_type":"news"}]}`)
-	if notes != "只有这一条" || len(sources) != 1 || sources[0]["source_type"] != "news" {
+	notes, sources = InterpretResearch(`{"notes":"只有这一条","sources":[{"name":"甲","title":"乙","url":"https://a.example/x","published_on":"2026-01-02","source_type":"news","note":"说明了办公安排"}]}`)
+	if notes != "只有这一条" || len(sources) != 1 || sources[0]["source_type"] != "news" || sources[0]["note"] != "说明了办公安排" {
 		t.Fatalf("%q %#v", notes, sources)
+	}
+	_, sources = InterpretResearch(`{"notes":"见 https://www.example.com/policy","sources":[]}`)
+	if len(sources) != 1 || sources[0]["url"] != "https://www.example.com/policy" {
+		t.Fatalf("%#v", sources)
+	}
+	_, sources = InterpretResearch(`{"notes":"链接","sources":["https://news.example/item"]}`)
+	if len(sources) != 1 || sources[0]["url"] != "https://news.example/item" {
+		t.Fatalf("%#v", sources)
+	}
+}
+
+func TestResearchPromptAsksToSearch(t *testing.T) {
+	messages := StageMessages("资料检索", map[string]any{"topic_title": "远程协作"})
+	system := messages[0]["content"]
+	if !strings.Contains(system, "搜索") || strings.Contains(system, "空数组") || strings.Contains(system, "JSON Schema") {
+		t.Fatal(system)
+	}
+	draft := StageMessages("正文", map[string]any{"word_target": 1500})
+	if !strings.Contains(draft[0]["content"], "word_target") || !strings.Contains(draft[0]["content"], "JSON Schema") {
+		t.Fatal(draft[0]["content"])
 	}
 }

@@ -154,6 +154,62 @@ func TestRegisterRequiresConsentAndFullFlow(t *testing.T) {
 	}
 }
 
+func TestAdminCanDisableAndDeleteUsers(t *testing.T) {
+	app := openApp(t, config.Settings{})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+	registered := postJSON(t, ts.URL+"/api/auth/register", "", map[string]any{"account": "cleanup@example.com", "password": "password12", "agree": true})
+	if registered.StatusCode != 200 {
+		t.Fatal(registered.StatusCode, registered.Body)
+	}
+	userID := int64(registered.JSON["user"].(map[string]any)["id"].(float64))
+	token := registered.JSON["token"].(string)
+	admin := postJSON(t, ts.URL+"/api/auth/login", "", map[string]any{"account": "admin@example.com", "password": "admin123456"})
+	if admin.StatusCode != 200 {
+		t.Fatal(admin.StatusCode, admin.Body)
+	}
+	adminToken := admin.JSON["token"].(string)
+	adminID := int64(admin.JSON["user"].(map[string]any)["id"].(float64))
+	self := sendJSON(t, http.MethodDelete, ts.URL+"/api/admin/users/"+strconv.FormatInt(adminID, 10), adminToken, nil)
+	if self.StatusCode != 400 {
+		t.Fatal(self.StatusCode, self.Body)
+	}
+	disabled := putJSON(t, ts.URL+"/api/admin/users/"+strconv.FormatInt(userID, 10)+"/active", adminToken, map[string]any{"active": false})
+	if disabled.StatusCode != 200 {
+		t.Fatal(disabled.StatusCode, disabled.Body)
+	}
+	blocked := postJSON(t, ts.URL+"/api/auth/login", "", map[string]any{"account": "cleanup@example.com", "password": "password12"})
+	if blocked.StatusCode != 403 || !strings.Contains(blocked.Body, "停用") {
+		t.Fatal(blocked.StatusCode, blocked.Body)
+	}
+	_ = token
+	enabled := putJSON(t, ts.URL+"/api/admin/users/"+strconv.FormatInt(userID, 10)+"/active", adminToken, map[string]any{"active": true})
+	if enabled.StatusCode != 200 {
+		t.Fatal(enabled.Body)
+	}
+	again := postJSON(t, ts.URL+"/api/auth/login", "", map[string]any{"account": "cleanup@example.com", "password": "password12"})
+	if again.StatusCode != 200 {
+		t.Fatal(again.StatusCode, again.Body)
+	}
+	deleted := sendJSON(t, http.MethodDelete, ts.URL+"/api/admin/users/"+strconv.FormatInt(userID, 10), adminToken, nil)
+	if deleted.StatusCode != 200 {
+		t.Fatal(deleted.StatusCode, deleted.Body)
+	}
+	gone := postJSON(t, ts.URL+"/api/auth/login", "", map[string]any{"account": "cleanup@example.com", "password": "password12"})
+	if gone.StatusCode != 401 {
+		t.Fatal(gone.StatusCode, gone.Body)
+	}
+	users := getJSON(t, ts.URL+"/api/admin/users", adminToken)
+	for _, row := range users.JSONList {
+		if row["account"] == "cleanup@example.com" {
+			t.Fatal(users.JSONList)
+		}
+		if row["is_self"] == true && row["is_active"] != true {
+			t.Fatal(row)
+		}
+	}
+}
+
 func TestBindSurfacesIPWhitelist(t *testing.T) {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"errcode":40164,"errmsg":"invalid ip"}`))

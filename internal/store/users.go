@@ -117,6 +117,44 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]model.User, error) 
 	return out, rows.Err()
 }
 
+func (s *Store) CountAdmins(ctx context.Context, q db.Q, activeOnly bool) (int, error) {
+	if q == nil {
+		q = s.DB
+	}
+	query := `SELECT COUNT(*) FROM users WHERE is_admin = 1`
+	if activeOnly {
+		query += ` AND is_active = 1`
+	}
+	var n int
+	err := q.QueryRow(ctx, query).Scan(&n)
+	return n, err
+}
+
+func (s *Store) DeleteUserCascade(ctx context.Context, q db.Q, userID int64) error {
+	if q == nil {
+		q = s.DB
+	}
+	stmts := []string{
+		`DELETE FROM article_source WHERE article_id IN (SELECT id FROM article WHERE user_id = ?)`,
+		`DELETE FROM topic_coverage WHERE plan_id IN (SELECT id FROM writing_plan WHERE user_id = ?)`,
+		`DELETE FROM quota_hold WHERE user_id = ?`,
+		`DELETE FROM quota_ledger WHERE user_id = ?`,
+		`DELETE FROM article WHERE user_id = ?`,
+		`DELETE FROM article_task WHERE user_id = ?`,
+		`DELETE FROM writing_plan WHERE user_id = ?`,
+		`DELETE FROM wx_account WHERE user_id = ?`,
+		`DELETE FROM consent_log WHERE user_id = ?`,
+		`DELETE FROM entitlement WHERE user_id = ?`,
+		`DELETE FROM users WHERE id = ?`,
+	}
+	for _, stmt := range stmts {
+		if _, err := q.Exec(ctx, stmt, userID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) ListActiveUserIDs(ctx context.Context, q db.Q) ([]int64, error) {
 	if q == nil {
 		q = s.DB
