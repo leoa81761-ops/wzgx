@@ -295,6 +295,10 @@ func (a *App) clearPin(w http.ResponseWriter, r *http.Request, user *model.User)
 }
 
 func (a *App) createComplaint(w http.ResponseWriter, r *http.Request) error {
+	anonymous := !strings.HasPrefix(strings.ToLower(r.Header.Get("Authorization")), "bearer ")
+	if anonymous && !a.complaints.allow(clientIP(r)) {
+		return &AppError{Status: 429, Message: "提交太频繁，请稍后再试"}
+	}
 	var body struct {
 		Contact string `json:"contact"`
 		Kind    string `json:"kind"`

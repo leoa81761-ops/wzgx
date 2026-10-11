@@ -16,6 +16,7 @@ import Help from "./views/Help.vue";
 import Pricing from "./views/Pricing.vue";
 import Complaint from "./views/Complaint.vue";
 import Inbox from "./views/Inbox.vue";
+import Reconsent from "./views/Reconsent.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -28,6 +29,7 @@ const router = createRouter({
     { path: "/help", component: Help },
     { path: "/pricing", component: Pricing },
     { path: "/complaint", component: Complaint },
+    { path: "/reconsent", component: Reconsent, meta: { auth: true } },
     { path: "/app", component: Dashboard, meta: { auth: true } },
     { path: "/app/accounts", component: Accounts, meta: { auth: true } },
     { path: "/app/plans", component: Plans, meta: { auth: true } },
@@ -48,6 +50,9 @@ router.beforeEach(async (to) => {
     return { path: "/login", query: { next: to.fullPath } };
   }
   if (to.meta.admin && !session.user?.is_admin) return "/app";
+  if (to.meta.auth && session.user?.needs_reconsent && to.path !== "/reconsent") {
+    return { path: "/reconsent", query: { next: to.fullPath } };
+  }
   return true;
 });
 

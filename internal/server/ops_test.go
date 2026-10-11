@@ -124,4 +124,32 @@ func TestOpsSurface(t *testing.T) {
 	}
 }
 
+func TestAnonymousComplaintRateLimit(t *testing.T) {
+	app := openApp(t, config.Settings{})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+	body := map[string]any{"kind": "other", "content": "请查一下这条投诉", "contact": "limit@example.com"}
+	for i := 0; i < 5; i++ {
+		resp := postJSON(t, ts.URL+"/api/complaints", "", body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("attempt %d: %d %s", i+1, resp.StatusCode, resp.Body)
+		}
+	}
+	blocked := postJSON(t, ts.URL+"/api/complaints", "", body)
+	if blocked.StatusCode != 429 {
+		t.Fatal(blocked.StatusCode, blocked.Body)
+	}
+	registered := postJSON(t, ts.URL+"/api/auth/register", "", map[string]any{
+		"account": "limit-user@example.com", "password": "password12", "agree": true,
+	})
+	if registered.StatusCode != 200 {
+		t.Fatal(registered.StatusCode, registered.Body)
+	}
+	token := registered.JSON["token"].(string)
+	logged := postJSON(t, ts.URL+"/api/complaints", token, map[string]any{"kind": "content", "content": "登录后仍可提交"})
+	if logged.StatusCode != 200 {
+		t.Fatal(logged.StatusCode, logged.Body)
+	}
+}
+
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }

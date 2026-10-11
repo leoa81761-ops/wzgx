@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 	"strings"
@@ -29,6 +30,80 @@ func classifyAccount(value string) (kind, account string, err error) {
 		return "email", strings.ToLower(raw), nil
 	}
 	return "", "", bad("请输入有效的手机号或邮箱")
+}
+
+var legalDocs = []string{"user_agreement", "privacy"}
+
+func (a *App) needsReconsent(ctx context.Context, userID int64) (bool, error) {
+	for _, docType := range legalDocs {
+		ok, err := a.Store.HasConsentVersion(ctx, userID, docType, catalog.LegalVersion)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (a *App) consentStatus(w http.ResponseWriter, r *http.Request, user *model.User) error {
+	needs, err := a.needsReconsent(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	missing := []string{}
+	if needs {
+		for _, docType := range legalDocs {
+			ok, err := a.Store.HasConsentVersion(r.Context(), user.ID, docType, catalog.LegalVersion)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				missing = append(missing, docType)
+			}
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"legal_version": catalog.LegalVersion, "needs_reconsent": needs, "missing": missing,
+	})
+	return nil
+}
+
+func (a *App) reconsent(w http.ResponseWriter, r *http.Request, user *model.User) error {
+	var body struct {
+		Agree bool `json:"agree"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	if !body.Agree {
+		return bad("请先阅读并勾选同意更新后的《用户协议》和《隐私政策》")
+	}
+	now := time.Now().UTC()
+	err := a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		for _, docType := range legalDocs {
+			ok, err := a.Store.HasConsentVersion(r.Context(), user.ID, docType, catalog.LegalVersion)
+			if err != nil {
+				return err
+			}
+			if ok {
+				continue
+			}
+			if err := a.Store.InsertConsent(r.Context(), tx, &model.Consent{
+				UserID: user.ID, DocType: docType, Version: catalog.LegalVersion, ConsentItem: "reconsent",
+				IP: clientIP(r), UserAgent: userAgent(r), CreatedAt: now,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "needs_reconsent": false, "legal_version": catalog.LegalVersion})
+	return nil
 }
 
 func userDict(u *model.User) map[string]any {

@@ -22,16 +22,17 @@ import (
 )
 
 type App struct {
-	Cfg     config.Settings
-	DB      *db.DB
-	Store   *store.Store
-	HTTP    *http.Client
-	Tokens  *wechat.TokenCache
-	Cache   *runtime.Cache
-	Gateway *llm.Gateway
-	Pool    *scheduler.Pool
-	Runner  *scheduler.Runner
-	cancel  context.CancelFunc
+	Cfg        config.Settings
+	DB         *db.DB
+	Store      *store.Store
+	HTTP       *http.Client
+	Tokens     *wechat.TokenCache
+	Cache      *runtime.Cache
+	Gateway    *llm.Gateway
+	Pool       *scheduler.Pool
+	Runner     *scheduler.Runner
+	complaints *ipWindow
+	cancel     context.CancelFunc
 }
 
 func Open(cfg config.Settings) (*App, error) {
@@ -60,7 +61,7 @@ func Open(cfg config.Settings) (*App, error) {
 	app := &App{
 		Cfg: cfg, DB: database, Store: st, HTTP: client, Tokens: wechat.NewTokenCache(),
 		Cache: runtime.New(st, cfg), Gateway: llm.NewGateway(cfg.LLMMode == "mock", client),
-		Pool: scheduler.NewPool(cfg.MaxConcurrency),
+		Pool: scheduler.NewPool(cfg.MaxConcurrency), complaints: newIPWindow(5, time.Hour),
 	}
 	app.Runner = &scheduler.Runner{Deps: app.deps(), Pool: app.Pool}
 	ctx := context.Background()

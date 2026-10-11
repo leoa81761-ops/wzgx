@@ -148,6 +148,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/meta", a.handle(a.meta))
 	mux.HandleFunc("GET /api/me/quota", a.withUser(false, a.myQuota))
 	mux.HandleFunc("GET /api/me/consents", a.withUser(false, a.myConsents))
+	mux.HandleFunc("GET /api/me/consent-status", a.withUser(false, a.consentStatus))
+	mux.HandleFunc("POST /api/me/reconsent", a.withUser(false, a.reconsent))
 	mux.HandleFunc("GET /api/me/export", a.withUser(false, a.exportMe))
 	mux.HandleFunc("DELETE /api/me", a.withUser(false, a.deleteMe))
 	mux.HandleFunc("GET /api/notifications", a.withUser(false, a.listNotifications))

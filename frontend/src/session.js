@@ -14,6 +14,9 @@ export async function loadSession() {
   }
   try {
     session.user = await api("/api/auth/me");
+    const status = await api("/api/me/consent-status");
+    session.user.needs_reconsent = !!status.needs_reconsent;
+    session.user.legal_version = status.legal_version || "";
   } catch {
     clearToken();
     session.user = null;
@@ -26,6 +29,13 @@ export async function acceptLogin(data) {
   setToken(data.token);
   session.user = data.user;
   session.ready = true;
+  try {
+    const status = await api("/api/me/consent-status");
+    session.user.needs_reconsent = !!status.needs_reconsent;
+    session.user.legal_version = status.legal_version || "";
+  } catch {
+    session.user.needs_reconsent = false;
+  }
 }
 
 export function logout() {
