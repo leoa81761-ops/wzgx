@@ -38,6 +38,22 @@ func (e *Error) AuthFailed() bool {
 	}
 }
 
+// InvalidMedia 表示草稿或封面的 media_id 已经失效，例如草稿被删除或已发布。
+func InvalidMedia(err error) bool {
+	var we *Error
+	if !errors.As(err, &we) || we == nil {
+		return false
+	}
+	if we.Code == 40007 {
+		return true
+	}
+	msg := strings.ToLower(we.Message)
+	if strings.Contains(msg, "invalid media_id") || strings.Contains(msg, "invalid media id") || strings.Contains(msg, "thumb_media_id") {
+		return true
+	}
+	return strings.Contains(we.Message, "media_id") && (strings.Contains(we.Message, "无效") || strings.Contains(msg, "invalid"))
+}
+
 func Explain(code int, errmsg string) string {
 	reasons := map[int]string{
 		-1:    "微信系统繁忙，请稍后重试",

@@ -1,7 +1,7 @@
 package catalog
 
 const (
-	PromptVersion   = "p0.3"
+	PromptVersion   = "p0.4"
 	TemplateVersion = "1"
 	LegalVersion    = "0.1-draft"
 )

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -535,6 +536,304 @@ func TestFailedStageKeepsTrace(t *testing.T) {
 	}
 	if traceStage(task.ModelTrace, "topic")["ok"] != true || traceStage(task.ModelTrace, "outline")["ok"] != false {
 		t.Fatalf("%#v", task.ModelTrace)
+	}
+}
+
+func TestFactCheckRewritesWrongDefinition(t *testing.T) {
+	wrong := strings.Repeat("合适的正文。", 110) + "弱电是交流1000V以下的电力系统。"
+	fixed := strings.Repeat("合适的正文。", 110) + "弱电指通信、安防和楼宇自控等电子系统。"
+	var sawFact bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "弱电入门", "angle": "先分清概念"})
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		case "事实核对":
+			sawFact = true
+			msgs, _ := req["messages"].([]any)
+			first, _ := msgs[0].(map[string]any)
+			system, _ := first["content"].(string)
+			if !strings.Contains(system, "弱电") || !strings.Contains(system, "1000V") || !strings.Contains(system, "research_sources") {
+				t.Errorf("fact prompt %s", system)
+			}
+			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{fixed}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		case "审核":
+			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{fixed}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		default:
+			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{wrong}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "facts@example.com")
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if !sawFact {
+		t.Fatal("fact check was not called")
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	if strings.Contains(articles[0].BodyHTML, "1000") || !strings.Contains(articles[0].BodyHTML, "通信") {
+		t.Fatal(articles[0].BodyHTML)
+	}
+	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
+	if err != nil || task == nil || traceStage(task.ModelTrace, "factcheck")["ok"] != true {
+		t.Fatalf("%#v %v", task, err)
+	}
+}
+
+func TestResearchPrefersChatFast(t *testing.T) {
+	var researchModels []string
+	body := strings.Repeat("合适的正文。", 120)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		if stageOf(req) == "资料检索" {
+			researchModels = append(researchModels, req["model"].(string))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [国务院](https://www.gov.cn/zhengce/2024)。"}}]}`))
+			return
+		}
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "先用快模型", "angle": "今天就能做"})
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "先用快模型", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "慢", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "grok-4.7",
+		Enabled: true, TimeoutSeconds: 90, UpdatedAt: now, ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "快", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "grok-chat-fast",
+		Enabled: true, TimeoutSeconds: 90, UpdatedAt: now, ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	models, err := st.ListTextModels(ctx, nil, true)
+	if err != nil || len(models) != 2 {
+		t.Fatal(len(models), err)
+	}
+	var slowID, fastID int64
+	for _, item := range models {
+		if item.ModelName == "grok-4.7" {
+			slowID = item.ID
+		}
+		if item.ModelName == "grok-chat-fast" {
+			fastID = item.ID
+		}
+	}
+	if err := st.ReplaceRoutes(ctx, nil, "research", "*", []int64{slowID, fastID}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "fast-research@example.com")
+	user.Tier = "standard"
+	if err := st.UpdateUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	runTask(t, st, deps, user, account, plan, now)
+	if len(researchModels) != 1 || researchModels[0] != "grok-chat-fast" {
+		t.Fatalf("research models %#v", researchModels)
+	}
+}
+
+func TestRegenCreatesDraftWhenMediaIDInvalid(t *testing.T) {
+	body := strings.Repeat("合适的正文。", 120)
+	var thumbN, draftN, adds, updates int
+	var updatedMedia string
+	var addedThumbs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/chat/completions") {
+			raw, _ := io.ReadAll(r.Body)
+			var req map[string]any
+			_ = json.Unmarshal(raw, &req)
+			switch stageOf(req) {
+			case "选题":
+				writeChoice(w, map[string]any{"title": "重写封面", "angle": "今天就能做"})
+			case "大纲":
+				writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+			default:
+				writeChoice(w, map[string]any{"title": "重写封面", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			}
+			return
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/stable_token"):
+			_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":7200}`))
+		case strings.HasSuffix(r.URL.Path, "/add_material"):
+			thumbN++
+			_, _ = w.Write([]byte(`{"media_id":"thumb-` + strconv.Itoa(thumbN) + `"}`))
+		case strings.HasSuffix(r.URL.Path, "/uploadimg"):
+			_, _ = w.Write([]byte(`{"url":"https://mmbiz.qpic.cn/demo"}`))
+		case strings.HasSuffix(r.URL.Path, "/draft/update"):
+			updates++
+			var payload map[string]any
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &payload)
+			updatedMedia, _ = payload["media_id"].(string)
+			_, _ = w.Write([]byte(`{"errcode":40007,"errmsg":"invalid media_id"}`))
+		case strings.HasSuffix(r.URL.Path, "/draft/add"):
+			adds++
+			draftN++
+			var payload map[string]any
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &payload)
+			articles, _ := payload["articles"].([]any)
+			if len(articles) == 1 {
+				article, _ := articles[0].(map[string]any)
+				if thumb, _ := article["thumb_media_id"].(string); thumb != "" {
+					addedThumbs = append(addedThumbs, thumb)
+				}
+			}
+			_, _ = w.Write([]byte(`{"media_id":"draft-` + strconv.Itoa(draftN) + `"}`))
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: now, ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "wechat", Name: "wechat", Protocol: "local", BaseURL: srv.URL, Enabled: true,
+		UpdatedAt: now, ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{"mode": "live"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "regen-media@example.com")
+	if _, err := st.DB.Exec(ctx, `UPDATE wx_account SET app_id = ? WHERE id = ?`, "wx_live_regen", account.ID); err != nil {
+		t.Fatal(err)
+	}
+	runTask(t, st, deps, user, account, plan, now)
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) != 1 || articles[0].DraftMediaID != "draft-1" || articles[0].ThumbMediaID != "thumb-1" {
+		t.Fatalf("%#v %v", articles, err)
+	}
+	article := &articles[0]
+	var regenID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "regenerate", now.Add(time.Minute), article)
+		if err != nil {
+			return err
+		}
+		regenID = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	Execute(ctx, deps, regenID, false, now.Add(time.Minute))
+	article, err = st.GetArticle(ctx, nil, article.ID)
+	if err != nil || article == nil {
+		t.Fatal(err)
+	}
+	if article.Status != "in_draft" || article.DraftMediaID != "draft-2" || article.ThumbMediaID == "thumb-1" || article.ThumbMediaID == "" {
+		t.Fatalf("status %s draft %s thumb %s note %s", article.Status, article.DraftMediaID, article.ThumbMediaID, article.DeliveryNote)
+	}
+	if updates != 1 || updatedMedia != "draft-1" || adds != 2 {
+		t.Fatalf("updates %d media %s adds %d thumbs %#v", updates, updatedMedia, adds, addedThumbs)
+	}
+	if addedThumbs[len(addedThumbs)-1] != article.ThumbMediaID {
+		t.Fatalf("stored thumb %s added %#v", article.ThumbMediaID, addedThumbs)
+	}
+	task, err := st.GetTask(ctx, nil, regenID)
+	if err != nil || task == nil || traceStage(task.ModelTrace, "cover")["ok"] != true {
+		t.Fatalf("%#v %v", task, err)
+	}
+}
+
+func TestAddRetriesWhenThumbInvalid(t *testing.T) {
+	body := strings.Repeat("合适的正文。", 120)
+	var adds, thumbs int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/chat/completions") {
+			raw, _ := io.ReadAll(r.Body)
+			var req map[string]any
+			_ = json.Unmarshal(raw, &req)
+			switch stageOf(req) {
+			case "选题":
+				writeChoice(w, map[string]any{"title": "封面重传", "angle": "今天就能做"})
+			case "大纲":
+				writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+			default:
+				writeChoice(w, map[string]any{"title": "封面重传", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			}
+			return
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/stable_token"):
+			_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":7200}`))
+		case strings.HasSuffix(r.URL.Path, "/add_material"):
+			thumbs++
+			_, _ = w.Write([]byte(`{"media_id":"thumb-` + strconv.Itoa(thumbs) + `"}`))
+		case strings.HasSuffix(r.URL.Path, "/uploadimg"):
+			_, _ = w.Write([]byte(`{"url":"https://mmbiz.qpic.cn/demo"}`))
+		case strings.HasSuffix(r.URL.Path, "/draft/add"):
+			adds++
+			if adds == 1 {
+				_, _ = w.Write([]byte(`{"errcode":40007,"errmsg":"invalid media_id hint: thumb_media_id"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"media_id":"draft-ok"}`))
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: now, ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "wechat", Name: "wechat", Protocol: "local", BaseURL: srv.URL, Enabled: true,
+		UpdatedAt: now, ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{"mode": "live"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "thumb-retry@example.com")
+	if _, err := st.DB.Exec(ctx, `UPDATE wx_account SET app_id = ? WHERE id = ?`, "wx_live_thumb", account.ID); err != nil {
+		t.Fatal(err)
+	}
+	runTask(t, st, deps, user, account, plan, now)
+	if adds != 2 || thumbs != 2 {
+		t.Fatalf("adds %d thumbs %d", adds, thumbs)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 || articles[0].Status != "in_draft" || articles[0].DraftMediaID != "draft-ok" || articles[0].ThumbMediaID != "thumb-2" {
+		t.Fatalf("%#v %v", articles, err)
 	}
 }
 

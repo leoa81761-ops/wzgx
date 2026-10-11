@@ -321,7 +321,7 @@ func stageFromMessages(messages []map[string]string) string {
 
 func longStage(stage string) bool {
 	switch stage {
-	case "大纲", "正文", "审核", "扩写", "缩写":
+	case "大纲", "正文", "审核", "扩写", "缩写", "事实核对":
 		return true
 	default:
 		return false
