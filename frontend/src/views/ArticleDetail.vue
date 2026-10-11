@@ -13,6 +13,11 @@
     <p v-if="article.risk_level && article.risk_level !== 'low'" class="banner">{{ article.risk_label }}</p>
     <p v-if="article.draft_media_id" class="muted">草稿 media_id：{{ article.draft_media_id }}</p>
     <p v-if="themeNote" class="muted">{{ themeNote }}</p>
+    <label>排版预览
+      <select v-model="previewTemplate" @change="load(dark ? 'dark' : 'light')">
+        <option v-for="item in templates" :key="item.key" :value="item.key">{{ item.name }}</option>
+      </select>
+    </label>
     <div class="row">
       <button class="btn" type="button" :disabled="loading" @click="regenerate">{{ loading ? "正在重写…" : "重新生成" }}</button>
       <button class="btn-ghost" type="button" @click="copyHtml">复制 HTML</button>
@@ -49,6 +54,8 @@ const loading = ref(false);
 const dark = ref(false);
 const themeNote = ref("");
 const feedbackNote = ref("");
+const templates = ref([]);
+const previewTemplate = ref("");
 
 let pollTimer = 0;
 
@@ -67,9 +74,13 @@ function schedulePoll() {
 }
 
 async function load(theme = "light") {
-  const data = await api(`/api/articles/${route.params.id}?theme=${theme}`);
+  const query = new URLSearchParams();
+  query.set("theme", theme);
+  if (previewTemplate.value) query.set("template", previewTemplate.value);
+  const data = await api(`/api/articles/${route.params.id}?${query}`);
   article.value = data;
   themeNote.value = data.theme_note || "";
+  if (!previewTemplate.value && data.template_key) previewTemplate.value = data.template_key;
 }
 
 async function toggleTheme() {
@@ -143,6 +154,8 @@ async function copyHtml() {
 }
 
 onMounted(async () => {
+  const meta = await api("/api/meta");
+  templates.value = meta.templates || [];
   await load();
   schedulePoll();
 });

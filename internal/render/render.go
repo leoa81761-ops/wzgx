@@ -43,6 +43,30 @@ var themes = map[string]map[string]string{
 		"src":   "font-size:13px;line-height:1.65;color:#546274;margin:0 0 8px;",
 		"foot":  "font-size:13px;line-height:1.65;color:#6a7684;margin:8px 0 0;",
 	},
+	"card": {
+		"wrap":  "font-size:16px;line-height:1.75;color:#1f2933;",
+		"h2":    "font-size:17px;line-height:1.45;font-weight:700;margin:22px 0 10px;padding:8px 12px;background:#f6f1ea;color:#1f2933;",
+		"p":     "margin:0 0 14px;font-size:16px;line-height:1.75;color:#1f2933;",
+		"lead":  "margin:0 0 18px;font-size:15px;line-height:1.7;color:#5c5148;",
+		"ul":    "margin:0 0 16px;padding-left:1.2em;",
+		"li":    "margin:0 0 8px;line-height:1.7;color:#1f2933;",
+		"hr":    "border:none;border-top:1px solid #e6dccf;margin:22px 0;",
+		"src_h": "font-size:15px;font-weight:700;margin:8px 0;color:#1f2933;",
+		"src":   "font-size:13px;line-height:1.65;color:#6b6258;margin:0 0 8px;",
+		"foot":  "font-size:13px;line-height:1.65;color:#8a8178;margin:8px 0 0;",
+	},
+	"magazine": {
+		"wrap":  "font-size:16px;line-height:1.8;color:#241c16;",
+		"h2":    "font-size:20px;line-height:1.4;font-weight:700;margin:30px 0 12px;padding-left:10px;border-left:4px solid #9a3412;color:#241c16;",
+		"p":     "margin:0 0 14px;font-size:16px;line-height:1.8;color:#241c16;",
+		"lead":  "margin:0 0 18px;font-size:17px;line-height:1.7;color:#5c4638;",
+		"ul":    "margin:0 0 16px;padding-left:1.2em;",
+		"li":    "margin:0 0 8px;line-height:1.7;color:#241c16;",
+		"hr":    "border:none;border-top:1px solid #eadfd4;margin:22px 0;",
+		"src_h": "font-size:15px;font-weight:700;margin:8px 0;color:#9a3412;",
+		"src":   "font-size:13px;line-height:1.65;color:#6b574c;margin:0 0 8px;",
+		"foot":  "font-size:13px;line-height:1.65;color:#8a7368;margin:8px 0 0;",
+	},
 }
 
 func DisplayURL(url string) string {
@@ -69,7 +93,8 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 	}
 	if dark {
 		theme["wrap"] = "font-size:16px;line-height:1.75;color:#f5f0e8;background:#1c1917;padding:12px;"
-		theme["h2"] = strings.NewReplacer("#1f2933", "#e7b8a8", "#1f6a4d", "#e7b8a8", "#1e3a5f", "#e7b8a8").Replace(theme["h2"])
+		theme["h2"] = strings.NewReplacer("#1f2933", "#e7b8a8", "#1f6a4d", "#e7b8a8", "#1e3a5f", "#e7b8a8", "#241c16", "#f5f0e8", "#9a3412", "#e7b8a8").Replace(theme["h2"])
+		theme["h2"] = strings.ReplaceAll(theme["h2"], "background:#f6f1ea;", "")
 		theme["p"] = "margin:0 0 14px;font-size:16px;line-height:1.75;color:#f5f0e8;"
 		theme["lead"] = "margin:0 0 18px;font-size:15px;line-height:1.7;color:#d9cfc3;"
 		theme["li"] = "margin:0 0 8px;line-height:1.7;color:#f5f0e8;"
@@ -110,6 +135,14 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 				lis.WriteString(`<li style="` + theme["li"] + `">` + html.EscapeString(item) + `</li>`)
 			}
 			parts = append(parts, `<ul style="`+theme["ul"]+`">`+lis.String()+`</ul>`)
+		}
+		if table, _ := section["table"].(map[string]any); table != nil && !compact {
+			if rendered := renderTable(theme, table); rendered != "" {
+				parts = append(parts, rendered)
+			}
+		}
+		if imageURL := strings.TrimSpace(asString(section["image_url"])); imageURL != "" {
+			parts = append(parts, `<img src="`+html.EscapeString(imageURL)+`" alt="" style="max-width:100%;height:auto;display:block;margin:0 0 16px;" />`)
 		}
 	}
 	if closing := strings.TrimSpace(asString(article["closing"])); closing != "" {
@@ -157,6 +190,74 @@ func (tooLong) Error() string {
 }
 
 var errTooLong = tooLong{}
+
+func renderTable(theme map[string]string, table map[string]any) string {
+	var headers []string
+	for _, item := range asList(table["headers"]) {
+		text := strings.TrimSpace(asString(item))
+		if text != "" {
+			headers = append(headers, text)
+		}
+	}
+	var rows [][]string
+	for _, raw := range asList(table["rows"]) {
+		var cells []string
+		switch row := raw.(type) {
+		case []any:
+			for _, cell := range row {
+				cells = append(cells, strings.TrimSpace(asString(cell)))
+			}
+		}
+		if len(cells) > 0 {
+			rows = append(rows, cells)
+		}
+	}
+	if len(headers) == 0 || len(rows) == 0 {
+		return ""
+	}
+	cell := "border:1px solid #e6dccf;padding:6px 8px;font-size:14px;line-height:1.5;color:#1f2933;"
+	head := cell + "font-weight:700;background:#f6f1ea;"
+	if len(headers) > 4 {
+		var cards []string
+		for _, row := range rows {
+			var bits []string
+			for i, value := range row {
+				label := "项"
+				if i < len(headers) {
+					label = headers[i]
+				}
+				if value == "" {
+					continue
+				}
+				bits = append(bits, label+"："+value)
+			}
+			if len(bits) > 0 {
+				cards = append(cards, `<p style="`+theme["p"]+`">`+html.EscapeString(strings.Join(bits, "；"))+`</p>`)
+			}
+		}
+		return strings.Join(cards, "")
+	}
+	var b strings.Builder
+	b.WriteString(`<table style="width:100%;border-collapse:collapse;margin:0 0 16px;">`)
+	b.WriteString("<tr>")
+	for _, item := range headers {
+		b.WriteString(`<th style="` + head + `">` + html.EscapeString(item) + `</th>`)
+	}
+	b.WriteString("</tr>")
+	for _, row := range rows {
+		b.WriteString("<tr>")
+		for i := 0; i < len(headers); i++ {
+			value := ""
+			if i < len(row) {
+				value = row[i]
+			}
+			b.WriteString(`<td style="` + cell + `">` + html.EscapeString(value) + `</td>`)
+		}
+		b.WriteString("</tr>")
+	}
+	b.WriteString("</table>")
+	return b.String()
+}
 
 func InjectImage(htmlText, imageURL string) string {
 	if strings.TrimSpace(imageURL) == "" {

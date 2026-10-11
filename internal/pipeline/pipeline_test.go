@@ -885,6 +885,10 @@ func TestCoverTraceRecordsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	user, account, plan := seedPlan(t, st, "cover@example.com")
+	user.Tier = "standard"
+	if err := st.UpdateUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
 	runTask(t, st, deps, user, account, plan, now)
 	if sawFormat != "b64_json" {
 		t.Fatal(sawFormat)
@@ -914,6 +918,10 @@ func TestCoverTraceRecordsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	user2, account2, plan2 := seedPlan(t, st, "cover-fallback@example.com")
+	user2.Tier = "standard"
+	if err := st.UpdateUser(ctx, nil, user2); err != nil {
+		t.Fatal(err)
+	}
 	runTask(t, st, deps, user2, account2, plan2, now)
 	articles, err = st.ListArticlesByUser(ctx, user2.ID, 5)
 	if err != nil || len(articles) == 0 || articles[0].Status != "in_draft" {

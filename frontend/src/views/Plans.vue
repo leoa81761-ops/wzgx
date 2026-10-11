@@ -20,7 +20,7 @@
       <label v-if="directionChoice === '__custom'">自定义方向<input v-model="customDirection" placeholder="例如：城市徒步" /></label>
       <div class="stack">
         <span>风格</span>
-        <button v-for="style in styles" :key="style.key" type="button" class="choice" :class="{ active: form.style_key === style.key }" @click="form.style_key = style.key">
+        <button v-for="style in styleChoices" :key="style.key" type="button" class="choice" :class="{ active: form.style_key === style.key }" @click="form.style_key = style.key">
           <strong>{{ style.name }}</strong>
           <div class="muted">{{ style.description }}</div>
         </button>
@@ -28,7 +28,7 @@
       <div class="stack">
         <span>排版模板</span>
         <div class="row">
-          <button v-for="item in templates" :key="item.key" type="button" class="choice" :class="{ active: form.template_key === item.key }" @click="form.template_key = item.key">
+          <button v-for="item in templateChoices" :key="item.key" type="button" class="choice" :class="{ active: form.template_key === item.key }" @click="form.template_key = item.key">
             {{ item.name }}
           </button>
         </div>
@@ -130,6 +130,13 @@ const wordOptions = computed(() => {
   return [800, 1000, 1500, 3000].filter((item) => item <= max);
 });
 
+function tierRank(tier) {
+  return { free: 0, standard: 1, premium: 2, lifetime: 3 }[tier] || 0;
+}
+
+const styleChoices = computed(() => styles.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
+const templateChoices = computed(() => templates.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
+
 async function load() {
   const [meta, quotaData, accountData, planData] = await Promise.all([
     api("/api/meta"),
@@ -149,6 +156,10 @@ async function load() {
   }
   if (!form.wx_account_id && accountData[0]) form.wx_account_id = accountData[0].id;
   if (quotaData.tier === "free") form.time_window = "night";
+  const allowedStyles = styleChoices.value;
+  if (allowedStyles.length && !allowedStyles.some((item) => item.key === form.style_key)) form.style_key = allowedStyles[0].key;
+  const allowedTemplates = templateChoices.value;
+  if (allowedTemplates.length && !allowedTemplates.some((item) => item.key === form.template_key)) form.template_key = allowedTemplates[0].key;
 }
 
 async function submit() {

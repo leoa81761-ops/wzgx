@@ -99,8 +99,28 @@ func (a *App) meta(w http.ResponseWriter, r *http.Request) error {
 			"max_accounts": item.MaxAccounts, "max_plans": item.MaxPlans, "max_words": item.MaxWords, "summary": item.Summary,
 		})
 	}
+	styles, err := a.styleDicts(r.Context(), true)
+	if err != nil {
+		return err
+	}
+	if len(styles) == 0 {
+		styles = make([]map[string]any, 0, len(catalog.Styles))
+		for _, item := range catalog.Styles {
+			styles = append(styles, map[string]any{"key": item.Key, "name": item.Name, "description": item.Description, "tone": item.Tone, "min_tier": item.MinTier, "enabled": true})
+		}
+	}
+	templates, err := a.templateDicts(r.Context(), true)
+	if err != nil {
+		return err
+	}
+	if len(templates) == 0 {
+		templates = make([]map[string]any, 0, len(catalog.Templates))
+		for _, item := range catalog.Templates {
+			templates = append(templates, map[string]any{"key": item.Key, "name": item.Name, "description": item.Description, "min_tier": item.MinTier, "enabled": true})
+		}
+	}
 	writeJSON(w, 200, map[string]any{
-		"styles": catalog.Styles, "templates": catalog.Templates, "directions": catalog.Directions,
+		"styles": styles, "templates": templates, "directions": catalog.Directions,
 		"windows": catalog.Windows, "word_choices": catalog.WordChoices, "columns": catalog.Columns,
 		"wechat_mode": wx.Mode, "public_egress_ip": wx.IP, "plans": planOut,
 	})
@@ -674,7 +694,7 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			return bad("「" + word + "」一类方向风险较高，当前版本不开放自动写作")
 		}
 	}
-	if catalog.StyleByKey(body.StyleKey).Key == "" || catalog.TemplateByKey(body.TemplateKey).Key == "" {
+	if body.StyleKey == "" || body.TemplateKey == "" {
 		return bad("请选择风格和排版模板")
 	}
 	if body.ScheduleType != "daily" && body.ScheduleType != "weekly" {
@@ -715,6 +735,9 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 		}
 		if !catalog.WordAllowed(body.WordTarget) || body.WordTarget > limits.MaxWords {
 			return bad("当前会员单篇上限为 " + strconv.Itoa(limits.MaxWords) + " 字")
+		}
+		if err := a.presetAllowed(r.Context(), tier, body.StyleKey, body.TemplateKey); err != nil {
+			return err
 		}
 		count, err := a.Store.CountPlans(r.Context(), tx, user.ID)
 		if err != nil {
@@ -1043,12 +1066,32 @@ func (a *App) articleDetail(w http.ResponseWriter, r *http.Request, user *model.
 		return err
 	}
 	payload := articleDict(article, true)
-	if r.URL.Query().Get("theme") == "dark" && len(article.BodyJSON) > 0 {
-		if html, err := render.RenderWithinLimit(article.BodyJSON, article.TemplateKey, true); err == nil {
-			payload["body_html"] = html
-			payload["theme_note"] = "暗色预览只在站内查看，写入草稿箱的仍是浅色模板。"
+	templateKey := article.TemplateKey
+	requested := strings.TrimSpace(r.URL.Query().Get("template"))
+	if requested != "" && requested != article.TemplateKey {
+		ok, err := a.knownTemplate(r.Context(), requested)
+		if err != nil {
+			return err
+		}
+		if ok {
+			templateKey = requested
 		}
 	}
+	dark := r.URL.Query().Get("theme") == "dark"
+	if len(article.BodyJSON) > 0 && (dark || templateKey != article.TemplateKey) {
+		if html, err := render.RenderWithinLimit(article.BodyJSON, templateKey, dark); err == nil {
+			payload["body_html"] = html
+			var notes []string
+			if dark {
+				notes = append(notes, "暗色预览只在站内查看，写入草稿箱的仍是浅色模板。")
+			}
+			if templateKey != article.TemplateKey {
+				notes = append(notes, "当前预览用的排版还没有写回草稿。")
+			}
+			payload["theme_note"] = strings.Join(notes, "")
+		}
+	}
+	payload["preview_template"] = templateKey
 	writeJSON(w, 200, payload)
 	return nil
 }

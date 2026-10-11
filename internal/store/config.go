@@ -373,11 +373,14 @@ func (s *Store) HasStyle(ctx context.Context, q db.Q, key string) (bool, error) 
 	return n > 0, err
 }
 
-func (s *Store) InsertStyle(ctx context.Context, q db.Q, key, name, description string) error {
+func (s *Store) InsertStyle(ctx context.Context, q db.Q, key, name, description, tone, minTier string) error {
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `INSERT INTO style_preset (key, name, description, enabled) VALUES (?, ?, ?, 1)`, key, name, description)
+	if minTier == "" {
+		minTier = "free"
+	}
+	_, err := q.Exec(ctx, `INSERT INTO style_preset (key, name, description, enabled, min_tier, tone) VALUES (?, ?, ?, 1, ?, ?)`, key, name, description, minTier, tone)
 	return err
 }
 
@@ -390,10 +393,13 @@ func (s *Store) HasTemplate(ctx context.Context, q db.Q, key string) (bool, erro
 	return n > 0, err
 }
 
-func (s *Store) InsertTemplate(ctx context.Context, q db.Q, key, name, description string) error {
+func (s *Store) InsertTemplate(ctx context.Context, q db.Q, key, name, description, minTier string) error {
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `INSERT INTO layout_template (key, name, description, version, enabled) VALUES (?, ?, ?, '1', 1)`, key, name, description)
+	if minTier == "" {
+		minTier = "free"
+	}
+	_, err := q.Exec(ctx, `INSERT INTO layout_template (key, name, description, version, enabled, min_tier) VALUES (?, ?, ?, '1', 1, ?)`, key, name, description, minTier)
 	return err
 }

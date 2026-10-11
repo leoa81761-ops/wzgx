@@ -17,7 +17,7 @@
         <tbody>
           <tr v-for="user in users" :key="user.id">
             <td>{{ user.account }}<div class="muted" v-if="user.is_admin">管理员</div></td>
-            <td>{{ user.tier_label }}</td>
+            <td>{{ user.tier_label }}<div v-if="user.pending_tier" class="muted">到期后改为{{ user.pending_label }}</div></td>
             <td>{{ formatTime(user.tier_expires_at) }}</td>
             <td>{{ user.is_active ? "启用" : "已停用" }}</td>
             <td>
@@ -30,6 +30,7 @@
                 </select>
                 <input v-model="edits[user.id].expires" type="datetime-local" />
                 <input v-model="edits[user.id].note" placeholder="备注，例如线下收款 30 元" />
+                <label class="check"><input type="checkbox" v-model="edits[user.id].later" /> 降级等到期再生效</label>
                 <div class="row">
                   <button class="btn" type="button" @click="saveTier(user)">保存</button>
                   <button v-if="!user.is_self" class="btn-ghost" type="button" @click="setActive(user, !user.is_active)">{{ user.is_active ? "停用" : "启用" }}</button>
@@ -189,6 +190,76 @@
       <label>允许<textarea v-model="allowedDomains" rows="4"></textarea></label>
       <button class="btn" type="button" @click="saveDomains">保存来源域名</button>
     </section>
+
+    <section v-if="tab === 'library'" class="stack">
+      <article class="card stack">
+        <h2>风格</h2>
+        <p class="muted">免费版只能选最低档为免费的风格。更高档位的风格在写作计划里按会员过滤。</p>
+        <div v-for="item in styles" :key="item.key" class="stack">
+          <div class="row">
+            <strong>{{ item.key }}</strong>
+            <input v-model="item.name" />
+            <select v-model="item.min_tier">
+              <option value="free">免费版</option>
+              <option value="standard">普通版</option>
+              <option value="premium">高级版</option>
+              <option value="lifetime">买断版</option>
+            </select>
+            <label class="check"><input type="checkbox" v-model="item.enabled" /> 启用</label>
+            <button class="btn-ghost" type="button" @click="saveStyle(item)">保存</button>
+          </div>
+          <input v-model="item.description" placeholder="说明" />
+          <input v-model="item.tone" placeholder="语气，会写进提示词" />
+        </div>
+        <div class="row">
+          <input v-model="newStyle.key" placeholder="标识，如 story" />
+          <input v-model="newStyle.name" placeholder="名称" />
+          <button class="btn" type="button" @click="saveStyle(newStyle)">新增风格</button>
+        </div>
+      </article>
+      <article class="card stack">
+        <h2>排版模板</h2>
+        <div v-for="item in templates" :key="item.key" class="row">
+          <strong>{{ item.key }}</strong>
+          <input v-model="item.name" />
+          <input v-model="item.description" placeholder="说明" />
+          <select v-model="item.min_tier">
+            <option value="free">免费版</option>
+            <option value="standard">普通版</option>
+            <option value="premium">高级版</option>
+            <option value="lifetime">买断版</option>
+          </select>
+          <label class="check"><input type="checkbox" v-model="item.enabled" /> 启用</label>
+          <button class="btn-ghost" type="button" @click="saveTemplate(item)">保存</button>
+        </div>
+        <div class="row">
+          <input v-model="newTemplate.key" placeholder="标识，如 card" />
+          <input v-model="newTemplate.name" placeholder="名称" />
+          <button class="btn" type="button" @click="saveTemplate(newTemplate)">新增模板</button>
+        </div>
+      </article>
+      <article class="card stack">
+        <h2>垂类规则包</h2>
+        <p class="muted">方向名称里包含关键词时使用对应规则。关键词留空的「通用」是兜底。子话题每行一个。</p>
+        <div v-for="item in verticals" :key="item.key" class="stack">
+          <div class="row">
+            <strong>{{ item.key }}</strong>
+            <input v-model="item.name" />
+            <input v-model="item.keywords" placeholder="关键词，逗号分隔" />
+            <label class="check"><input type="checkbox" v-model="item.enabled" /> 启用</label>
+            <button class="btn-ghost" type="button" @click="saveVertical(item)">保存</button>
+          </div>
+          <textarea v-model="item.subtopics" rows="3" placeholder="子话题，每行一个"></textarea>
+          <textarea v-model="item.red_lines" rows="2" placeholder="红线"></textarea>
+          <input v-model="item.disclaimer" placeholder="文末声明，可留空" />
+        </div>
+        <div class="row">
+          <input v-model="newVertical.key" placeholder="标识，如 travel" />
+          <input v-model="newVertical.name" placeholder="名称" />
+          <button class="btn" type="button" @click="saveVertical(newVertical)">新增垂类</button>
+        </div>
+      </article>
+    </section>
   </div>
 </template>
 
@@ -204,6 +275,7 @@ const tabs = [
   { key: "words", label: "敏感词" },
   { key: "tasks", label: "任务" },
   { key: "complaints", label: "投诉" },
+  { key: "library", label: "内容库" },
 ];
 const tab = ref("models");
 const error = ref("");
@@ -223,6 +295,12 @@ const blockedDomains = ref("");
 const allowedDomains = ref("");
 const tasks = ref([]);
 const complaints = ref([]);
+const styles = ref([]);
+const templates = ref([]);
+const verticals = ref([]);
+const newStyle = reactive({ key: "", name: "", description: "", tone: "", min_tier: "free", enabled: true });
+const newTemplate = reactive({ key: "", name: "", description: "", min_tier: "free", enabled: true });
+const newVertical = reactive({ key: "", name: "", keywords: "", subtopics: "", red_lines: "", source_allow: "", image_rules: "", disclaimer: "", enabled: true });
 const replies = reactive({});
 const probeText = ref("");
 const wechat = reactive({ mode: "mock", api_base: "https://api.weixin.qq.com", public_egress_ip: "" });
@@ -328,6 +406,9 @@ async function load() {
   allowedDomains.value = (domainData.allow || []).join("\n");
   tasks.value = await api("/api/admin/tasks");
   complaints.value = await api("/api/admin/complaints");
+  styles.value = await api("/api/admin/styles");
+  templates.value = await api("/api/admin/templates");
+  verticals.value = await api("/api/admin/verticals");
 }
 
 async function replyComplaint(item) {
@@ -377,16 +458,56 @@ async function saveTier(user) {
   message.value = "";
   const edit = edits[user.id];
   try {
-    await api(`/api/admin/users/${user.id}/tier`, {
+    const saved = await api(`/api/admin/users/${user.id}/tier`, {
       method: "PUT",
       body: {
         tier: edit.tier,
         expires_at: edit.expires ? `${edit.expires}:00+08:00` : null,
         note: edit.note,
+        when: edit.later ? "period_end" : "now",
       },
     });
-    message.value = "档位已更新";
+    message.value = saved.pending_tier ? "已安排到期后生效" : "档位已更新";
     await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function saveStyle(item) {
+  error.value = "";
+  message.value = "";
+  try {
+    styles.value = await api("/api/admin/styles", { method: "PUT", body: item });
+    newStyle.key = "";
+    newStyle.name = "";
+    message.value = "风格已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function saveTemplate(item) {
+  error.value = "";
+  message.value = "";
+  try {
+    templates.value = await api("/api/admin/templates", { method: "PUT", body: item });
+    newTemplate.key = "";
+    newTemplate.name = "";
+    message.value = "模板已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function saveVertical(item) {
+  error.value = "";
+  message.value = "";
+  try {
+    verticals.value = await api("/api/admin/verticals", { method: "PUT", body: item });
+    newVertical.key = "";
+    newVertical.name = "";
+    message.value = "垂类已保存";
   } catch (err) {
     error.value = err.message;
   }

@@ -27,10 +27,11 @@ func StageSchema(stageLabel string) *Schema {
 					"type":        "array",
 					"description": "2 到 5 个小节",
 					"items": objectSchema(
-						[]string{"heading", "intent"},
+						[]string{"heading", "intent", "need_table"},
 						map[string]any{
-							"heading": strField("小节标题"),
-							"intent":  strField("这一节要让读者明白的事"),
+							"heading":    strField("小节标题"),
+							"intent":     strField("这一节要让读者明白的事"),
+							"need_table": map[string]any{"type": "boolean", "description": "这一节用一张对照表会更清楚时为 true，否则 false"},
 						},
 					),
 				},
@@ -63,9 +64,9 @@ func draftSchema() map[string]any {
 			"summary": strField("一两句摘要"),
 			"sections": map[string]any{
 				"type":        "array",
-				"description": "正文小节",
+				"description": "正文小节。对照、步骤或参数适合用表格时，在 table.rows 里写 2 到 4 列；不需要表格时 rows 为空数组",
 				"items": objectSchema(
-					[]string{"heading", "paragraphs", "list"},
+					[]string{"heading", "paragraphs", "list", "table"},
 					map[string]any{
 						"heading": strField("小节标题"),
 						"paragraphs": map[string]any{
@@ -77,6 +78,24 @@ func draftSchema() map[string]any {
 							"description": "这一节的要点列表，没有则为空数组",
 							"items":       map[string]any{"type": "string"},
 						},
+						"table": objectSchema(
+							[]string{"headers", "rows"},
+							map[string]any{
+								"headers": map[string]any{
+									"type":        "array",
+									"description": "2 到 4 列表头。这一节不需要表格时仍给两个表头",
+									"items":       map[string]any{"type": "string"},
+								},
+								"rows": map[string]any{
+									"type":        "array",
+									"description": "表格的行。不需要表格时为空数组，程序不会画出来",
+									"items": map[string]any{
+										"type":  "array",
+										"items": map[string]any{"type": "string"},
+									},
+								},
+							},
+						),
 					},
 				),
 			},
