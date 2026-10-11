@@ -57,7 +57,6 @@ type work struct {
 	RegenArticleID  *int64
 	Locked          *topics.Choice
 	ExistingMediaID string
-	ExistingThumbID string
 	History         []topics.Coverage
 	RecentTitles    []string
 }
@@ -157,7 +156,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		}
 		var article *model.Article
 		var locked *topics.Choice
-		existingMedia, existingThumb := "", ""
+		existingMedia := ""
 		if task.RegenOfArticleID != nil {
 			article, err = deps.Store.GetArticle(ctx, tx, *task.RegenOfArticleID)
 			if err != nil {
@@ -174,7 +173,6 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 				locked = &choice
 			}
 			existingMedia = article.DraftMediaID
-			existingThumb = article.ThumbMediaID
 			article.Status = "generating"
 			article.FailureReason = ""
 			if err := deps.Store.UpdateArticle(ctx, tx, article); err != nil {
@@ -220,7 +218,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			ScheduleType: plan.ScheduleType, Weekdays: plan.Weekdays, TimeWindow: plan.TimeWindow,
 			AccountID: account.ID, AppID: account.AppID, AppSecret: secret, DeliveryMode: account.DeliveryMode,
 			Trigger: task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
-			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia, ExistingThumbID: existingThumb,
+			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
 			History: history, RecentTitles: titles,
 		}
 		ok = true
@@ -382,6 +380,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	tokens += fitTokens
 	trace = append(trace, fitTrace...)
 	reviewPayload := cloneMap(draftPayload)
+	checked, checkTokens, checkTrace := factCheck(ctx, gateway, providers["review"], reviewPayload, draft)
+	draft = checked
+	tokens += checkTokens
+	trace = append(trace, checkTrace...)
 	reviewPayload["draft"] = draft
 	reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
 	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateDraft)
@@ -442,7 +444,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 }
 
 func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
-	thumb := w.ExistingThumbID
 	if w.DeliveryMode != "draft" {
 		return pushed{Status: "exported", HTML: article.HTML, DeliveryNote: "当前公众号为手动导出模式，请复制排版 HTML 后粘贴到公众号编辑器。"}, nil
 	}
@@ -457,18 +458,13 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	client := wechat.Build(w.AppID, w.AppSecret, mode, base, deps.HTTP, deps.Tokens)
 	html := article.HTML
 	outHTML := html
-	var coverTrace map[string]any
-	if thumb == "" {
-		png, filename, traceRow := chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey)
-		coverTrace = traceRow
-		id, err := client.UploadThumb(ctx, png, filename)
-		if err != nil {
-			if authFailed(err) {
-				return pushed{}, err
-			}
-			return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace}, nil
+	png, filename, coverTrace := chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey)
+	thumb, err := client.UploadThumb(ctx, png, filename)
+	if err != nil {
+		if authFailed(err) {
+			return pushed{}, err
 		}
-		thumb = id
+		return pushed{Status: "exported", HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace}, nil
 	}
 	if imageURL, err := client.UploadContentImage(ctx, cover.ContentPNG(), "inline.png"); err != nil {
 		if authFailed(err) {
@@ -479,13 +475,7 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		outHTML = html
 	}
 	draft := wechat.DraftArticle{Title: str(article.Draft["title"]), Digest: str(article.Draft["summary"]), Content: html, Author: "公号智写", ThumbMediaID: thumb}
-	var mediaID string
-	var err error
-	if w.ExistingMediaID != "" {
-		mediaID, err = client.UpdateDraft(ctx, w.ExistingMediaID, draft)
-	} else {
-		mediaID, err = client.AddDraft(ctx, draft)
-	}
+	mediaID, thumb, err := placeDraft(ctx, client, w.ExistingMediaID, draft, png, filename)
 	if err != nil {
 		if authFailed(err) {
 			return pushed{}, err
@@ -493,6 +483,54 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace}, nil
 	}
 	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, CoverTrace: coverTrace}, nil
+}
+
+// placeDraft 先尝试更新仍在草稿箱里的稿件。media_id 或封面失效时重新上传封面，再新建一篇草稿。
+// 重写仍优先更新：旧稿还在时不会在草稿箱里留一份过期副本；已被删除或发布时再新建。
+func placeDraft(ctx context.Context, client wechat.Client, existing string, draft wechat.DraftArticle, png []byte, filename string) (string, string, error) {
+	thumb := draft.ThumbMediaID
+	upload := func() error {
+		id, err := client.UploadThumb(ctx, png, filename)
+		if err != nil {
+			return err
+		}
+		thumb = id
+		draft.ThumbMediaID = id
+		return nil
+	}
+	if existing != "" {
+		mediaID, err := client.UpdateDraft(ctx, existing, draft)
+		if err == nil {
+			return mediaID, thumb, nil
+		}
+		if !wechat.InvalidMedia(err) {
+			return "", thumb, err
+		}
+		if errUp := upload(); errUp != nil {
+			return "", thumb, errUp
+		}
+		mediaID, err = client.AddDraft(ctx, draft)
+		if err == nil {
+			return mediaID, thumb, nil
+		}
+		if !wechat.InvalidMedia(err) {
+			return "", thumb, err
+		}
+		if errUp := upload(); errUp != nil {
+			return "", thumb, errUp
+		}
+		mediaID, err = client.AddDraft(ctx, draft)
+		return mediaID, thumb, err
+	}
+	mediaID, err := client.AddDraft(ctx, draft)
+	if err == nil || !wechat.InvalidMedia(err) {
+		return mediaID, thumb, err
+	}
+	if errUp := upload(); errUp != nil {
+		return "", thumb, errUp
+	}
+	mediaID, err = client.AddDraft(ctx, draft)
+	return mediaID, thumb, err
 }
 
 func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[string]any, now time.Time) {
@@ -754,6 +792,17 @@ func anySources(sources []map[string]any) []any {
 		listed[i] = sources[i]
 	}
 	return listed
+}
+
+func factCheck(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any) (map[string]any, int, []map[string]any) {
+	checkPayload := cloneMap(payload)
+	checkPayload["draft"] = draft
+	checked, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("事实核对", checkPayload), llm.StageSchema("正文"), validateDraft)
+	trace := appendStage(nil, "factcheck", completion, err)
+	if err != nil {
+		return draft, 0, trace
+	}
+	return checked, completion.PromptTokens + completion.CompletionTokens, trace
 }
 
 func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, target int) (map[string]any, int, []map[string]any) {

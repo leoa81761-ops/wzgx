@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -163,7 +164,7 @@ func resolve(ctx context.Context, st *store.Store, q db.Q, cfg config.Settings, 
 		}
 	}
 	if len(chosen) > 0 {
-		return chosen, nil
+		return orderResearch(stage, chosen), nil
 	}
 	if stage == "research" {
 		return nil, nil
@@ -223,6 +224,25 @@ func ToProvider(row model.ServiceConfig, master string) llm.Provider {
 		params = map[string]any{}
 	}
 	return llm.Provider{ID: row.ID, Name: row.Name, Protocol: row.Protocol, BaseURL: row.BaseURL, APIKey: secret, Model: row.ModelName, ExtraHeaders: headers, ExtraParams: params, Timeout: timeout}
+}
+
+func orderResearch(stage string, providers []llm.Provider) []llm.Provider {
+	if stage != "research" {
+		return providers
+	}
+	fast := make([]llm.Provider, 0, len(providers))
+	rest := make([]llm.Provider, 0, len(providers))
+	for _, provider := range providers {
+		if strings.Contains(strings.ToLower(provider.Model), "chat-fast") {
+			fast = append(fast, provider)
+		} else {
+			rest = append(rest, provider)
+		}
+	}
+	if len(fast) == 0 {
+		return providers
+	}
+	return append(fast, rest...)
 }
 
 func Builtin() llm.Provider {

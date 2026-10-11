@@ -11,6 +11,18 @@ import (
 	"time"
 )
 
+func TestFactCheckPromptForbidsInventedThresholds(t *testing.T) {
+	fact := StageMessages("事实核对", map[string]any{"draft": map[string]any{"title": "弱电"}})
+	system := fact[0]["content"]
+	if !strings.Contains(system, "弱电") || !strings.Contains(system, "1000V") || !strings.Contains(system, "阈值") || !strings.Contains(system, "research_sources") {
+		t.Fatal(system)
+	}
+	draft := StageMessages("正文", map[string]any{"word_target": 1500})
+	if !strings.Contains(draft[0]["content"], "阈值") || !strings.Contains(draft[0]["content"], "标准编号") {
+		t.Fatal(draft[0]["content"])
+	}
+}
+
 func TestURLNormalization(t *testing.T) {
 	if OpenAIURL("https://api.openai.com/v1") != "https://api.openai.com/v1/chat/completions" {
 		t.Fatal(OpenAIURL("https://api.openai.com/v1"))

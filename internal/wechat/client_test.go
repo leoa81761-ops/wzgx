@@ -235,6 +235,24 @@ func TestErrcodeMessagesAndPermission(t *testing.T) {
 	}
 }
 
+func TestInvalidMedia(t *testing.T) {
+	if !InvalidMedia(&Error{Code: 40007, Message: Explain(40007, "invalid media_id")}) {
+		t.Fatal("40007")
+	}
+	if !InvalidMedia(&Error{Code: 40007, Message: "invalid media_id"}) {
+		t.Fatal("plain 40007")
+	}
+	if !InvalidMedia(&Error{Message: "thumb_media_id invalid"}) {
+		t.Fatal("thumb")
+	}
+	if InvalidMedia(&Error{Code: 45002, Message: Explain(45002, "content size out of limit")}) {
+		t.Fatal("content limit is not an invalid media id")
+	}
+	if InvalidMedia(&Error{Code: 40001, Message: "凭证无效"}) {
+		t.Fatal("auth")
+	}
+}
+
 func TestImageContentTypeFollowsFilename(t *testing.T) {
 	if imageContentType("cover.jpg") != "image/jpeg" || imageContentType("cover.jpeg") != "image/jpeg" || imageContentType("cover.png") != "image/png" {
 		t.Fatal(imageContentType("cover.jpg"), imageContentType("cover.png"))
