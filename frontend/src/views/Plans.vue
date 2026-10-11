@@ -83,6 +83,23 @@
             <button class="text-btn" type="button" @click="veto(plan, item.topic_tag)">否决</button>
           </li>
         </ul>
+        <div v-if="enterpriseVerified(plan)" class="stack">
+          <p class="muted">认证号自动发布默认关闭。开启后，只有低风险稿会在审阅窗口结束后提交。失败、超限或草稿被删时，这篇仍留在草稿箱，并提示到公众号助手查看。</p>
+          <p v-if="plan.publish_block && !plan.publish_ready" class="muted">{{ plan.publish_block }}</p>
+          <label v-if="plan.publish_ready && !plan.auto_publish" class="check">
+            <input v-model="publishConsent[plan.id]" type="checkbox" />
+            <span>我确认内容责任由公众号主体承担，并同意系统按审阅窗口自动提交低风险稿。</span>
+          </label>
+          <label v-if="plan.publish_ready || plan.auto_publish">审阅窗口（分钟，0 到 180。0 表示生成后马上提交）
+            <input v-model.number="publishDelay[plan.id]" type="number" min="0" max="180" />
+          </label>
+          <div class="row">
+            <button v-if="plan.auto_publish" class="btn-ghost" type="button" @click="savePublish(plan, false)">关闭自动发布</button>
+            <button v-else-if="plan.publish_ready" class="btn-ghost" type="button" @click="savePublish(plan, true)">开启自动发布</button>
+          </div>
+          <p v-if="plan.auto_publish" class="muted">已开启，审阅窗口 {{ plan.delay_minutes }} 分钟。</p>
+        </div>
+        <p v-else class="muted">这个公众号只写入草稿箱。自动发布只对企业认证号开放，并且默认关闭。</p>
         <div class="row">
           <button class="btn" type="button" :disabled="busyId === plan.id" @click="generate(plan)">
             {{ busyId === plan.id ? "正在生成…" : "立即生成" }}
@@ -113,6 +130,8 @@ const loading = ref(false);
 const busyId = ref(0);
 const pins = reactive({});
 const calendars = reactive({});
+const publishConsent = reactive({});
+const publishDelay = reactive({});
 const directionChoice = ref("职场成长");
 const customDirection = ref("");
 const form = reactive({
@@ -153,6 +172,7 @@ async function load() {
   plans.value = planData;
   for (const plan of planData) {
     if (pins[plan.id] === undefined) pins[plan.id] = plan.specified_title || "";
+    if (publishDelay[plan.id] === undefined) publishDelay[plan.id] = plan.delay_minutes ?? 30;
   }
   if (!form.wx_account_id && accountData[0]) form.wx_account_id = accountData[0].id;
   if (quotaData.tier === "free") form.time_window = "night";
@@ -240,6 +260,28 @@ async function unveto(plan, tag) {
     await api(`/api/plans/${plan.id}/unveto`, { method: "POST", body: { topic_tag: tag } });
     await load();
     if (calendars[plan.id]) await showCalendar(plan);
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+function enterpriseVerified(plan) {
+  const account = accounts.value.find((item) => item.id === plan.wx_account_id);
+  return account && account.subject_type === "enterprise" && account.verified;
+}
+
+async function savePublish(plan, enabled) {
+  error.value = "";
+  try {
+    if (enabled && !publishConsent[plan.id]) {
+      error.value = "开启前请勾选内容责任确认";
+      return;
+    }
+    await api(`/api/plans/${plan.id}/publish`, {
+      method: "PUT",
+      body: { enabled, delay_minutes: Number(publishDelay[plan.id] ?? 30), consent: Boolean(publishConsent[plan.id]) },
+    });
+    await load();
   } catch (err) {
     error.value = err.message;
   }

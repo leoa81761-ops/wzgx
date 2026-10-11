@@ -18,6 +18,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/pipeline"
+	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/render"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
@@ -122,7 +123,7 @@ func (a *App) meta(w http.ResponseWriter, r *http.Request) error {
 	writeJSON(w, 200, map[string]any{
 		"styles": styles, "templates": templates, "directions": catalog.Directions,
 		"windows": catalog.Windows, "word_choices": catalog.WordChoices, "columns": catalog.Columns,
-		"wechat_mode": wx.Mode, "public_egress_ip": wx.IP, "plans": planOut,
+		"wechat_mode": wx.Mode, "public_egress_ip": wx.IP, "plans": planOut, "pay": a.payMeta(),
 	})
 	return nil
 }
@@ -266,6 +267,16 @@ func statusLabel(status string) string {
 		return "失败"
 	case "held":
 		return "未推送"
+	case "publish_wait":
+		return "等待发布"
+	case "publishing":
+		return "发布中"
+	case "published":
+		return "已发布"
+	case "publish_failed":
+		return "发布失败"
+	case "publish_unknown":
+		return "发布结果未知"
 	default:
 		return status
 	}
@@ -302,6 +313,27 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 	}
 	view["specified_title"] = title
 	view["vetoes"] = tags
+	pub, err := a.Store.GetPlanPublish(ctx, nil, plan.ID)
+	if err != nil {
+		return nil, err
+	}
+	delay := pub.DelayMinutes
+	if pub.UpdatedAt.IsZero() {
+		delay = 30
+	}
+	view["auto_publish"] = pub.Enabled
+	view["delay_minutes"] = delay
+	account, err := a.Store.GetAccount(ctx, nil, plan.WxAccountID)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := a.Store.GetUser(ctx, nil, plan.UserID)
+	if err != nil {
+		return nil, err
+	}
+	ready, block := publish.Ready(owner, account, time.Now().UTC())
+	view["publish_ready"] = ready
+	view["publish_block"] = block
 	return view, nil
 }
 
@@ -415,7 +447,7 @@ func (a *App) bindAccount(w http.ResponseWriter, r *http.Request, user *model.Us
 			UserID: user.ID, Name: name, AppID: appID, SecretEncrypted: enc,
 			SubjectType: body.SubjectType, ServiceType: body.ServiceType, Verified: body.Verified,
 			DeliveryMode: report.DeliveryMode, BindStatus: "active",
-			PermissionReport: map[string]any{"checks": report.Checks, "can_draft": report.CanDraft},
+			PermissionReport: permissionMap(report),
 			BoundAt:          &bound,
 		}
 		if err := a.Store.InsertAccount(r.Context(), tx, created); err != nil {
@@ -435,11 +467,15 @@ func (a *App) bindAccount(w http.ResponseWriter, r *http.Request, user *model.Us
 	payload := accountDict(created)
 	note := ""
 	if body.SubjectType == "enterprise" && body.Verified {
-		note = "企业认证号的自动发布尚未开放，当前只会写入草稿箱。"
+		note = "企业认证号可以在写作计划里单独开启自动发布，默认关闭。没开启时仍然只写草稿箱。"
 	}
 	payload["auto_publish_note"] = note
 	writeJSON(w, 200, payload)
 	return nil
+}
+
+func permissionMap(report wechat.PermissionReport) map[string]any {
+	return map[string]any{"checks": report.Checks, "can_draft": report.CanDraft, "can_publish": report.CanPublish}
 }
 
 func permissionDetail(report wechat.PermissionReport) string {
@@ -535,7 +571,7 @@ func (a *App) recheckAccount(w http.ResponseWriter, r *http.Request, user *model
 			return err
 		}
 		account.SecretEncrypted = enc
-		account.PermissionReport = map[string]any{"checks": report.Checks, "can_draft": report.CanDraft}
+		account.PermissionReport = permissionMap(report)
 		if tokenCheckFailed(report) {
 			if report.AuthFailed {
 				account.BindStatus = "auth_invalid"
@@ -1092,6 +1128,11 @@ func (a *App) articleDetail(w http.ResponseWriter, r *http.Request, user *model.
 		}
 	}
 	payload["preview_template"] = templateKey
+	if row, err := a.Store.GetArticlePublish(r.Context(), nil, article.ID); err == nil && row.ArticleID != 0 {
+		payload["publish_id"] = row.PublishID
+		payload["article_url"] = row.ArticleURL
+		payload["publish_note"] = row.Note
+	}
 	writeJSON(w, 200, payload)
 	return nil
 }

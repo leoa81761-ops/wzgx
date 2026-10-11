@@ -29,13 +29,14 @@
           <p>{{ plan.price_label }}</p>
           <p class="muted">每天 {{ plan.daily_quota }} 篇 · {{ periodLabel(plan) }} {{ plan.period_quota }} 篇</p>
           <p class="muted">{{ plan.max_accounts }} 个公众号 · 单篇上限 {{ plan.max_words }} 字</p>
-          <button class="btn" type="button" disabled>即将开通</button>
+          <button v-if="!pay.enabled" class="btn" type="button" disabled>即将开通</button>
+          <router-link v-else class="btn" to="/pricing">查看定价并购买</router-link>
         </article>
       </div>
     </section>
     <section class="card">
       <h2>常见问题</h2>
-      <p><strong>文章会直接发给读者吗？</strong> 不会。个人号和未认证号只进入草稿箱。企业认证号的自动发布尚未开放。</p>
+      <p><strong>文章会直接发给读者吗？</strong> 个人号和未认证号只进入草稿箱。企业认证号要在写作计划里单独开启自动发布，默认关闭，并且只提交低风险稿。失败时稿件留在草稿箱，并提示到公众号助手查看。</p>
       <p><strong>需要自己填写模型密钥吗？</strong> 不需要。模型地址和密钥由管理员在配置中心填写，用户看不到密钥。</p>
       <p><strong>免费版有什么限制？</strong> 每天 1 篇、每月 10 篇、1 个公众号、1 个方向，并安排在夜间低峰生成。每个公众号每天最多 1 批。</p>
       <p><strong>页面上的协议是正式文本吗？</strong> 不是。文首标有「待法务审核」，不能当作正式法律文件。</p>
@@ -48,6 +49,7 @@ import { onMounted, ref } from "vue";
 import { api } from "../api";
 
 const plans = ref([]);
+const pay = ref({ enabled: false });
 
 function periodLabel(plan) {
   return plan.period_unit === "year" ? "每周年" : "每月";
@@ -57,6 +59,7 @@ onMounted(async () => {
   try {
     const meta = await api("/api/meta");
     plans.value = meta.plans || [];
+    pay.value = meta.pay || { enabled: false };
   } catch {
     plans.value = [];
   }

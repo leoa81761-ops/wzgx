@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// ErrComingSoon 表示渠道还没接商户号。接口形状固定，微信支付和支付宝以后实现 Provider 再 Register。
+// ErrComingSoon 表示还没配齐商户参数。配齐后由服务层直接调用微信支付或支付宝，不再走这个 manual 渠道。
 var ErrComingSoon = errors.New("即将开通")
 
 type Order struct {
@@ -20,7 +20,7 @@ type Result struct {
 	Message  string
 }
 
-// Provider 是支付渠道。不要在实现里写死商户密钥，密钥以后走环境变量或后台配置。
+// Provider 是支付渠道。商户密钥只从环境变量读取，不要写进仓库。
 type Provider interface {
 	Name() string
 	Create(ctx context.Context, order Order) (Result, error)

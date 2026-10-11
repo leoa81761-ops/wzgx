@@ -1,7 +1,7 @@
 <template>
   <div class="stack">
     <h1 style="font-size: 32px">帮助中心</h1>
-    <p class="muted">这里只说明当前已经能用的功能。在线支付和认证号自动发布还没开通。</p>
+    <p class="muted">这里只说明当前已经能用的功能。在线支付要等管理员配好微信或支付宝才会出现购买按钮。认证号自动发布默认关闭。</p>
     <section class="card stack">
       <h2>怎么开始</h2>
       <p>注册时勾选《用户协议》和《隐私政策》。绑定公众号前，先看<router-link to="/tutorial">绑定教程</router-link>，把服务器出口 IP 加进公众平台的 IP 白名单。</p>
@@ -20,7 +20,8 @@
     <section class="card stack">
       <h2>账号和投诉</h2>
       <p>会员页可以导出个人数据，也可以注销账号。注销会立刻删除公众号密钥。投诉请走<router-link to="/complaint">投诉入口</router-link>，我们会在站内回复。</p>
-      <p>价格见<router-link to="/pricing">定价页</router-link>。购买按钮是「即将开通」，现在仍由管理员手工开通档位。</p>
+      <p>价格见<router-link to="/pricing">定价页</router-link>。没配支付时购买按钮是「即将开通」，档位仍由管理员手工开通。配好后可以微信支付扫码，或支付宝当面付、电脑网站支付。退款不自动降级。</p>
+      <p>企业认证号可以在写作计划里开启自动发布。默认关闭。只提交低风险稿，并留一段审阅时间。可以随时关掉。</p>
     </section>
   </div>
 </template>
