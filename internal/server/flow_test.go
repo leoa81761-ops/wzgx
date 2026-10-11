@@ -67,6 +67,10 @@ func TestRegisterRequiresConsentAndFullFlow(t *testing.T) {
 	if generated.StatusCode != 200 {
 		t.Fatal(generated.StatusCode, generated.Body)
 	}
+	articleID := int64(generated.JSON["id"].(float64))
+	if generated.JSON["status"] == "generating" {
+		generated.JSON = waitArticle(t, ts.URL, token, articleID)
+	}
 	if generated.JSON["status"] != "in_draft" || !strings.HasPrefix(generated.JSON["draft_media_id"].(string), "mock_draft_") {
 		t.Fatal(generated.JSON)
 	}
@@ -78,10 +82,12 @@ func TestRegisterRequiresConsentAndFullFlow(t *testing.T) {
 	if again.StatusCode != 400 || !strings.Contains(again.JSON["detail"].(string), "1 批") {
 		t.Fatal(again.StatusCode, again.JSON)
 	}
-	articleID := int64(generated.JSON["id"].(float64))
 	regenerated := postJSON(t, ts.URL+"/api/articles/"+strconv.FormatInt(articleID, 10)+"/regenerate", token, map[string]any{})
 	if regenerated.StatusCode != 200 {
 		t.Fatal(regenerated.StatusCode, regenerated.Body)
+	}
+	if regenerated.JSON["status"] == "generating" {
+		regenerated.JSON = waitArticle(t, ts.URL, token, articleID)
 	}
 	if regenerated.JSON["draft_media_id"] != generated.JSON["draft_media_id"] || regenerated.JSON["regen_count"] != float64(1) {
 		t.Fatal(regenerated.JSON)
@@ -165,6 +171,26 @@ func TestBindSurfacesIPWhitelist(t *testing.T) {
 	if bound.StatusCode != 400 || !strings.Contains(bound.JSON["detail"].(string), "白名单") {
 		t.Fatal(bound.StatusCode, bound.Body)
 	}
+}
+
+func waitArticle(t *testing.T, base, token string, id int64) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	var last map[string]any
+	for time.Now().Before(deadline) {
+		resp := getJSON(t, base+"/api/articles/"+strconv.FormatInt(id, 10), token)
+		if resp.StatusCode != 200 {
+			t.Fatal(resp.StatusCode, resp.Body)
+		}
+		last = resp.JSON
+		switch last["status"] {
+		case "in_draft", "exported", "failed":
+			return last
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("生成没有结束: %#v", last)
+	return nil
 }
 
 func openApp(t *testing.T, extra config.Settings) *App {

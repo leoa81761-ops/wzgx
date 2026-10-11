@@ -7,6 +7,7 @@
       </div>
       <span class="pill" :class="article.status === 'in_draft' ? 'ok' : article.status === 'failed' ? 'bad' : 'warn'">{{ article.status_label }}</span>
     </div>
+    <p v-if="article.status === 'generating'" class="banner info">正在生成，完成后会自动刷新。模型较慢时可能要几分钟。</p>
     <p v-if="article.failure_reason" class="banner">{{ article.failure_reason }}</p>
     <p v-if="article.delivery_note" class="banner info">{{ article.delivery_note }}</p>
     <p v-if="article.draft_media_id" class="muted">草稿 media_id：{{ article.draft_media_id }}</p>
@@ -30,7 +31,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { api, getToken } from "../api";
 
@@ -42,10 +43,21 @@ const loading = ref(false);
 const dark = ref(false);
 const themeNote = ref("");
 
+let pollTimer = 0;
+
 const frame = computed(() => {
   const html = article.value?.body_html || "";
   return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0">${html}</body></html>`;
 });
+
+function schedulePoll() {
+  window.clearTimeout(pollTimer);
+  if (article.value?.status !== "generating") return;
+  pollTimer = window.setTimeout(async () => {
+    await load(dark.value ? "dark" : "light");
+    schedulePoll();
+  }, 2000);
+}
 
 async function load(theme = "light") {
   const data = await api(`/api/articles/${route.params.id}?theme=${theme}`);
@@ -64,6 +76,7 @@ async function regenerate() {
   try {
     article.value = await api(`/api/articles/${route.params.id}/regenerate`, { method: "POST" });
     dark.value = false;
+    schedulePoll();
   } catch (err) {
     error.value = err.message;
   } finally {
@@ -99,5 +112,9 @@ async function copyHtml() {
   copied.value = true;
 }
 
-onMounted(() => load());
+onMounted(async () => {
+  await load();
+  schedulePoll();
+});
+onUnmounted(() => window.clearTimeout(pollTimer));
 </script>

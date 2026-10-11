@@ -40,7 +40,7 @@ async function load() {
 
 onMounted(() => {
   load();
-  timer = window.setInterval(load, 8000);
+  timer = window.setInterval(load, 3000);
 });
 onUnmounted(() => window.clearInterval(timer));
 </script>

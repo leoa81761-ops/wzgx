@@ -840,14 +840,8 @@ func (a *App) regenerate(w http.ResponseWriter, r *http.Request, user *model.Use
 }
 
 func (a *App) runGeneration(w http.ResponseWriter, r *http.Request, user *model.User, planID, articleID int64, trigger string) error {
-	acq, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-	err := a.Pool.Acquire(acq)
-	cancel()
-	if err != nil {
-		return bad("生成队列已满，请稍后再试")
-	}
-	defer a.Pool.Release()
 	now := time.Now().UTC()
+	var err error
 	var taskID int64
 	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
 		fresh, err := a.Store.GetUser(r.Context(), tx, user.ID)
@@ -899,35 +893,86 @@ func (a *App) runGeneration(w http.ResponseWriter, r *http.Request, user *model.
 	if err != nil {
 		return err
 	}
-	genCtx, cancelGen := context.WithTimeout(context.Background(), 6*time.Minute)
-	pipeline.Execute(genCtx, a.deps(), taskID, false, now)
-	cancelGen()
-	task, err := a.Store.GetTask(r.Context(), nil, taskID)
+	var article *model.Article
+	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		task, err := a.Store.GetTask(r.Context(), tx, taskID)
+		if err != nil || task == nil {
+			return err
+		}
+		if trigger == "regenerate" {
+			article, err = a.Store.GetArticle(r.Context(), tx, articleID)
+			if err != nil || article == nil {
+				return err
+			}
+			article.Status = "generating"
+			article.FailureReason = ""
+			article.DeliveryNote = ""
+			if err := a.Store.UpdateArticle(r.Context(), tx, article); err != nil {
+				return err
+			}
+		} else {
+			article = &model.Article{
+				TaskID: task.ID, UserID: user.ID, PlanID: task.PlanID, WxAccountID: task.WxAccountID,
+				Title: "正在生成", Status: "generating", CreatedAt: now,
+			}
+			if plan, err := a.Store.GetPlan(r.Context(), tx, task.PlanID); err == nil && plan != nil {
+				article.TemplateKey = plan.TemplateKey
+				article.StyleKey = plan.StyleKey
+			}
+			article.PromptVersion = catalog.PromptVersion
+			if err := a.Store.InsertArticle(r.Context(), tx, article); err != nil {
+				return err
+			}
+		}
+		task.ArticleID = &article.ID
+		return a.Store.UpdateTask(r.Context(), tx, task)
+	})
 	if err != nil {
 		return err
 	}
-	var article *model.Article
-	if task != nil && task.ArticleID != nil {
-		article, err = a.Store.GetArticle(r.Context(), nil, *task.ArticleID)
-		if err != nil {
-			return err
-		}
-	}
-	if trigger == "regenerate" && article == nil {
-		article, err = a.Store.GetArticle(r.Context(), nil, articleID)
-		if err != nil {
-			return err
-		}
-	}
-	if article == nil {
-		reason := "生成失败"
-		if task != nil && task.FailureReason != "" {
-			reason = task.FailureReason
-		}
-		return bad(reason)
-	}
+	a.enqueue(taskID)
 	writeJSON(w, 200, articleDict(article, true))
 	return nil
+}
+
+func (a *App) enqueue(taskID int64) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+		defer cancel()
+		if err := a.Pool.Acquire(ctx); err != nil {
+			a.failQueued(taskID, "生成队列已满，请稍后再试")
+			return
+		}
+		defer a.Pool.Release()
+		pipeline.Execute(ctx, a.deps(), taskID, false, time.Now().UTC())
+	}()
+}
+
+func (a *App) failQueued(taskID int64, message string) {
+	_ = a.DB.WithTx(context.Background(), func(tx *db.Tx) error {
+		task, err := a.Store.GetTask(context.Background(), tx, taskID)
+		if err != nil || task == nil || (task.Status != "running" && task.Status != "pending") {
+			return err
+		}
+		task.Status = "failed"
+		task.FailureReason = message
+		finished := time.Now().UTC()
+		task.FinishedAt = &finished
+		if task.StartedAt != nil {
+			task.DurationMs = int(finished.Sub(task.StartedAt.UTC()).Milliseconds())
+		}
+		if task.ArticleID != nil {
+			if article, err := a.Store.GetArticle(context.Background(), tx, *task.ArticleID); err == nil && article != nil {
+				article.Status = "failed"
+				article.FailureReason = message
+				_ = a.Store.UpdateArticle(context.Background(), tx, article)
+			}
+		}
+		if err := a.Store.UpdateTask(context.Background(), tx, task); err != nil {
+			return err
+		}
+		return quota.Release(context.Background(), a.Store, tx, task.ID, "排队失败，退回额度")
+	})
 }
 
 func (a *App) listArticles(w http.ResponseWriter, r *http.Request, user *model.User) error {

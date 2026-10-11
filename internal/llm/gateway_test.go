@@ -133,7 +133,7 @@ func TestGatewayFallsBackAndAllFail(t *testing.T) {
 		{ID: 1, Name: "Claude", Protocol: "anthropic", BaseURL: srv.URL, APIKey: "k", Model: "c", Timeout: 5 * time.Second},
 		{ID: 2, Name: "兼容接口", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "o", Timeout: 5 * time.Second},
 	}
-	data, completion, err := gw.CompleteJSON(context.Background(), providers, []map[string]string{{"role": "user", "content": "{}"}}, func(item map[string]any) (map[string]any, error) {
+	data, completion, err := gw.CompleteJSON(context.Background(), providers, []map[string]string{{"role": "user", "content": "{}"}}, nil, func(item map[string]any) (map[string]any, error) {
 		return item, nil
 	})
 	if err != nil {
@@ -152,10 +152,82 @@ func TestGatewayFallsBackAndAllFail(t *testing.T) {
 	}))
 	defer fail.Close()
 	gw.Client = fail.Client()
-	_, _, err = gw.CompleteJSON(context.Background(), []Provider{{Name: "主模型", Protocol: "openai", BaseURL: fail.URL + "/v1", Model: "m", Timeout: 5 * time.Second}}, []map[string]string{{"role": "user", "content": "{}"}}, func(item map[string]any) (map[string]any, error) {
+	_, _, err = gw.CompleteJSON(context.Background(), []Provider{{Name: "主模型", Protocol: "openai", BaseURL: fail.URL + "/v1", Model: "m", Timeout: 5 * time.Second}}, []map[string]string{{"role": "user", "content": "{}"}}, nil, func(item map[string]any) (map[string]any, error) {
 		return item, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "全部模型服务失败") {
 		t.Fatal(err)
+	}
+}
+
+func TestStagePromptCarriesSchemaAndOpenAISendsIt(t *testing.T) {
+	messages := StageMessages("选题", map[string]any{"direction": "职场成长"})
+	if !strings.Contains(messages[0]["content"], "JSON Schema") || !strings.Contains(messages[0]["content"], `"title"`) {
+		t.Fatal(messages[0]["content"])
+	}
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &seen)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":\"好标题\",\"angle\":\"一个角度\"}"}}]}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1}
+	_, _, err := gw.CompleteJSON(context.Background(), []Provider{{
+		Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7", Timeout: 5 * time.Second,
+	}}, messages, StageSchema("选题"), func(item map[string]any) (map[string]any, error) {
+		return item, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	format, _ := seen["response_format"].(map[string]any)
+	if format["type"] != "json_schema" {
+		t.Fatalf("%#v", format)
+	}
+	spec, _ := format["json_schema"].(map[string]any)
+	if spec["strict"] != true || spec["name"] != "topic" {
+		t.Fatalf("%#v", spec)
+	}
+	if _, ok := seen["max_tokens"]; ok {
+		t.Fatal("openai adapter should not invent max_tokens")
+	}
+}
+
+func TestResponsesStreamingShape(t *testing.T) {
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-test" {
+			t.Errorf("auth %s", r.Header.Get("Authorization"))
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &seen)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"title\\\":\\\"好\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}}\n\n"))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1}
+	result, err := gw.Complete(context.Background(), Provider{
+		Protocol: "responses", BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "grok-4.7",
+		ExtraParams: map[string]any{"reasoning_effort": "low"}, Timeout: 5 * time.Second,
+	}, []map[string]string{{"role": "user", "content": "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen["stream"] != true || seen["model"] != "grok-4.7" || seen["reasoning_effort"] != "low" {
+		t.Fatalf("%#v", seen)
+	}
+	input, _ := seen["input"].([]any)
+	if len(input) != 1 {
+		t.Fatal(input)
+	}
+	if result.Content != `{"title":"好"}` || result.PromptTokens != 2 || result.CompletionTokens != 3 || result.Protocol != "responses" {
+		t.Fatalf("%#v", result)
+	}
+	if ResponsesURL("https://ai.1so.org/v1") != "https://ai.1so.org/v1/responses" {
+		t.Fatal(ResponsesURL("https://ai.1so.org/v1"))
 	}
 }

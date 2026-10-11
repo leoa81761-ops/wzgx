@@ -102,6 +102,88 @@ func TestSensitiveFailureReleasesQuota(t *testing.T) {
 	}
 }
 
+func TestDurationMeasuresTheWholeTask(t *testing.T) {
+	st, deps := openDeps(t, "mock", nil)
+	user, account, plan := seedPlan(t, st, "slow@example.com")
+	past := time.Now().UTC().Add(-2 * time.Minute)
+	ctx := context.Background()
+	var taskID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "manual", past, nil)
+		if err != nil {
+			return err
+		}
+		taskID = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	Execute(ctx, deps, taskID, false, past)
+	task, err := st.GetTask(ctx, nil, taskID)
+	if err != nil || task == nil || task.Status != "success" {
+		t.Fatalf("%#v %v", task, err)
+	}
+	if task.DurationMs < 60_000 {
+		t.Fatalf("duration_ms = %d, want the whole run", task.DurationMs)
+	}
+}
+
+func TestResearchMarkdownBecomesSources(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		var data map[string]any
+		switch stageOf(req) {
+		case "选题":
+			data = map[string]any{"title": "远程协作的一件小事", "angle": "今天就能做"}
+		case "资料检索":
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [人社部](https://www.example.com/notice)。"}}]}`))
+			return
+		case "大纲":
+			data = map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"}
+		default:
+			data = map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"先做最小的一步。"}, "list": []any{}}}, "closing": "结束", "sources": []any{}}
+		}
+		body, _ := json.Marshal(data)
+		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(body)}}}})
+		_, _ = w.Write(out)
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	user, account, plan := seedPlan(t, st, "search@example.com")
+	user.Tier = "standard"
+	if err := st.UpdateUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "检索", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "grok-chat-fast",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	models, err := st.ListTextModels(ctx, nil, true)
+	if err != nil || len(models) != 1 {
+		t.Fatal(len(models), err)
+	}
+	if err := st.ReplaceRoutes(ctx, nil, "research", "*", []int64{models[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	tag := runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if tag == "" {
+		t.Fatal("empty tag")
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "example点com") {
+		html := ""
+		if len(articles) > 0 {
+			html = articles[0].BodyHTML
+		}
+		t.Fatal(html, err)
+	}
+}
+
 func stageOf(req map[string]any) string {
 	msgs, _ := req["messages"].([]any)
 	if len(msgs) == 0 {

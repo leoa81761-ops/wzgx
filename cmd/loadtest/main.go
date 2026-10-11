@@ -321,6 +321,19 @@ func burstGenerate(client *http.Client, base string, users []userSlot) (ok, fail
 		go func(user userSlot) {
 			defer wg.Done()
 			body := doJSON(genClient, http.MethodPost, base+"/api/plans/"+strconv.FormatInt(user.planID, 10)+"/generate", user.token, map[string]any{})
+			if body["status"] == "generating" {
+				id := int64(body["id"].(float64))
+				deadline := time.Now().Add(3 * time.Minute)
+				for time.Now().Before(deadline) {
+					time.Sleep(100 * time.Millisecond)
+					polled := doJSON(genClient, http.MethodGet, base+"/api/articles/"+strconv.FormatInt(id, 10), user.token, nil)
+					if polled["status"] == "generating" || polled["status"] == nil {
+						continue
+					}
+					body = polled
+					break
+				}
+			}
 			if body["status"] == "in_draft" {
 				okN.Add(1)
 				return

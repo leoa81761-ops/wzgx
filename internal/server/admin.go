@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/db"
+	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/probe"
 	"github.com/leoa81761-ops/wzgx/internal/runtime"
@@ -140,15 +142,21 @@ func providerDict(row *model.ServiceConfig, master string) map[string]any {
 	if params == nil {
 		params = map[string]any{}
 	}
+	effort, _ := params["reasoning_effort"].(string)
+	kind := "text"
+	if row.ConfigType == "image_model" {
+		kind = "image"
+	}
 	return map[string]any{
 		"id": row.ID, "name": row.Name, "protocol": row.Protocol, "base_url": row.BaseURL, "model": row.ModelName,
 		"extra_headers": headers, "extra_params": params, "priority": row.Priority, "enabled": row.Enabled,
 		"timeout_seconds": row.TimeoutSeconds, "has_key": row.APIKeyEncrypted != "", "key_hint": hint,
+		"config_type": row.ConfigType, "kind": kind, "reasoning_effort": effort,
 	}
 }
 
 func (a *App) adminProviders(w http.ResponseWriter, r *http.Request, _ *model.User) error {
-	rows, err := a.Store.ListTextModels(r.Context(), nil, false)
+	rows, err := a.Store.ListAdminModels(r.Context(), nil)
 	if err != nil {
 		return err
 	}
@@ -161,16 +169,18 @@ func (a *App) adminProviders(w http.ResponseWriter, r *http.Request, _ *model.Us
 }
 
 type providerBody struct {
-	Name           string         `json:"name"`
-	Protocol       string         `json:"protocol"`
-	BaseURL        string         `json:"base_url"`
-	APIKey         string         `json:"api_key"`
-	Model          string         `json:"model"`
-	ExtraHeaders   map[string]any `json:"extra_headers"`
-	ExtraParams    map[string]any `json:"extra_params"`
-	Priority       *int           `json:"priority"`
-	Enabled        *bool          `json:"enabled"`
-	TimeoutSeconds *int           `json:"timeout_seconds"`
+	Name            string         `json:"name"`
+	Protocol        string         `json:"protocol"`
+	BaseURL         string         `json:"base_url"`
+	APIKey          string         `json:"api_key"`
+	Model           string         `json:"model"`
+	ExtraHeaders    map[string]any `json:"extra_headers"`
+	ExtraParams     map[string]any `json:"extra_params"`
+	Priority        *int           `json:"priority"`
+	Enabled         *bool          `json:"enabled"`
+	TimeoutSeconds  *int           `json:"timeout_seconds"`
+	Kind            string         `json:"kind"`
+	ReasoningEffort *string        `json:"reasoning_effort"`
 }
 
 func parseProvider(body providerBody) (model.ServiceConfig, map[string]string, error) {
@@ -179,8 +189,18 @@ func parseProvider(body providerBody) (model.ServiceConfig, map[string]string, e
 	if utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 40 || utf8.RuneCountInString(modelName) < 1 || utf8.RuneCountInString(modelName) > 120 {
 		return model.ServiceConfig{}, nil, invalid()
 	}
-	if body.Protocol != "openai" && body.Protocol != "anthropic" {
-		return model.ServiceConfig{}, nil, bad("协议只支持 openai（Chat Completions）或 anthropic（Messages）")
+	if body.Protocol != "openai" && body.Protocol != "anthropic" && body.Protocol != "responses" {
+		return model.ServiceConfig{}, nil, bad("协议只支持 openai（Chat Completions）、responses（Responses API）或 anthropic（Messages）")
+	}
+	kind := strings.TrimSpace(body.Kind)
+	if kind == "" {
+		kind = "text"
+	}
+	if kind != "text" && kind != "image" {
+		return model.ServiceConfig{}, nil, bad("用途只支持文本写作或封面生图")
+	}
+	if kind == "image" && body.Protocol != "openai" {
+		return model.ServiceConfig{}, nil, bad("封面生图使用 OpenAI 兼容的 /v1/images/generations，协议请选 openai")
 	}
 	if err := validateHTTPURL(body.BaseURL); err != nil {
 		return model.ServiceConfig{}, nil, err
@@ -189,8 +209,8 @@ func parseProvider(body providerBody) (model.ServiceConfig, map[string]string, e
 	if body.TimeoutSeconds != nil {
 		timeout = *body.TimeoutSeconds
 	}
-	if timeout < 5 || timeout > 180 {
-		return model.ServiceConfig{}, nil, bad("超时时间需在 5 到 180 秒之间")
+	if timeout < 5 || timeout > 600 {
+		return model.ServiceConfig{}, nil, bad("超时时间需在 5 到 600 秒之间")
 	}
 	headers, err := stringHeaders(body.ExtraHeaders)
 	if err != nil {
@@ -200,6 +220,17 @@ func parseProvider(body providerBody) (model.ServiceConfig, map[string]string, e
 	if params == nil {
 		params = map[string]any{}
 	}
+	if body.ReasoningEffort != nil {
+		effort := strings.TrimSpace(*body.ReasoningEffort)
+		switch effort {
+		case "":
+			delete(params, "reasoning_effort")
+		case "low", "medium", "high":
+			params["reasoning_effort"] = effort
+		default:
+			return model.ServiceConfig{}, nil, bad("推理档位只支持 low、medium、high，留空表示不发送")
+		}
+	}
 	priority := 100
 	if body.Priority != nil {
 		priority = *body.Priority
@@ -208,8 +239,12 @@ func parseProvider(body providerBody) (model.ServiceConfig, map[string]string, e
 	if body.Enabled != nil {
 		enabled = *body.Enabled
 	}
+	configType := "text_model"
+	if kind == "image" {
+		configType = "image_model"
+	}
 	return model.ServiceConfig{
-		ConfigType: "text_model", Name: name, Protocol: body.Protocol, BaseURL: strings.TrimSpace(body.BaseURL),
+		ConfigType: configType, Name: name, Protocol: body.Protocol, BaseURL: strings.TrimSpace(body.BaseURL),
 		ModelName: modelName, ExtraHeaders: headers, ExtraParams: params, Priority: priority, Enabled: enabled, TimeoutSeconds: timeout,
 	}, headers, nil
 }
@@ -298,6 +333,7 @@ func (a *App) adminUpdateProvider(w http.ResponseWriter, r *http.Request, admin 
 		if err != nil {
 			return err
 		}
+		row.ConfigType = parsed.ConfigType
 		row.Name = parsed.Name
 		row.Protocol = parsed.Protocol
 		row.BaseURL = parsed.BaseURL
@@ -369,7 +405,7 @@ func (a *App) modelRow(ctx context.Context, q db.Q, id int64) (*model.ServiceCon
 	if err != nil {
 		return nil, err
 	}
-	if row == nil || row.ConfigType != "text_model" {
+	if row == nil || (row.ConfigType != "text_model" && row.ConfigType != "image_model") {
 		return nil, &AppError{Status: 404, Message: "找不到这个模型服务"}
 	}
 	return row, nil
@@ -400,21 +436,23 @@ func (a *App) adminTestProvider(w http.ResponseWriter, r *http.Request, _ *model
 		return nil
 	}
 	timeout := provider.Timeout
-	if timeout <= 0 || timeout > 30*time.Second {
-		timeout = 30 * time.Second
+	if timeout <= 0 || timeout > 60*time.Second {
+		timeout = 60 * time.Second
 	}
-	extra := map[string]any{}
-	for key, value := range provider.ExtraParams {
-		extra[key] = value
-	}
-	extra["max_tokens"] = 32
 	trial := provider
-	trial.ExtraParams = extra
 	trial.Timeout = timeout
-	gw := *a.Gateway
-	gw.Mock = false
 	ctx, cancel := context.WithTimeout(r.Context(), timeout+5*time.Second)
 	defer cancel()
+	if row.ConfigType == "image_model" {
+		png, err := llm.GenerateCover(ctx, a.HTTP, trial, "a simple green leaf, no text")
+		if err != nil {
+			return bad("连通失败：" + err.Error())
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "mock": false, "protocol": provider.Protocol, "model": provider.Model, "text": fmt.Sprintf("封面 %d 字节", len(png))})
+		return nil
+	}
+	gw := *a.Gateway
+	gw.Mock = false
 	result, err := gw.Complete(ctx, trial, []map[string]string{{"role": "user", "content": "只回复 OK"}})
 	if err != nil {
 		return bad("连通失败：" + err.Error())
@@ -498,7 +536,7 @@ func (a *App) adminSaveRoutes(w http.ResponseWriter, r *http.Request, admin *mod
 				return err
 			}
 			if row == nil || row.ConfigType != "text_model" {
-				return bad("模型服务 " + strconv.FormatInt(providerID, 10) + " 不存在")
+				return bad("只能把文本模型排进写作环节")
 			}
 		}
 		if err := a.Store.ReplaceRoutes(r.Context(), tx, body.Stage, body.Tier, ids); err != nil {
