@@ -118,7 +118,11 @@
       </label>
       <label>接口根地址<input v-model="wechat.api_base" /></label>
       <label>固定出口 IP<input v-model="wechat.public_egress_ip" placeholder="填给用户做 IP 白名单" /></label>
-      <button class="btn" type="button" @click="saveWechat">保存</button>
+      <div class="row">
+        <button class="btn" type="button" @click="saveWechat">保存</button>
+        <button class="btn-ghost" type="button" @click="connectivity">真实连通测试</button>
+      </div>
+      <p v-if="probeText" class="muted">{{ probeText }}</p>
     </section>
 
     <section v-if="tab === 'words'" class="card stack" style="max-width: 640px">
@@ -155,6 +159,7 @@ const orders = reactive({});
 const pick = reactive({});
 const editingId = ref(0);
 const words = ref("");
+const probeText = ref("");
 const wechat = reactive({ mode: "mock", api_base: "https://api.weixin.qq.com", public_egress_ip: "" });
 const provider = reactive({
   name: "",
@@ -332,6 +337,21 @@ async function saveRoute(stage) {
     message.value = "回退顺序已保存";
     routeRows.value = (await api("/api/admin/routes")).routes;
   } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function connectivity() {
+  error.value = "";
+  message.value = "";
+  probeText.value = "正在测试，生成和写入草稿可能需要几分钟。";
+  try {
+    const result = await api("/api/admin/connectivity-test", { method: "POST", body: {} });
+    const text = (result.steps || []).map((step) => `${step.name}：${step.ok ? "成功" : "失败"} ${step.detail || ""}`).join("；");
+    probeText.value = text;
+    message.value = "真实连通测试完成，草稿已留在公众号草稿箱。";
+  } catch (err) {
+    probeText.value = err.message;
     error.value = err.message;
   }
 }

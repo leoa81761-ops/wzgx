@@ -6,5 +6,7 @@ __pycache__/
 data/
 frontend/node_modules/
 frontend/dist/
-backend/static/
 *.pyc
+/gonghao
+/loadtest
+/tmp

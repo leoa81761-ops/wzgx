@@ -1,0 +1,154 @@
+package server
+
+import (
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/leoa81761-ops/wzgx/internal/catalog"
+	"github.com/leoa81761-ops/wzgx/internal/db"
+	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/security"
+)
+
+var (
+	phoneRe = regexp.MustCompile(`^1[3-9]\d{9}$`)
+	emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+)
+
+func invalid() error { return &AppError{Status: 422, Message: "请求参数不正确"} }
+
+func classifyAccount(value string) (kind, account string, err error) {
+	raw := strings.TrimSpace(value)
+	if phoneRe.MatchString(raw) {
+		return "phone", raw, nil
+	}
+	if emailRe.MatchString(raw) {
+		return "email", strings.ToLower(raw), nil
+	}
+	return "", "", bad("请输入有效的手机号或邮箱")
+}
+
+func userDict(u *model.User) map[string]any {
+	account := u.Email
+	if account == "" {
+		account = u.Phone
+	}
+	var email, phone any
+	if u.Email != "" {
+		email = u.Email
+	}
+	if u.Phone != "" {
+		phone = u.Phone
+	}
+	return map[string]any{
+		"id": u.ID, "email": email, "phone": phone, "account": account,
+		"tier": u.Tier, "is_admin": u.IsAdmin, "tier_expires_at": jtime(u.TierExpiresAt),
+	}
+}
+
+type registerBody struct {
+	Account  string `json:"account"`
+	Password string `json:"password"`
+	Agree    bool   `json:"agree"`
+}
+
+type loginBody struct {
+	Account  string `json:"account"`
+	Password string `json:"password"`
+}
+
+func (a *App) register(w http.ResponseWriter, r *http.Request) error {
+	var body registerBody
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(body.Account)) < 3 || utf8.RuneCountInString(body.Account) > 255 || utf8.RuneCountInString(body.Password) < 8 || utf8.RuneCountInString(body.Password) > 72 {
+		return invalid()
+	}
+	if !body.Agree {
+		return bad("请先阅读并勾选同意《用户协议》和《隐私政策》")
+	}
+	kind, account, err := classifyAccount(body.Account)
+	if err != nil {
+		return err
+	}
+	hash, err := security.HashPassword(body.Password)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	user := &model.User{PasswordHash: hash, Tier: "free", IsActive: true, CreatedAt: now}
+	if kind == "email" {
+		user.Email = account
+	} else {
+		user.Phone = account
+	}
+	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		existing, err := a.Store.FindUserByAccount(r.Context(), tx, account)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			return bad("该手机号或邮箱已注册")
+		}
+		if err := a.Store.InsertUser(r.Context(), tx, user); err != nil {
+			if db.IsUnique(err) {
+				return bad("该手机号或邮箱已注册")
+			}
+			return err
+		}
+		for _, docType := range []string{"user_agreement", "privacy"} {
+			if err := a.Store.InsertConsent(r.Context(), tx, &model.Consent{
+				UserID: user.ID, DocType: docType, Version: catalog.LegalVersion, ConsentItem: "register",
+				IP: clientIP(r), UserAgent: userAgent(r), CreatedAt: now,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	token, err := security.MakeToken(user.ID, a.Cfg.JWTSecret, 7)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, map[string]any{"token": token, "user": userDict(user)})
+	return nil
+}
+
+func (a *App) login(w http.ResponseWriter, r *http.Request) error {
+	var body loginBody
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	kind, account, err := classifyAccount(body.Account)
+	if err != nil {
+		return err
+	}
+	var user *model.User
+	if kind == "email" {
+		user, err = a.Store.FindUserByEmail(r.Context(), nil, account)
+	} else {
+		user, err = a.Store.FindUserByPhone(r.Context(), nil, account)
+	}
+	if err != nil {
+		return err
+	}
+	if user == nil || !security.VerifyPassword(body.Password, user.PasswordHash) {
+		return &AppError{Status: 401, Message: "账号或密码不正确"}
+	}
+	if !user.IsActive {
+		return &AppError{Status: 403, Message: "账号已停用"}
+	}
+	token, err := security.MakeToken(user.ID, a.Cfg.JWTSecret, 7)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, map[string]any{"token": token, "user": userDict(user)})
+	return nil
+}

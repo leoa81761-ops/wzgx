@@ -5,18 +5,23 @@ RUN npm ci
 COPY frontend ./
 RUN npm run build
 
-FROM python:3.12-slim
-WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    STATIC_DIR=/app/static
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY backend /app
-COPY --from=web /src/dist /app/static
-RUN useradd --create-home --uid 10001 appuser && chown -R appuser /app
-USER appuser
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=web /src/dist ./internal/web/dist
+ENV CGO_ENABLED=0 GOOS=linux
+RUN go build -trimpath -ldflags="-s -w" -o /out/gonghao ./cmd/gonghao
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/gonghao /gonghao
+ENV ADDR=:8000 \
+    GOMAXPROCS=4 \
+    GOMEMLIMIT=3GiB
 EXPOSE 8000
-HEALTHCHECK --interval=15s --timeout=5s --start-period=25s --retries=8 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+USER nonroot:nonroot
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=8 \
+  CMD ["/gonghao", "healthcheck"]
+ENTRYPOINT ["/gonghao"]
+CMD ["serve"]
