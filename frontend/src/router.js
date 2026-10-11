@@ -12,6 +12,7 @@ import Articles from "./views/Articles.vue";
 import ArticleDetail from "./views/ArticleDetail.vue";
 import Membership from "./views/Membership.vue";
 import Admin from "./views/Admin.vue";
+import Reconsent from "./views/Reconsent.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -21,6 +22,7 @@ const router = createRouter({
     { path: "/register", component: Register },
     { path: "/legal/:docType", component: Legal },
     { path: "/tutorial", component: Tutorial },
+    { path: "/reconsent", component: Reconsent, meta: { auth: true } },
     { path: "/app", component: Dashboard, meta: { auth: true } },
     { path: "/app/accounts", component: Accounts, meta: { auth: true } },
     { path: "/app/plans", component: Plans, meta: { auth: true } },
@@ -40,6 +42,9 @@ router.beforeEach(async (to) => {
     return { path: "/login", query: { next: to.fullPath } };
   }
   if (to.meta.admin && !session.user?.is_admin) return "/app";
+  if (to.meta.auth && session.user?.needs_reconsent && to.path !== "/reconsent") {
+    return { path: "/reconsent", query: { next: to.fullPath } };
+  }
   return true;
 });
 
