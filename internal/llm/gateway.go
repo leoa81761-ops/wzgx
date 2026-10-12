@@ -175,7 +175,8 @@ func (g *Gateway) CompleteFirst(ctx context.Context, providers []Provider, messa
 	return g.CompleteText(ctx, providers, messages, schema, true)
 }
 
-// CompleteResearch 默认等 150 秒，并且这一次调用内部不再重试。资料检索自己还会做一次更短的补救检索。
+// CompleteResearch 默认等 150 秒。同一次调用里，40 秒内失败的 502、503 和连接错误会短暂停后再试，最多两次。
+// 更慢的失败不再在这次里重试。资料检索自己还会做一次更短的补救检索。
 // grok-chat-fast 走流式，避免 Cloudflare 把没有字节的请求在大约 120 秒切断。不能流式的模型把等待压到 110 秒。
 func (g *Gateway) CompleteResearch(ctx context.Context, providers []Provider, messages []map[string]string) (Completion, error) {
 	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: g.researchTimeout(), attempts: 1, research: true})
@@ -258,13 +259,22 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 	var failed []map[string]any
 	var last error
 	retriedIdle := false
-	for try := 0; try < attempts; try++ {
+	researchQuick := 0
+	for try := 0; ; try++ {
+		if limit.research {
+			if try > 0 && researchQuick == 0 {
+				break
+			}
+			if researchQuick > 2 {
+				break
+			}
+		} else if try >= attempts {
+			break
+		}
 		if try > 0 && !retriedIdle {
-			wait := g.Backoff
+			wait := g.backoffWait(try, limit.research)
 			if wait > 0 {
-				wait = wait * time.Duration(1<<(try-1))
-				jitter := time.Duration(rand.Int63n(int64(wait/5 + 1)))
-				timer := time.NewTimer(wait + jitter)
+				timer := time.NewTimer(wait)
 				select {
 				case <-ctx.Done():
 					timer.Stop()
@@ -278,6 +288,7 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 		if limit.research {
 			callStream, callTimeout = researchTransport(provider, limit.timeout)
 		}
+		started := time.Now()
 		completion, status, err := g.call(ctx, provider, messages, schema, callStream, callTimeout, effort, protocol)
 		if err == nil {
 			completion.Attempts = failed
@@ -289,6 +300,13 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 			"provider_id": provider.ID, "provider_name": provider.Name, "protocol": protocol,
 			"model": provider.Model, "reasoning_effort": effort, "ok": false, "error": clip(err.Error(), 300),
 		})
+		if limit.research {
+			if researchQuick < 2 && quickResearchError(status, err, time.Since(started)) {
+				researchQuick++
+				continue
+			}
+			break
+		}
 		if idleCut(status, err) {
 			if !retriedIdle && try+1 < attempts && canDegrade(effort, protocol, provider) {
 				retriedIdle = true
@@ -306,6 +324,50 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 		last = &Error{Message: "模型调用失败"}
 	}
 	return Completion{Attempts: failed, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: protocol, Model: provider.Model, ReasoningEffort: effort}, last
+}
+
+func (g *Gateway) backoffWait(try int, research bool) time.Duration {
+	wait := g.Backoff
+	if research {
+		if wait <= 0 {
+			wait = 300 * time.Millisecond
+		}
+		if wait > time.Second {
+			wait = time.Second
+		}
+		return wait * time.Duration(try)
+	}
+	if wait <= 0 {
+		return 0
+	}
+	wait = wait * time.Duration(1<<(try-1))
+	jitter := time.Duration(rand.Int63n(int64(wait/5 + 1)))
+	return wait + jitter
+}
+
+// quickResearchError 判断这次失败是不是可以马上再试的网关错误。超过 40 秒的失败不再重试。
+func quickResearchError(status int, err error, elapsed time.Duration) bool {
+	if err == nil || elapsed >= 40*time.Second {
+		return false
+	}
+	if status == 502 || status == 503 {
+		return true
+	}
+	if status != 0 {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "deadline") || strings.Contains(msg, "timeout") || strings.Contains(msg, "超时") {
+		return false
+	}
+	var pe *Error
+	if errors.As(err, &pe) && strings.HasPrefix(pe.Message, "HTTP ") {
+		return false
+	}
+	return true
 }
 
 func failureAttempts(provider Provider, completion Completion, err error) []map[string]any {

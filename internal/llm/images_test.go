@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -115,6 +116,19 @@ func TestStructuredResearchSources(t *testing.T) {
 	if len(sources) != 1 || sources[0]["url"] != "https://www.gov.cn/zhengce" {
 		t.Fatalf("stream %#v", sources)
 	}
+	var many strings.Builder
+	many.WriteString(`{"choices":[{"message":{"content":"检索完成"}}],"citations":[`)
+	for i := 0; i < 12; i++ {
+		if i > 0 {
+			many.WriteString(",")
+		}
+		fmt.Fprintf(&many, `"https://example.com/p/%d"`, i)
+	}
+	many.WriteString(`]}`)
+	sources = StructuredResearchSources([]byte(many.String()))
+	if len(sources) != 12 {
+		t.Fatalf("kept %d, want every citation before ranking", len(sources))
+	}
 }
 
 func TestResearchPromptAsksToSearch(t *testing.T) {
@@ -122,6 +136,11 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 	system := messages[0]["content"]
 	if !strings.Contains(system, "搜索") || !strings.Contains(system, "中文") || strings.Contains(system, "空数组") || strings.Contains(system, "JSON Schema") {
 		t.Fatal(system)
+	}
+	for _, domain := range []string{"gov.cn", "samr.gov.cn", "std.samr.gov.cn", "openstd.samr.gov.cn", "mohurd.gov.cn"} {
+		if !strings.Contains(system, domain) {
+			t.Fatalf("prompt missing %s: %s", domain, system)
+		}
 	}
 	elv := StageMessages("资料检索", map[string]any{"vertical_key": "elv", "vertical": "弱电智能化"})
 	elvSystem := elv[0]["content"]
