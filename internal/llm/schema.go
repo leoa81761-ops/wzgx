@@ -46,6 +46,30 @@ func StageSchema(stageLabel string) *Schema {
 				"sources": sourceArrayField("3 到 5 条最近、相关、可核对的来源，每条都要有网址和简要说明"),
 			},
 		)}
+	case "标题":
+		return &Schema{Name: "titles", Body: objectSchema(
+			[]string{"titles"},
+			map[string]any{
+				"titles": map[string]any{
+					"type":        "array",
+					"description": "10 到 12 个彼此不同的完整标题。不要截断，不要用套话补长度",
+					"items":       map[string]any{"type": "string"},
+				},
+			},
+		)}
+	case "结构润色":
+		return &Schema{Name: "polish", Body: objectSchema(
+			[]string{"hook", "headings", "closing"},
+			map[string]any{
+				"hook": strField("只在要求改开头时给出新的开头一段，否则空字符串"),
+				"headings": map[string]any{
+					"type":        "array",
+					"description": "只在要求改小标题时给出新的小标题，否则空数组",
+					"items":       map[string]any{"type": "string"},
+				},
+				"closing": strField("只在要求改结尾时给出新的收获和邀请，否则空字符串"),
+			},
+		)}
 	default:
 		return &Schema{Name: "draft", Body: draftSchema()}
 	}

@@ -29,6 +29,11 @@ type WxAccount struct {
 	PermissionReport map[string]any
 	BoundAt          *time.Time
 	UnboundAt        *time.Time
+	Audience         string
+	Tone             string
+	PersonaColumns   string
+	Signatures       string
+	Taboos           string
 }
 
 type WritingPlan struct {

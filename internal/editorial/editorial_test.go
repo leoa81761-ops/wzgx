@@ -1,72 +1,69 @@
 package editorial
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
-	"unicode"
-
-	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
-func TestReshapeUsesExistingWordsAndStaysInsideTheBand(t *testing.T) {
+func TestRewriteKeepsEveryParagraph(t *testing.T) {
+	first := "验收时核对线槽，是否盖好。"
+	second := "拍完留在当天的记录里[1]。"
 	draft := map[string]any{
 		"title": "短",
-		"sections": []any{map[string]any{
-			"heading":    "",
-			"paragraphs": []any{"验收时先看线槽是否盖好。拍完留在当天的记录里。"},
-		}},
-		"closing": "",
+		"sections": []any{
+			map[string]any{"heading": "", "paragraphs": []any{first}},
+			map[string]any{"heading": "", "paragraphs": []any{second}, "list": []any{"不要删掉这条列表。"}},
+		},
+		"closing": "结束。",
+		"sources": []any{map[string]any{"url": "https://www.gov.cn/a", "title": "原文"}},
 	}
 	if Score(draft) >= 4 {
 		t.Fatal(Score(draft))
 	}
-	out, changed := Reshape(draft, 80)
-	if !changed {
-		t.Fatal("expected a reshape")
+	model := map[string]any{
+		"hook":     "为什么现场总卡在这一步？",
+		"headings": []any{"线槽", "记录"},
+		"closing":  "可以先记住这一步。欢迎留言说说你的做法。",
 	}
-	if content.BodyRunes(out) > 80 {
-		t.Fatal(content.BodyRunes(out))
-	}
-	if Score(out) < Score(draft) {
-		t.Fatal(Score(out))
-	}
-	raw := mustText(out)
-	if strings.Contains(raw, "1000") || strings.Contains(raw, "GB") {
+	out := Apply(draft, model, nil)
+	raw := dump(out)
+	if !strings.Contains(raw, first) || !strings.Contains(raw, second) || !strings.Contains(raw, "[1]") || !strings.Contains(raw, "https://www.gov.cn/a") {
 		t.Fatal(raw)
 	}
-	for _, r := range raw {
-		if unicode.IsDigit(r) {
-			t.Fatal("reshape invented a digit")
-		}
-	}
-	if !strings.Contains(raw, "线槽") || !strings.Contains(raw, "欢迎留言") {
+	if !strings.Contains(raw, "为什么现场总卡在这一步？") || !strings.Contains(raw, "结束。") {
 		t.Fatal(raw)
 	}
-	good := map[string]any{
-		"sections": []any{
-			map[string]any{"heading": "线槽", "paragraphs": []any{"先看盖板。例如上次就漏了。"}},
-			map[string]any{"heading": "照片", "paragraphs": []any{"拍完留底。"}},
-		},
-		"closing": "所以可以先补这一项。欢迎留言说说你的做法。",
+	if Score(out) <= Score(draft) {
+		t.Fatal(Score(out), Score(draft))
 	}
-	same, changed := Reshape(good, 200)
-	if changed || Score(same) < 4 {
-		t.Fatal(changed, Score(same))
-	}
-	if Structure("elv", "弱电") == Structure("family", "母婴") {
-		t.Fatal("vertical structures collapsed")
+	paras := paragraphsOf(out)
+	if paras[1] != first || paras[2] != second {
+		t.Fatal(paras)
 	}
 }
 
-func mustText(draft map[string]any) string {
-	var b strings.Builder
-	for _, section := range sectionsOf(draft) {
-		b.WriteString(textOf(section["heading"]))
-		paras, _ := section["paragraphs"].([]any)
-		for _, item := range paras {
-			b.WriteString(textOf(item))
-		}
+func TestFailedRewriteReturnsOriginal(t *testing.T) {
+	draft := map[string]any{
+		"title":    "短",
+		"sections": []any{map[string]any{"heading": "", "paragraphs": []any{"验收时先看线槽，是否盖好。"}}},
+		"closing":  "",
 	}
-	b.WriteString(closingOf(draft))
-	return b.String()
+	out := Apply(draft, map[string]any{"hook": "为什么？"}, errors.New("model down"))
+	if out["title"] != "短" || paragraphsOf(out)[0] != "验收时先看线槽，是否盖好。" {
+		t.Fatal(out)
+	}
+	worse := Apply(draft, map[string]any{"hook": "", "headings": []any{}, "closing": ""}, nil)
+	if paragraphsOf(worse)[0] != paragraphsOf(draft)[0] || worse["title"] != "短" {
+		t.Fatal(worse)
+	}
+}
+
+func dump(draft map[string]any) string {
+	buf, err := json.Marshal(draft)
+	if err != nil {
+		return ""
+	}
+	return string(buf)
 }

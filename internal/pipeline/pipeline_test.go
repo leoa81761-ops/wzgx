@@ -436,27 +436,35 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 	}
 }
 
-func TestExpandTrimStopsNearOneHundredFive(t *testing.T) {
+func TestExpandAsksToCondenseInsteadOfCutting(t *testing.T) {
 	long := strings.Repeat("步骤写清楚。", 400)
+	short := strings.Repeat("压短后仍是完整的句子。", 70)
 	var sawGoal bool
+	var condense int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
 		_ = json.Unmarshal(raw, &req)
-		if stageOf(req) != "扩写" {
-			t.Errorf("stage %s", stageOf(req))
-		}
-		msgs, _ := req["messages"].([]any)
-		if len(msgs) > 0 {
-			last, _ := msgs[len(msgs)-1].(map[string]any)
-			content, _ := last["content"].(string)
-			if strings.Contains(content, `"expand_goal":840`) || strings.Contains(content, `"expand_goal": 840`) {
-				sawGoal = true
+		body := long
+		switch stageOf(req) {
+		case "扩写":
+			msgs, _ := req["messages"].([]any)
+			if len(msgs) > 0 {
+				last, _ := msgs[len(msgs)-1].(map[string]any)
+				content, _ := last["content"].(string)
+				if strings.Contains(content, `"expand_goal":840`) || strings.Contains(content, `"expand_goal": 840`) {
+					sawGoal = true
+				}
 			}
+		case "缩写":
+			condense++
+			body = short
+		default:
+			t.Errorf("stage %s", stageOf(req))
 		}
 		writeChoice(w, map[string]any{
 			"title": "短稿", "summary": "摘要",
-			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}},
+			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}},
 			"closing":  "结束", "sources": []any{},
 		})
 	}))
@@ -470,11 +478,12 @@ func TestExpandTrimStopsNearOneHundredFive(t *testing.T) {
 	out, _, trace := fitBody(context.Background(), gw, []llm.Provider{{
 		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
 	}}, map[string]any{"word_target": 800}, draft, 800)
-	if !sawGoal {
-		t.Fatal("expand payload missing expand_goal")
+	if !sawGoal || condense < 1 {
+		t.Fatalf("goal %v condense %d", sawGoal, condense)
 	}
-	if content.BodyRunes(out) > 800*105/100 {
-		t.Fatalf("runes %d trace %#v", content.BodyRunes(out), trace)
+	raw, _ := json.Marshal(out)
+	if !strings.Contains(string(raw), "压短后仍是完整的句子。") || strings.Contains(string(raw), "步骤写清楚。") {
+		t.Fatalf("runes %d trace %#v body %s", content.BodyRunes(out), trace, raw)
 	}
 }
 
@@ -700,9 +709,18 @@ func TestFactCheckExpansionIsTrimmed(t *testing.T) {
 			writeChoice(w, map[string]any{"title": "核对后变长", "angle": "今天就能做"})
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
-		case "扩写", "缩写":
-			t.Errorf("length fit should not call the model for an in-band draft, got %s", stageOf(req))
+		case "扩写":
+			t.Errorf("an in-band draft should not be expanded, got %s", stageOf(req))
 			writeChoice(w, longDraft)
+		case "缩写":
+			writeChoice(w, map[string]any{
+				"title": "核对后变长", "summary": "摘要",
+				"sections": []any{map[string]any{
+					"heading": "甲", "paragraphs": []any{inBand}, "list": []any{},
+					"table": map[string]any{"headers": []any{"项目", "说明"}, "rows": []any{[]any{cell, cell}}},
+				}},
+				"closing": "结束", "sources": []any{},
+			})
 		case "事实核对":
 			sawFact = true
 			writeChoice(w, longDraft)
@@ -735,14 +753,15 @@ func TestFactCheckExpansionIsTrimmed(t *testing.T) {
 	if n := content.BodyRunes(articles[0].BodyJSON); n > high || n < 800*85/100 {
 		t.Fatalf("body runes %d", n)
 	}
-	if strings.Count(articles[0].BodyHTML, cell) >= 16 {
-		t.Fatal("table cells were not trimmed")
+	if strings.Count(articles[0].BodyHTML, cell) >= 16 || !strings.Contains(articles[0].BodyHTML, "合适的正文。") {
+		t.Fatal(articles[0].BodyHTML)
 	}
 }
 
 func TestDraftCondensesWhenLong(t *testing.T) {
 	var expandCalls, condenseCalls int
 	long := strings.Repeat("这是一段很长的说明文字。", 200)
+	short := "压短后的说明。"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
@@ -757,7 +776,7 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 			writeChoice(w, map[string]any{"title": "写得太长了", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		case "缩写":
 			condenseCalls++
-			writeChoice(w, map[string]any{"title": "写得太长了", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "写得太长了", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{short}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		default:
 			writeChoice(w, map[string]any{"title": "写得太长了", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
@@ -774,15 +793,15 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "long@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 0 || condenseCalls != 1 {
+	if expandCalls != 0 || condenseCalls < 1 {
 		t.Fatalf("expand %d condense %d", expandCalls, condenseCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if n := content.BodyRunes(articles[0].BodyJSON); n > 800*130/100 || n < 1 {
-		t.Fatalf("body runes %d", n)
+	if !strings.Contains(articles[0].BodyHTML, short) || strings.Contains(articles[0].BodyHTML, "很长的说明文字") {
+		t.Fatal(articles[0].BodyHTML)
 	}
 }
 

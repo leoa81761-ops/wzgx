@@ -6,40 +6,33 @@ import (
 	"unicode/utf8"
 )
 
-func TestChoosePrefersSpecificTitleAndKeepsAlternatives(t *testing.T) {
-	topic := Topic{Subtopic: "验收", Angle: "少做一件事", Column: "清单", Direction: "弱电智能化"}
-	cands := Candidates(topic)
-	if len(cands) < 10 {
-		t.Fatal(len(cands))
+func TestRankLeavesTitlesUnchanged(t *testing.T) {
+	short := "短标题"
+	long := "这是一个明显超过二十八字的标题，用来确认打分不会把它截断，也不会在后面补上套话"
+	mid := "验收之前，先把这三件事都核对完再收工"
+	best, alts := Rank([]string{short, "震惊！验收必看", long, mid, "包过验收的办法"}, []string{"包过"}, nil, "")
+	if utf8.RuneCountInString(mid) < 18 || utf8.RuneCountInString(mid) > 28 {
+		t.Fatal("fixture should sit inside the preferred length", utf8.RuneCountInString(mid))
 	}
-	for _, title := range cands {
-		n := utf8.RuneCountInString(title)
-		if n < 18 || n > 28 {
-			t.Fatal(title, n)
+	pool := append([]string{best}, alts...)
+	allowed := map[string]bool{short: true, long: true, mid: true}
+	for _, title := range pool {
+		if !allowed[title] {
+			t.Fatal("title was padded, cut, or invented", title)
+		}
+		if strings.Contains(title, "写给正在做") || strings.Contains(title, "震惊") || strings.Contains(title, "包过") {
+			t.Fatal(title)
 		}
 	}
-	best, alts := Choose("震惊！验收必看", []string{"稳赚不赔的验收", "验收可以先做的一件小事"}, topic, []string{"包过验收"}, []string{"验收之前，先核对的三件小事，写给正在做的人"}, "")
-	if strings.Contains(best, "震惊") || strings.Contains(best, "稳赚") || strings.Contains(best, "包过") {
-		t.Fatal(best)
+	if best != mid {
+		t.Fatal(best, alts)
 	}
-	n := utf8.RuneCountInString(best)
-	if n < 18 || n > 28 {
-		t.Fatal(best, n)
-	}
-	if len(alts) < 1 {
+	if len(alts) != 2 {
 		t.Fatal(alts)
 	}
-	for _, alt := range alts {
-		if alt == best || strings.Contains(alt, "震惊") {
-			t.Fatal(alt)
-		}
-	}
-	again, _ := Choose("为什么验收总在最后才发现", nil, topic, nil, nil, "question")
-	numbered, _ := Choose("验收要留3张照片", nil, topic, nil, nil, "number")
-	if Score(again, "验收", nil, nil, "question") < Score(again, "验收", nil, nil, "") {
-		t.Fatal("question bias")
-	}
-	if Score(numbered, "验收", nil, nil, "number") < Score(numbered, "验收", nil, nil, "") {
-		t.Fatal("number bias")
+	outside := Score(short, nil, nil, "")
+	inside := Score(mid, nil, nil, "")
+	if inside-outside > 12 {
+		t.Fatal("length bonus is too large", inside, outside)
 	}
 }

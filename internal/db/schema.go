@@ -39,7 +39,12 @@ CREATE TABLE IF NOT EXISTS wx_account (
   bind_status TEXT NOT NULL DEFAULT 'active',
   permission_report TEXT,
   bound_at TEXT,
-  unbound_at TEXT
+  unbound_at TEXT,
+  audience TEXT NOT NULL DEFAULT '',
+  tone TEXT NOT NULL DEFAULT '',
+  persona_columns TEXT NOT NULL DEFAULT '',
+  signatures TEXT NOT NULL DEFAULT '',
+  taboos TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_wx_user ON wx_account(user_id);
 CREATE INDEX IF NOT EXISTS idx_wx_app ON wx_account(app_id);
@@ -704,8 +709,34 @@ CREATE TABLE IF NOT EXISTS user_contract (
 		{"plan_extra", "signatures", "TEXT NOT NULL DEFAULT ''"},
 		{"plan_extra", "taboos", "TEXT NOT NULL DEFAULT ''"},
 		{"mp_stats", "article_title", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "audience", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "tone", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "persona_columns", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "signatures", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "taboos", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
+			return err
+		}
+	}
+	return d.MigrateAccountVoice(ctx)
+}
+
+// MigrateAccountVoice copies the earliest non-empty plan voice onto an account that does not have one yet.
+// A later plan that stored a different value stays as that plan's override.
+func (d *DB) MigrateAccountVoice(ctx context.Context) error {
+	for _, col := range []string{"audience", "tone", "persona_columns", "signatures", "taboos"} {
+		stmt := `UPDATE wx_account SET ` + col + ` = (
+			SELECT pe.` + col + ` FROM plan_extra pe
+			INNER JOIN writing_plan wp ON wp.id = pe.plan_id
+			WHERE wp.wx_account_id = wx_account.id AND TRIM(pe.` + col + `) != ''
+			ORDER BY wp.id ASC LIMIT 1
+		) WHERE TRIM(` + col + `) = '' AND EXISTS (
+			SELECT 1 FROM plan_extra pe
+			INNER JOIN writing_plan wp ON wp.id = pe.plan_id
+			WHERE wp.wx_account_id = wx_account.id AND TRIM(pe.` + col + `) != ''
+		)`
+		if _, err := d.SQL.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
 	}

@@ -44,6 +44,17 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是公众号编辑。当前正文偏长。请压缩到 word_target 的 85% 到 130% 之间，删掉重复和空话，保留事实、步骤和 sources，不要新增材料或网址。" +
 			lengthRule + sourcedFacts +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "标题":
+		system = "你是公众号标题编辑。请用输入里的语气，写 10 到 12 个彼此不同的标题。" +
+			"每个标题都是完整的一句，不要为了凑字数截断，也不要在后面补套话。" +
+			"不要用「震惊」「不转不是」「稳赚不赔」。" +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "结构润色":
+		system = "你是公众号编辑。只改写输入里标记为需要改的部分：rewrite_hook、rewrite_headings、rewrite_closing 为 true 的才写。" +
+			"没有要求改的部分返回空字符串或空数组。" +
+			"不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" +
+			"开头要能钩住读者，小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "事实核对":
 		schema = StageSchema("正文")
 		system = "你是事实核对编辑。请对照 research_notes、research_sources 和可靠的领域常识，检查正文里的核心定义、阈值、标准编号和数字。" +
@@ -153,9 +164,56 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 			target = 800
 		}
 		return content.TrimToMax(draft, target*130/100)
+	case "标题":
+		return mockTitles(payload)
+	case "结构润色":
+		return mockPolish(payload)
 	default:
 		return draftFromPayload(payload)
 	}
+}
+
+func mockTitles(payload map[string]any) map[string]any {
+	base := asString(payload["subtopic"])
+	if base == "" {
+		base = asString(payload["draft_title"])
+	}
+	if base == "" {
+		base = "这件事"
+	}
+	lines := []string{
+		base + "，先看哪一步",
+		"为什么" + base + "会卡在这里",
+		base + "可以今天做完的一件小事",
+		"把" + base + "写成能照着做的步骤",
+		"少做一件和" + base + "无关的事",
+		base + "里最容易漏掉的核对",
+		"下次遇到" + base + "先停一下",
+		"关于" + base + "的一个具体做法",
+		"怎么把" + base + "说清楚",
+		base + "不必一次做完",
+		"留给做" + base + "的人一句提醒",
+		base + "这件事不必一次做完，也不必为了凑标题去截断句子本身，请原样保留",
+	}
+	out := make([]any, len(lines))
+	for i, line := range lines {
+		out[i] = line
+	}
+	return map[string]any{"titles": out}
+}
+
+func mockPolish(payload map[string]any) map[string]any {
+	out := map[string]any{"hook": "", "headings": []any{}, "closing": ""}
+	if payload["rewrite_hook"] == true {
+		out["hook"] = "为什么先把这一步说清楚？"
+	}
+	if payload["rewrite_headings"] == true {
+		out["headings"] = []any{"先看问题", "一个做法"}
+	}
+	if payload["rewrite_closing"] == true {
+		out["closing"] = "可以先记住这一步。欢迎留言说说你的做法。"
+	}
+	return out
 }
 
 func padDraft(draft map[string]any, target int) map[string]any {

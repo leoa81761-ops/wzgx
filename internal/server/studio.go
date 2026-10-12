@@ -221,6 +221,8 @@ func accountDict(account *model.WxAccount) map[string]any {
 		"type_label":    subject + " · " + service + " · " + verified,
 		"delivery_mode": account.DeliveryMode, "delivery_label": delivery,
 		"bind_status": account.BindStatus, "permission_report": report, "bound_at": jtime(account.BoundAt),
+		"audience": account.Audience, "tone": account.Tone, "persona_columns": account.PersonaColumns,
+		"signatures": account.Signatures, "taboos": account.Taboos,
 	}
 }
 
@@ -400,10 +402,46 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 	} else {
 		view["account_name"] = ""
 	}
+	attachVoice(view, account)
 	ready, block := publish.Ready(owner, account, time.Now().UTC())
 	view["publish_ready"] = ready
 	view["publish_block"] = block
 	return view, nil
+}
+
+func attachVoice(view map[string]any, account *model.WxAccount) {
+	plan := persona.Profile{
+		Audience: asText(view["audience"]), Tone: asText(view["tone"]),
+		Columns: asText(view["persona_columns"]), Signatures: asText(view["signatures"]), Taboos: asText(view["taboos"]),
+	}
+	stored := persona.Profile{}
+	if account != nil {
+		stored = persona.Profile{
+			Audience: account.Audience, Tone: account.Tone, Columns: account.PersonaColumns,
+			Signatures: account.Signatures, Taboos: account.Taboos,
+		}
+		view["account_audience"] = account.Audience
+		view["account_tone"] = account.Tone
+		view["account_persona_columns"] = account.PersonaColumns
+		view["account_signatures"] = account.Signatures
+		view["account_taboos"] = account.Taboos
+	}
+	suggested := persona.Profile{
+		Audience: asText(view["suggested_audience"]), Tone: asText(view["suggested_tone"]),
+		Columns: asText(view["suggested_columns"]), Signatures: asText(view["suggested_signatures"]),
+		Taboos: asText(view["suggested_taboos"]),
+	}
+	effective := persona.Effective(plan, stored, suggested)
+	view["effective_audience"] = effective.Audience
+	view["effective_tone"] = effective.Tone
+	view["effective_columns"] = effective.Columns
+	view["effective_signatures"] = effective.Signatures
+	view["effective_taboos"] = effective.Taboos
+}
+
+func asText(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 func (a *App) listAccounts(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -599,6 +637,59 @@ func (a *App) assertCanBind(ctx context.Context, tx *db.Tx, userID int64, appID 
 
 type secretBody struct {
 	AppSecret string `json:"app_secret"`
+}
+
+type voiceBody struct {
+	Audience       string `json:"audience"`
+	Tone           string `json:"tone"`
+	PersonaColumns string `json:"persona_columns"`
+	Signatures     string `json:"signatures"`
+	Taboos         string `json:"taboos"`
+}
+
+func (a *App) saveAccountVoice(w http.ResponseWriter, r *http.Request, user *model.User) error {
+	id, err := pathID(r, "account_id", "找不到这个公众号")
+	if err != nil {
+		return err
+	}
+	var body voiceBody
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	account, err := a.ownAccount(r.Context(), nil, user.ID, id)
+	if err != nil {
+		return err
+	}
+	audience, err := boundedText("读者", body.Audience, 80)
+	if err != nil {
+		return err
+	}
+	tone, err := boundedText("语气", body.Tone, 80)
+	if err != nil {
+		return err
+	}
+	columns, err := boundedText("常设栏目", body.PersonaColumns, 80)
+	if err != nil {
+		return err
+	}
+	signatures, err := boundedText("口头禅", body.Signatures, 80)
+	if err != nil {
+		return err
+	}
+	taboos, err := boundedText("不写的话题", body.Taboos, 80)
+	if err != nil {
+		return err
+	}
+	if err := a.Store.SaveAccountVoice(r.Context(), nil, account.ID, audience, tone, columns, signatures, taboos); err != nil {
+		return err
+	}
+	account.Audience = audience
+	account.Tone = tone
+	account.PersonaColumns = columns
+	account.Signatures = signatures
+	account.Taboos = taboos
+	writeJSON(w, 200, accountDict(account))
+	return nil
 }
 
 func (a *App) recheckAccount(w http.ResponseWriter, r *http.Request, user *model.User) error {

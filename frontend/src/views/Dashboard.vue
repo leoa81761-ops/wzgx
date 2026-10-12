@@ -41,8 +41,8 @@
           {{ card.plan.direction }}
           · {{ card.plan.status === "active" ? "下次 " + formatTime(card.plan.next_run_at) : "启动后才会按点写" }}
         </p>
-        <p v-if="card.plan && (card.plan.tone || card.plan.suggested_tone)" class="muted">
-          {{ card.plan.tone || card.plan.suggested_tone }}<span v-if="card.plan.audience || card.plan.suggested_audience"> · {{ card.plan.audience || card.plan.suggested_audience }}</span>
+        <p v-if="card.plan && card.plan.effective_tone" class="muted">
+          {{ card.plan.effective_tone }}<span v-if="card.plan.effective_audience"> · {{ card.plan.effective_audience }}</span>
         </p>
         <p v-else class="muted">这个号还没有写作计划。</p>
         <p v-if="card.plan && card.plan.pause_reason" class="muted">原因：{{ card.plan.pause_reason }}</p>

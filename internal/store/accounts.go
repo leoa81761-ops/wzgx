@@ -8,13 +8,13 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/model"
 )
 
-const accountCols = `id, user_id, name, app_id, secret_encrypted, subject_type, service_type, verified, delivery_mode, bind_status, permission_report, bound_at, unbound_at`
+const accountCols = `id, user_id, name, app_id, secret_encrypted, subject_type, service_type, verified, delivery_mode, bind_status, permission_report, bound_at, unbound_at, audience, tone, persona_columns, signatures, taboos`
 
 func scanAccount(row interface{ Scan(dest ...any) error }) (*model.WxAccount, error) {
 	var a model.WxAccount
 	var verified int
 	var report, bound, unbound sql.NullString
-	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.AppID, &a.SecretEncrypted, &a.SubjectType, &a.ServiceType, &verified, &a.DeliveryMode, &a.BindStatus, &report, &bound, &unbound)
+	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.AppID, &a.SecretEncrypted, &a.SubjectType, &a.ServiceType, &verified, &a.DeliveryMode, &a.BindStatus, &report, &bound, &unbound, &a.Audience, &a.Tone, &a.PersonaColumns, &a.Signatures, &a.Taboos)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +106,15 @@ func (s *Store) UpdateAccount(ctx context.Context, q db.Q, a *model.WxAccount) e
 	}
 	_, err := q.Exec(ctx, `UPDATE wx_account SET name=?, secret_encrypted=?, verified=?, delivery_mode=?, bind_status=?, permission_report=?, bound_at=?, unbound_at=? WHERE id=?`,
 		a.Name, a.SecretEncrypted, bint(a.Verified), a.DeliveryMode, a.BindStatus, jsonStr(a.PermissionReport), timeArg(a.BoundAt), timeArg(a.UnboundAt), a.ID)
+	return err
+}
+
+func (s *Store) SaveAccountVoice(ctx context.Context, q db.Q, id int64, audience, tone, columns, signatures, taboos string) error {
+	if q == nil {
+		q = s.DB
+	}
+	_, err := q.Exec(ctx, `UPDATE wx_account SET audience=?, tone=?, persona_columns=?, signatures=?, taboos=? WHERE id=?`,
+		audience, tone, columns, signatures, taboos, id)
 	return err
 }
 

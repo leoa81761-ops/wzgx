@@ -51,11 +51,11 @@
       <details class="stack">
         <summary>更多设置</summary>
         <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房" /></label>
-        <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
-        <label>语气<input v-model="form.tone" maxlength="80" :placeholder="plan.suggested_tone || '留空则按方向自动带上'" /></label>
-        <label>常设栏目<input v-model="form.persona_columns" maxlength="80" :placeholder="plan.suggested_columns || '例如：现场笔记,验收清单'" /></label>
-        <label>口头禅<input v-model="form.signatures" maxlength="80" :placeholder="plan.suggested_signatures || '例如：先看现场，再谈方案'" /></label>
-        <label>不写的话题<input v-model="form.taboos" maxlength="80" :placeholder="plan.suggested_taboos || '例如：保证中标'" /></label>
+        <label>读者<input v-model="form.audience" maxlength="80" :placeholder="plan.account_audience || plan.suggested_audience || '留空则用这个号的读者'" /></label>
+        <label>语气<input v-model="form.tone" maxlength="80" :placeholder="plan.account_tone || plan.suggested_tone || '留空则用这个号的语气'" /></label>
+        <label>常设栏目<input v-model="form.persona_columns" maxlength="80" :placeholder="plan.account_persona_columns || plan.suggested_columns || '留空则用这个号的栏目'" /></label>
+        <label>口头禅<input v-model="form.signatures" maxlength="80" :placeholder="plan.account_signatures || plan.suggested_signatures || '留空则用这个号的口头禅'" /></label>
+        <label>不写的话题<input v-model="form.taboos" maxlength="80" :placeholder="plan.account_taboos || plan.suggested_taboos || '留空则用这个号不写的话题'" /></label>
         <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔" /></label>
         <label>排版
           <select v-model="form.template_key">

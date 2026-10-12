@@ -60,6 +60,11 @@ func Suggest(direction, verticalKey string) Profile {
 	}
 }
 
+// Effective resolves one article's voice. A plan field wins, then the account, then the suggestion.
+func Effective(plan, account, suggested Profile) Profile {
+	return Fill(Fill(plan, account), suggested)
+}
+
 // Fill copies suggestion into blank fields and leaves edited text alone.
 func Fill(stored, suggested Profile) Profile {
 	out := stored

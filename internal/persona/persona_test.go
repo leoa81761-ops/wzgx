@@ -17,3 +17,20 @@ func TestSuggestDiffersByDirection(t *testing.T) {
 		t.Fatal(kept)
 	}
 }
+
+func TestPersonaInheritsFromAccount(t *testing.T) {
+	suggested := Suggest("弱电智能化", "elv")
+	account := Profile{Tone: "账号语气", Audience: "现场负责人", Columns: "验收清单", Signatures: "先看现场", Taboos: "包过"}
+	inherited := Effective(Profile{}, account, suggested)
+	if inherited.Tone != "账号语气" || inherited.Audience != "现场负责人" || inherited.Columns != "验收清单" || inherited.Taboos != "包过" {
+		t.Fatal(inherited)
+	}
+	overridden := Effective(Profile{Tone: "计划语气"}, account, suggested)
+	if overridden.Tone != "计划语气" || overridden.Audience != "现场负责人" || overridden.Signatures != "先看现场" {
+		t.Fatal(overridden)
+	}
+	blank := Effective(Profile{}, Profile{}, suggested)
+	if blank.Tone != suggested.Tone || blank.Audience != suggested.Audience || blank.Taboos != suggested.Taboos {
+		t.Fatal(blank)
+	}
+}

@@ -3,9 +3,6 @@ package editorial
 import (
 	"encoding/json"
 	"strings"
-	"unicode/utf8"
-
-	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
 // Structure is the prompt hint for one vertical. It does not add facts by itself.
@@ -21,6 +18,17 @@ func Structure(verticalKey, direction string) string {
 	default:
 		return "结构：开头用一个具体问题钩住读者；小标题能扫读；中间有一个例子或做法；结尾是一句收获，再加一句邀请留言。不要标题党，不要编造数字。"
 	}
+}
+
+// Needs says which parts are weak enough to send back to the model.
+type Needs struct {
+	Hook     bool
+	Headings bool
+	Closing  bool
+}
+
+func (n Needs) Any() bool {
+	return n.Hook || n.Headings || n.Closing
 }
 
 // Score is 0 to 5: hook, two subheads, a case, a takeaway, and a closing invitation.
@@ -44,127 +52,118 @@ func Score(draft map[string]any) int {
 	return n
 }
 
-// Reshape lifts a draft under 4 points by rearranging words already in the draft
-// and adding a fixed invitation. It does not invent cases, numbers, or sources.
-// max is the hard rune cap, usually 130% of the word target. Zero means a small allowance.
-func Reshape(draft map[string]any, max int) (map[string]any, bool) {
+// NeedsRewrite is empty when the draft already scores 4 or more.
+func NeedsRewrite(draft map[string]any) Needs {
 	if draft == nil || Score(draft) >= 4 {
-		return draft, false
+		return Needs{}
 	}
-	cloned := clone(draft)
+	return Needs{
+		Hook:     !hasHook(draft),
+		Headings: headingCount(draft) < 2,
+		Closing:  !containsAny(bodyText(draft)+" "+closingOf(draft), "所以", "可以先", "记住") || !containsAny(closingOf(draft), "欢迎", "留言", "下次", "如果你"),
+	}
+}
+
+// Apply splices a model rewrite of the weak parts back into the draft.
+// A failed call, a lower score, or any lost paragraph keeps the original.
+func Apply(original map[string]any, model map[string]any, callErr error) map[string]any {
+	if callErr != nil || original == nil || model == nil {
+		return original
+	}
+	need := NeedsRewrite(original)
+	if !need.Any() {
+		return original
+	}
+	spliced := Splice(original, model, need)
+	if spliced == nil || !keepsParagraphs(original, spliced) || Score(spliced) <= Score(original) {
+		return original
+	}
+	return spliced
+}
+
+// Splice copies the draft and only fills the requested weak parts.
+// Existing paragraphs, lists, tables and sources are left character for character.
+func Splice(original, model map[string]any, need Needs) map[string]any {
+	cloned := clone(original)
 	if cloned == nil {
-		return draft, false
+		return nil
 	}
-	if max <= 0 {
-		max = content.BodyRunes(cloned) + 80
-	}
-	changed := false
-	if !hasHook(cloned) && addHook(cloned, max) {
-		changed = true
-	}
-	if headingCount(cloned) < 2 && splitSection(cloned, max) {
-		changed = true
-	}
-	if !containsAny(bodyText(cloned)+" "+closingOf(cloned), "所以", "可以先", "记住") && addTakeaway(cloned, max) {
-		changed = true
-	}
-	if !containsAny(closingOf(cloned), "欢迎", "留言", "下次", "如果你") && addCTA(cloned, max) {
-		changed = true
-	}
-	if content.BodyRunes(cloned) > max {
-		cloned = content.TrimToMax(cloned, max)
-	}
-	return cloned, changed
-}
-
-func addHook(draft map[string]any, max int) bool {
-	para := firstParagraph(draft)
-	if para == "" {
-		return false
-	}
-	hook := "先看这一处：" + clip(firstSentence(para), 12)
-	if !room(draft, max, utf8.RuneCountInString(hook)) {
-		return false
-	}
-	sections := sectionsOf(draft)
-	if len(sections) == 0 {
-		return false
-	}
-	section := sections[0]
-	paras, _ := section["paragraphs"].([]any)
-	section["paragraphs"] = append([]any{hook}, paras...)
-	return true
-}
-
-func addTakeaway(draft map[string]any, max int) bool {
-	para := sourceParagraph(draft)
-	if para == "" {
-		return false
-	}
-	line := "可以先记住：" + clip(firstSentence(para), 16)
-	if !room(draft, max, utf8.RuneCountInString(line)) {
-		return false
-	}
-	if closingOf(draft) == "" {
-		draft["closing"] = line
-	} else {
-		draft["closing"] = closingOf(draft) + line
-	}
-	return true
-}
-
-func addCTA(draft map[string]any, max int) bool {
-	const cta = "欢迎留言说说你的做法。"
-	if !room(draft, max, utf8.RuneCountInString(cta)) {
-		return false
-	}
-	if closingOf(draft) == "" {
-		draft["closing"] = cta
-	} else {
-		draft["closing"] = closingOf(draft) + cta
-	}
-	return true
-}
-
-func splitSection(draft map[string]any, max int) bool {
-	sections := sectionsOf(draft)
-	if len(sections) == 0 {
-		return false
-	}
-	if len(sections) >= 2 {
-		second := sections[1]
-		if strings.TrimSpace(textOf(second["heading"])) == "" {
-			para := paragraphAt(second)
-			if para == "" || !room(draft, max, min(8, utf8.RuneCountInString(para))) {
-				return false
-			}
-			second["heading"] = clip(firstSentence(para), 8)
-			return true
+	if need.Hook {
+		if hook := strings.TrimSpace(textOf(model["hook"])); hook != "" {
+			prependHook(cloned, hook)
 		}
-		return false
 	}
-	para := paragraphAt(sections[0])
-	parts := sentences(para)
-	if len(parts) < 2 {
-		return false
+	if need.Headings {
+		applyHeadings(cloned, stringList(model["headings"]))
 	}
-	heading := clip(parts[1], 8)
-	if heading == "" || !room(draft, max, utf8.RuneCountInString(heading)) {
-		return false
+	if need.Closing {
+		if closing := strings.TrimSpace(textOf(model["closing"])); closing != "" {
+			old := closingOf(cloned)
+			switch {
+			case old == "":
+				cloned["closing"] = closing
+			case strings.Contains(closing, old):
+				cloned["closing"] = closing
+			default:
+				cloned["closing"] = old + closing
+			}
+		}
 	}
-	sections[0]["paragraphs"] = []any{parts[0]}
-	second := map[string]any{"heading": heading, "paragraphs": []any{parts[1]}}
-	draft["sections"] = []any{sections[0], second}
-	return true
+	return cloned
 }
 
-func room(draft map[string]any, max, extra int) bool {
-	return extra > 0 && content.BodyRunes(draft)+extra <= max
+func prependHook(draft map[string]any, hook string) {
+	sections := sectionsOf(draft)
+	if len(sections) == 0 {
+		draft["sections"] = []any{map[string]any{"heading": "", "paragraphs": []any{hook}}}
+		return
+	}
+	paras, _ := sections[0]["paragraphs"].([]any)
+	sections[0]["paragraphs"] = append([]any{hook}, paras...)
+}
+
+func applyHeadings(draft map[string]any, headings []string) {
+	if len(headings) == 0 {
+		return
+	}
+	sections := sectionsOf(draft)
+	used := 0
+	for _, section := range sections {
+		if strings.TrimSpace(textOf(section["heading"])) != "" || used >= len(headings) {
+			continue
+		}
+		section["heading"] = headings[used]
+		used++
+	}
+}
+
+func keepsParagraphs(original, next map[string]any) bool {
+	old := paragraphsOf(original)
+	neu := paragraphsOf(next)
+	i := 0
+	for _, paragraph := range neu {
+		if i < len(old) && paragraph == old[i] {
+			i++
+		}
+	}
+	return i == len(old)
+}
+
+func paragraphsOf(draft map[string]any) []string {
+	var out []string
+	for _, section := range sectionsOf(draft) {
+		paras, _ := section["paragraphs"].([]any)
+		for _, item := range paras {
+			if text := textOf(item); text != "" {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
 }
 
 func hasHook(draft map[string]any) bool {
-	para := firstParagraph(draft)
-	return containsAny(para, "先", "？", "?", "为什么", "怎么")
+	return containsAny(firstParagraph(draft), "先", "？", "?", "为什么", "怎么")
 }
 
 func headingCount(draft map[string]any) int {
@@ -181,44 +180,19 @@ func bodyText(draft map[string]any) string {
 	var b strings.Builder
 	for _, section := range sectionsOf(draft) {
 		b.WriteString(textOf(section["heading"]))
-		paras, _ := section["paragraphs"].([]any)
-		for _, item := range paras {
-			b.WriteString(textOf(item))
+		for _, paragraph := range paragraphsOf(map[string]any{"sections": []any{section}}) {
+			b.WriteString(paragraph)
 		}
 	}
 	return b.String()
 }
 
-func sourceParagraph(draft map[string]any) string {
-	for _, section := range sectionsOf(draft) {
-		paras, _ := section["paragraphs"].([]any)
-		for _, item := range paras {
-			text := strings.TrimSpace(textOf(item))
-			if text == "" || strings.HasPrefix(text, "先看这一处：") {
-				continue
-			}
-			return text
-		}
-	}
-	return ""
-}
-
 func firstParagraph(draft map[string]any) string {
-	sections := sectionsOf(draft)
-	if len(sections) == 0 {
+	paras := paragraphsOf(draft)
+	if len(paras) == 0 {
 		return ""
 	}
-	return paragraphAt(sections[0])
-}
-
-func paragraphAt(section map[string]any) string {
-	paras, _ := section["paragraphs"].([]any)
-	for _, item := range paras {
-		if text := strings.TrimSpace(textOf(item)); text != "" {
-			return text
-		}
-	}
-	return ""
+	return paras[0]
 }
 
 func sectionsOf(draft map[string]any) []map[string]any {
@@ -237,27 +211,12 @@ func closingOf(draft map[string]any) string {
 	return strings.TrimSpace(textOf(draft["closing"]))
 }
 
-func firstSentence(text string) string {
-	parts := sentences(text)
-	if len(parts) == 0 {
-		return strings.TrimSpace(text)
-	}
-	return parts[0]
-}
-
-func sentences(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	chunks := strings.FieldsFunc(text, func(r rune) bool {
-		return r == '。' || r == '！' || r == '？' || r == '!' || r == '?'
-	})
+func stringList(raw any) []string {
+	list, _ := raw.([]any)
 	var out []string
-	for _, chunk := range chunks {
-		chunk = strings.TrimSpace(chunk)
-		if chunk != "" {
-			out = append(out, chunk)
+	for _, item := range list {
+		if text := strings.TrimSpace(textOf(item)); text != "" {
+			out = append(out, text)
 		}
 	}
 	return out
@@ -275,14 +234,6 @@ func containsAny(text string, words ...string) bool {
 func textOf(v any) string {
 	s, _ := v.(string)
 	return s
-}
-
-func clip(s string, n int) string {
-	rs := []rune(strings.TrimSpace(s))
-	if len(rs) <= n {
-		return string(rs)
-	}
-	return string(rs[:n])
 }
 
 func clone(draft map[string]any) map[string]any {
