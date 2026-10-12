@@ -9,12 +9,14 @@
     </div>
     <section class="cards">
       <article class="card">
-        <p class="muted">今日</p>
-        <strong>{{ quota.daily_used ?? 0 }} / {{ quota.daily_limit ?? 1 }} 篇</strong>
+        <p class="muted">今日剩余</p>
+        <strong>{{ quota.daily_remaining ?? 0 }} 篇</strong>
+        <p class="muted">已用 {{ quota.daily_used ?? 0 }} / {{ quota.daily_limit ?? 1 }}</p>
       </article>
       <article class="card">
-        <p class="muted">{{ quota.period_label || "本月" }}</p>
-        <strong>{{ quota.period_used ?? 0 }} / {{ quota.period_limit ?? 10 }} 篇</strong>
+        <p class="muted">{{ quota.period_label || "本月" }}剩余</p>
+        <strong>{{ quota.period_remaining ?? 0 }} 篇</strong>
+        <p class="muted">已用 {{ quota.period_used ?? 0 }} / {{ quota.period_limit ?? 10 }}</p>
       </article>
       <article class="card">
         <p class="muted">最近文章</p>

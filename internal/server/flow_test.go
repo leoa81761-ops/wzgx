@@ -79,7 +79,7 @@ func TestRegisterRequiresConsentAndFullFlow(t *testing.T) {
 		t.Fatal(html)
 	}
 	again := postJSON(t, ts.URL+"/api/plans/"+strconv.FormatInt(planID, 10)+"/generate", token, map[string]any{})
-	if again.StatusCode != 400 || !strings.Contains(again.JSON["detail"].(string), "1 批") {
+	if again.StatusCode != 400 || !strings.Contains(again.JSON["detail"].(string), "今日额度已用完") {
 		t.Fatal(again.StatusCode, again.JSON)
 	}
 	regenerated := postJSON(t, ts.URL+"/api/articles/"+strconv.FormatInt(articleID, 10)+"/regenerate", token, map[string]any{})

@@ -260,7 +260,8 @@ func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, no
 	}
 	out := map[string]any{
 		"tier": tier, "tier_label": label, "stored_tier": user.Tier, "state": state, "state_label": stateLabel,
-		"expires_at": expires, "daily_used": daily, "daily_limit": limits.DailyQuota, "period_used": used, "period_limit": limits.PeriodQuota,
+		"expires_at": expires, "daily_used": daily, "daily_limit": limits.DailyQuota, "daily_remaining": remaining(limits.DailyQuota, daily),
+		"period_used": used, "period_limit": limits.PeriodQuota, "period_remaining": remaining(limits.PeriodQuota, used),
 		"period_unit": limits.PeriodUnit, "period_label": periodLabel, "max_words": limits.MaxWords, "max_accounts": limits.MaxAccounts,
 		"max_plans": limits.MaxPlans, "summary": limits.Summary,
 	}
@@ -332,6 +333,44 @@ func EnforceFreeLimits(ctx context.Context, st *store.Store, q db.Q, user *model
 		if plan.Status == "active" {
 			activeKept++
 		}
+	}
+	return nil
+}
+
+func remaining(limit, used int) int {
+	n := limit - used
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// CheckDailyCount 校验某个写作方向的每天篇数，以及该用户全部分配加起来不超过档位每日上限。
+func CheckDailyCount(ctx context.Context, st *store.Store, q db.Q, user *model.User, now time.Time, exceptPlanID int64, count int) error {
+	if count < 1 {
+		return &Error{Message: "每天篇数至少为 1"}
+	}
+	tier, _ := Membership(user, now)
+	limits, err := LimitsFor(ctx, st, q, tier)
+	if err != nil {
+		return err
+	}
+	if count > limits.DailyQuota {
+		return &Error{Message: fmt.Sprintf("当前会员每天最多 %d 篇", limits.DailyQuota)}
+	}
+	plans, err := st.ListPlansForLimit(ctx, q, user.ID)
+	if err != nil {
+		return err
+	}
+	sum := count
+	for i := range plans {
+		if plans[i].ID == exceptPlanID || plans[i].Status == "deleted" {
+			continue
+		}
+		sum += plans[i].ArticlesPerDay()
+	}
+	if sum > limits.DailyQuota {
+		return &Error{Message: fmt.Sprintf("各写作方向每天篇数加起来是 %d，超过当前会员每天 %d 篇的上限", sum, limits.DailyQuota)}
 	}
 	return nil
 }

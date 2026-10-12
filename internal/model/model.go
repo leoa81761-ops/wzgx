@@ -46,7 +46,16 @@ type WritingPlan struct {
 	Status       string
 	PauseReason  string
 	NextRunAt    *time.Time
+	DailyCount   int
 	CreatedAt    time.Time
+}
+
+// ArticlesPerDay 是这个方向每天计划生成的篇数。旧数据没有这个字段时按 1 篇。
+func (p *WritingPlan) ArticlesPerDay() int {
+	if p == nil || p.DailyCount < 1 {
+		return 1
+	}
+	return p.DailyCount
 }
 
 type ArticleTask struct {

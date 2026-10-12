@@ -10,6 +10,16 @@
     <p v-if="message" class="banner ok">{{ message }}</p>
 
     <section v-if="tab === 'users'" class="card stack">
+      <h2>套餐额度</h2>
+      <p class="muted">每天篇数按用户合计，立即生成和定时生成都从这里扣。免费和普通默认 1，高级和买断默认 5。改完之后，新的写作方向不能把每天篇数加起来超过这个上限。</p>
+      <div v-for="item in planConfigs" :key="item.tier" class="row">
+        <strong style="min-width: 5em">{{ item.name }}</strong>
+        <label>每天<input v-model.number="item.daily_quota" type="number" min="1" max="100" /></label>
+        <label>{{ item.period_unit === "year" ? "每年" : "每月" }}<input v-model.number="item.period_quota" type="number" min="1" max="10000" /></label>
+        <button class="btn-ghost" type="button" @click="savePlanConfig(item)">保存</button>
+      </div>
+    </section>
+    <section v-if="tab === 'users'" class="card stack">
       <h2>手工开通会员</h2>
       <p class="muted">没有在线支付。确认线下收款后在这里改档位，备注会写入权益记录和审计日志。</p>
       <table>
@@ -295,6 +305,7 @@ const tab = ref("models");
 const error = ref("");
 const message = ref("");
 const users = ref([]);
+const planConfigs = ref([]);
 const edits = reactive({});
 const providers = ref([]);
 const stages = ref([]);
@@ -402,6 +413,7 @@ function syncOrders() {
 }
 
 async function load() {
+  planConfigs.value = await api("/api/admin/plan-configs");
   users.value = await api("/api/admin/users");
   for (const user of users.value) {
     edits[user.id] = edits[user.id] || { tier: user.tier, expires: "", note: "" };
@@ -425,6 +437,21 @@ async function load() {
   styles.value = await api("/api/admin/styles");
   templates.value = await api("/api/admin/templates");
   verticals.value = await api("/api/admin/verticals");
+}
+
+async function savePlanConfig(item) {
+  error.value = "";
+  message.value = "";
+  try {
+    await api(`/api/admin/plan-configs/${item.tier}`, {
+      method: "PUT",
+      body: { daily_quota: Number(item.daily_quota), period_quota: Number(item.period_quota) },
+    });
+    message.value = "套餐额度已保存";
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
 }
 
 async function refundOrder(item) {

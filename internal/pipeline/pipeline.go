@@ -727,7 +727,11 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 			return err
 		}
 		if task.TriggerType != "regenerate" {
-			next, err := schedule.ComputeNextRun(schedule.TomorrowStart(now), plan.ScheduleType, plan.Weekdays, plan.TimeWindow, sysRNG{})
+			produced, countErr := deps.Store.CountPlanTasks(ctx, tx, plan.ID, schedule.ShanghaiDay(now), []string{"schedule"})
+			if countErr != nil {
+				return countErr
+			}
+			next, err := schedule.NextSlot(now, plan.ScheduleType, plan.Weekdays, plan.TimeWindow, sysRNG{}, produced, plan.ArticlesPerDay())
 			if err == nil {
 				plan.NextRunAt = &next
 			}

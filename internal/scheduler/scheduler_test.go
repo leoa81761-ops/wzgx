@@ -48,6 +48,36 @@ func TestScanIsIdempotentAndSkipsFuture(t *testing.T) {
 	}
 }
 
+func TestTwoPlansShareTheDay(t *testing.T) {
+	st, runner := openRunner(t)
+	now := time.Now().UTC()
+	ctx := context.Background()
+	user := &model.User{Email: "two@example.com", PasswordHash: "x", Tier: "premium", IsActive: true, CreatedAt: now}
+	if err := st.InsertUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := security.EncryptSecret("test-master-key", "mock-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := now
+	account := &model.WxAccount{UserID: user.ID, Name: "测试号", AppID: "wx_mock_two", SecretEncrypted: secret, DeliveryMode: "draft", BindStatus: "active", BoundAt: &bound, SubjectType: "personal", ServiceType: "subscription"}
+	if err := st.InsertAccount(ctx, nil, account); err != nil {
+		t.Fatal(err)
+	}
+	next := now.Add(-time.Minute)
+	for _, direction := range []string{"甲", "乙"} {
+		plan := &model.WritingPlan{UserID: user.ID, WxAccountID: account.ID, Direction: direction, Mode: "managed", StyleKey: "warm", TemplateKey: "fresh", WordTarget: 800, DailyCount: 1, ScheduleType: "daily", TimeWindow: "night", Status: "active", NextRunAt: &next, CreatedAt: now, Weekdays: []int{}}
+		if err := st.InsertPlan(ctx, nil, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimed, err := runner.ScanOnce(ctx, now)
+	if err != nil || len(claimed) != 2 {
+		t.Fatal(len(claimed), err)
+	}
+}
+
 func TestQuotaExhaustionPausesPlan(t *testing.T) {
 	st, runner := openRunner(t)
 	now := time.Now().UTC()

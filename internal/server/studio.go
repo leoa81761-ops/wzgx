@@ -224,7 +224,7 @@ func planDict(plan *model.WritingPlan) map[string]any {
 	return map[string]any{
 		"id": plan.ID, "wx_account_id": plan.WxAccountID, "direction": plan.Direction, "mode": plan.Mode,
 		"style_key": plan.StyleKey, "style_name": styleName, "template_key": plan.TemplateKey, "template_name": templateName,
-		"word_target": plan.WordTarget, "schedule_type": plan.ScheduleType, "schedule_label": label,
+		"word_target": plan.WordTarget, "daily_count": plan.ArticlesPerDay(), "schedule_type": plan.ScheduleType, "schedule_label": label,
 		"weekdays": days, "time_window": plan.TimeWindow, "window_label": catalog.WindowLabel(plan.TimeWindow),
 		"status": plan.Status, "pause_reason": plan.PauseReason, "next_run_at": jtime(plan.NextRunAt),
 	}
@@ -711,6 +711,7 @@ type planBody struct {
 	StyleKey     string `json:"style_key"`
 	TemplateKey  string `json:"template_key"`
 	WordTarget   int    `json:"word_target"`
+	DailyCount   int    `json:"daily_count"`
 	ScheduleType string `json:"schedule_type"`
 	Weekdays     []int  `json:"weekdays"`
 	TimeWindow   string `json:"time_window"`
@@ -782,6 +783,13 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 		if count >= limits.MaxPlans {
 			return bad("已达到当前会员可设置的写作方向数量")
 		}
+		dailyCount := body.DailyCount
+		if dailyCount == 0 {
+			dailyCount = 1
+		}
+		if err := quota.CheckDailyCount(r.Context(), a.Store, tx, fresh, now, 0, dailyCount); err != nil {
+			return asQuota(err)
+		}
 		account, err := a.ownAccount(r.Context(), tx, user.ID, body.WxAccountID)
 		if err != nil {
 			return err
@@ -799,7 +807,7 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 		}
 		created = &model.WritingPlan{
 			UserID: user.ID, WxAccountID: account.ID, Direction: direction, Mode: "managed",
-			StyleKey: body.StyleKey, TemplateKey: body.TemplateKey, WordTarget: body.WordTarget,
+			StyleKey: body.StyleKey, TemplateKey: body.TemplateKey, WordTarget: body.WordTarget, DailyCount: dailyCount,
 			ScheduleType: body.ScheduleType, Weekdays: weekdays, TimeWindow: window, Status: "active",
 			NextRunAt: &next, CreatedAt: now,
 		}
@@ -813,6 +821,116 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 		return err
 	}
 	writeJSON(w, 200, view)
+	return nil
+}
+
+func (a *App) setPlanDaily(w http.ResponseWriter, r *http.Request, user *model.User) error {
+	id, err := pathID(r, "plan_id", "找不到这个写作计划")
+	if err != nil {
+		return err
+	}
+	var body struct {
+		DailyCount int `json:"daily_count"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	var payload map[string]any
+	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		plan, err := a.ownPlan(r.Context(), tx, user.ID, id)
+		if err != nil {
+			return err
+		}
+		fresh, err := a.Store.GetUser(r.Context(), tx, user.ID)
+		if err != nil {
+			return err
+		}
+		if fresh == nil {
+			return &AppError{Status: 401, Message: "请先登录"}
+		}
+		if err := quota.CheckDailyCount(r.Context(), a.Store, tx, fresh, now, plan.ID, body.DailyCount); err != nil {
+			return asQuota(err)
+		}
+		plan.DailyCount = body.DailyCount
+		if err := a.Store.UpdatePlan(r.Context(), tx, plan); err != nil {
+			return err
+		}
+		payload = planDict(plan)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, payload)
+	return nil
+}
+
+func (a *App) adminPlanConfigs(w http.ResponseWriter, r *http.Request, _ *model.User) error {
+	rows, err := a.Store.ListPlanConfigs(r.Context())
+	if err != nil {
+		return err
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, item := range rows {
+		out = append(out, map[string]any{
+			"tier": item.Tier, "name": item.Name, "price_label": item.PriceLabel,
+			"daily_quota": item.DailyQuota, "period_quota": item.PeriodQuota, "period_unit": item.PeriodUnit,
+			"summary": item.Summary,
+		})
+	}
+	writeJSON(w, 200, out)
+	return nil
+}
+
+func (a *App) adminSavePlanConfig(w http.ResponseWriter, r *http.Request, admin *model.User) error {
+	tier := r.PathValue("tier")
+	switch tier {
+	case "free", "standard", "premium", "lifetime":
+	default:
+		return bad("未知档位")
+	}
+	var body struct {
+		DailyQuota  int `json:"daily_quota"`
+		PeriodQuota int `json:"period_quota"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	if body.DailyQuota < 1 || body.DailyQuota > 100 {
+		return bad("每天篇数应为 1 到 100")
+	}
+	if body.PeriodQuota < body.DailyQuota || body.PeriodQuota > 10000 {
+		return bad("周期额度不能小于每天篇数，也不能超过 10000")
+	}
+	now := time.Now().UTC()
+	var saved map[string]any
+	err := a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		row, err := a.Store.GetPlanConfig(r.Context(), tx, tier)
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			return &AppError{Status: 404, Message: "找不到这个套餐"}
+		}
+		if err := a.Store.UpdatePlanQuota(r.Context(), tx, tier, body.DailyQuota, body.PeriodQuota, row.Summary); err != nil {
+			return err
+		}
+		actor := admin.ID
+		if err := a.Store.InsertAudit(r.Context(), tx, model.AuditLog{
+			ActorID: &actor, Action: "plan_quota", Target: tier,
+			Detail:    strconv.Itoa(body.DailyQuota) + " 篇/天，" + strconv.Itoa(body.PeriodQuota) + " 篇/" + row.PeriodUnit,
+			CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+		saved = map[string]any{"tier": tier, "daily_quota": body.DailyQuota, "period_quota": body.PeriodQuota, "period_unit": row.PeriodUnit}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, saved)
 	return nil
 }
 
@@ -987,7 +1105,7 @@ func (a *App) runGeneration(w http.ResponseWriter, r *http.Request, user *model.
 		task, err := jobs.Create(r.Context(), a.Store, tx, fresh, plan, account, trigger, now, regen)
 		if err != nil {
 			if db.IsUnique(err) {
-				return bad("该公众号今日已生成一批（每日最多 1 批）")
+				return bad("这个时间点已经排过，请稍后再试")
 			}
 			return asQuota(err)
 		}

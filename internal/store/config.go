@@ -57,6 +57,14 @@ func (s *Store) UpsertPlanConfig(ctx context.Context, q db.Q, p model.PlanConfig
 	return err
 }
 
+func (s *Store) UpdatePlanQuota(ctx context.Context, q db.Q, tier string, daily, period int, summary string) error {
+	if q == nil {
+		q = s.DB
+	}
+	_, err := q.Exec(ctx, `UPDATE plan_config SET daily_quota = ?, period_quota = ?, summary = ? WHERE tier = ?`, daily, period, summary, tier)
+	return err
+}
+
 const serviceCols = `id, config_type, name, protocol, base_url, api_key_encrypted, model_name, extra_headers, extra_params, priority, enabled, timeout_seconds, updated_at`
 
 func scanService(row interface{ Scan(dest ...any) error }) (*model.ServiceConfig, error) {

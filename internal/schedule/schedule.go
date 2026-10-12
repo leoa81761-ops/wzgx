@@ -132,6 +132,20 @@ func ComputeNextRun(after time.Time, scheduleType string, weekdays []int, window
 	return time.Time{}, fmt.Errorf("未来四周没有可执行时段")
 }
 
+// NextSlot 在当天额度还没用完、并且窗口里还有时间时，排今天的下一个时间点；否则排到明天。
+func NextSlot(after time.Time, scheduleType string, weekdays []int, windowKey string, rng RNG, produced, dailyCap int) (time.Time, error) {
+	if dailyCap < 1 {
+		dailyCap = 1
+	}
+	if produced < dailyCap {
+		next, err := ComputeNextRun(after, scheduleType, weekdays, windowKey, rng)
+		if err == nil && ShanghaiDay(next) == ShanghaiDay(after) {
+			return next, nil
+		}
+	}
+	return ComputeNextRun(TomorrowStart(after), scheduleType, weekdays, windowKey, rng)
+}
+
 func ShouldRetry(triggerType string, retryCount int, now, windowEnd time.Time) bool {
 	return triggerType == "schedule" && retryCount < 2 && AsUTC(now).Before(AsUTC(windowEnd))
 }
