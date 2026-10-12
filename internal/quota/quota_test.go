@@ -76,6 +76,43 @@ func TestDailyMonthlyReleaseAndGrace(t *testing.T) {
 	}
 }
 
+func TestPackUsedAfterPeriodIsFull(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	start := time.Date(2026, 10, 1, 1, 0, 0, 0, time.UTC)
+	user := &model.User{Email: "pack@example.com", PasswordHash: "x", Tier: "free", IsActive: true, CreatedAt: start}
+	if err := st.InsertUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	for offset := 0; offset < 10; offset++ {
+		if err := Reserve(ctx, st, nil, user, int64(200+offset), start.AddDate(0, 0, offset), false, ""); err != nil {
+			t.Fatal(offset, err)
+		}
+	}
+	if err := st.InsertPack(ctx, nil, user.ID, "pack-order", 2, start.Add(90*24*time.Hour), start); err != nil {
+		t.Fatal(err)
+	}
+	day := start.AddDate(0, 0, 20)
+	if err := Reserve(ctx, st, nil, user, 300, day, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	left, err := st.PackRemaining(ctx, nil, user.ID, day)
+	if err != nil || left != 1 {
+		t.Fatal(left, err)
+	}
+	snap, err := Snapshot(ctx, st, nil, user, day)
+	if err != nil || snap["pack_remaining"] != 1 {
+		t.Fatal(snap, err)
+	}
+	if err := Release(ctx, st, nil, 300, ""); err != nil {
+		t.Fatal(err)
+	}
+	left, err = st.PackRemaining(ctx, nil, user.ID, day)
+	if err != nil || left != 2 {
+		t.Fatal(left, err)
+	}
+}
+
 func TestPremiumDailyIsFiveAcrossTheUser(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()

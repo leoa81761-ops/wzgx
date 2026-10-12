@@ -134,6 +134,13 @@ func BlockReason(ctx context.Context, st *store.Store, q db.Q, user *model.User,
 		return "今日额度已用完", nil
 	}
 	if monthly >= periodLimit {
+		left, err := st.PackRemaining(ctx, q, user.ID, now)
+		if err != nil {
+			return "", err
+		}
+		if left > 0 {
+			return "", nil
+		}
 		unit := "本月"
 		if limits.PeriodUnit == "year" {
 			unit = "本周年"
@@ -198,8 +205,31 @@ func Reserve(ctx context.Context, st *store.Store, q db.Q, user *model.User, tas
 	if reason != "" {
 		return &Error{Message: reason}
 	}
+	_, monthly, err := Usage(ctx, st, q, user.ID, day, period)
+	if err != nil {
+		return err
+	}
+	periodLimit, _, err := periodQuota(ctx, st, q, user, tier, limits.PeriodQuota)
+	if err != nil {
+		return err
+	}
 	if err := st.InsertHold(ctx, q, &model.QuotaHold{UserID: user.ID, TaskID: taskID, DayKey: day, PeriodKey: period, Amount: 1, State: "held", CreatedAt: now}); err != nil {
 		return err
+	}
+	if monthly >= periodLimit {
+		packID, ok, err := st.ConsumePack(ctx, q, user.ID, now)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return &Error{Message: "本月额度已用完"}
+		}
+		if err := st.SavePackHold(ctx, q, taskID, packID); err != nil {
+			return err
+		}
+		if note == "" {
+			note = "预占加量包"
+		}
 	}
 	if note == "" {
 		note = "预占额度"
@@ -228,6 +258,13 @@ func Release(ctx context.Context, st *store.Store, q db.Q, taskID int64, note st
 	}
 	if err := st.UpdateHoldState(ctx, q, hold.ID, "released"); err != nil {
 		return err
+	}
+	if packID, err := st.TakePackHold(ctx, q, taskID); err != nil {
+		return err
+	} else if packID > 0 {
+		if err := st.RestorePack(ctx, q, packID); err != nil {
+			return err
+		}
 	}
 	return st.InsertLedger(ctx, q, hold.UserID, "release", hold.Amount, &taskID, note, schedule.Format(time.Now().UTC()))
 }
@@ -273,6 +310,11 @@ func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, no
 		"period_used": used, "period_limit": periodLimit, "period_remaining": remaining(periodLimit, used), "invite_bonus": bonus,
 		"period_unit": limits.PeriodUnit, "period_label": periodLabel, "max_words": limits.MaxWords, "max_accounts": limits.MaxAccounts,
 		"max_plans": limits.MaxPlans, "summary": limits.Summary,
+	}
+	if left, err := st.PackRemaining(ctx, q, user.ID, now); err != nil {
+		return nil, err
+	} else {
+		out["pack_remaining"] = left
 	}
 	if pending, err := st.GetPendingTier(ctx, q, user.ID); err != nil {
 		return nil, err

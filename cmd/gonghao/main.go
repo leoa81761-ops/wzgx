@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leoa81761-ops/wzgx/internal/backup"
 	"github.com/leoa81761-ops/wzgx/internal/config"
+	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/probe"
 	"github.com/leoa81761-ops/wzgx/internal/server"
 	_ "time/tzdata"
@@ -29,8 +31,12 @@ func main() {
 		os.Exit(runProbe())
 	case "healthcheck":
 		os.Exit(runHealth())
+	case "backup":
+		os.Exit(runBackup(false))
+	case "restore":
+		os.Exit(runBackup(true))
 	default:
-		fmt.Fprintf(os.Stderr, "用法: gonghao [serve|probe|healthcheck]\n")
+		fmt.Fprintf(os.Stderr, "用法: gonghao [serve|probe|healthcheck|backup|restore]\n")
 		os.Exit(2)
 	}
 }
@@ -99,6 +105,46 @@ func runHealth() int {
 		fmt.Fprintf(os.Stderr, "健康检查未通过: %s\n", strings.TrimSpace(string(body)))
 		return 1
 	}
+	return 0
+}
+
+func runBackup(restore bool) int {
+	if len(os.Args) < 3 || strings.TrimSpace(os.Args[2]) == "" {
+		fmt.Fprintf(os.Stderr, "用法: gonghao %s <文件>\n", os.Args[1])
+		return 2
+	}
+	cfg := config.Load()
+	database, err := db.Open(cfg.DatabaseURL, cfg.DBMaxOpen, cfg.DBMaxIdle)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "打开数据库失败: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+	path := os.Args[2]
+	ctx := context.Background()
+	if restore {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "读取备份失败: %v\n", err)
+			return 1
+		}
+		if err := backup.Restore(ctx, database, raw); err != nil {
+			fmt.Fprintf(os.Stderr, "恢复失败: %v\n", err)
+			return 1
+		}
+		fmt.Println("已从备份恢复。请确认这份文件来自同一套表结构。")
+		return 0
+	}
+	raw, err := backup.Dump(ctx, database)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "备份失败: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "写入备份失败: %v\n", err)
+		return 1
+	}
+	fmt.Println("已写入备份。文件里有账号散列和加密后的密钥，请单独保管。")
 	return 0
 }
 

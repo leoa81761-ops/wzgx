@@ -3,10 +3,20 @@
     <form class="card stack" @submit.prevent="submit">
       <h1 style="font-size: 32px">登录</h1>
       <p v-if="error" class="banner">{{ error }}</p>
+      <p v-if="notice" class="banner ok">{{ notice }}</p>
       <label>手机号或邮箱<input v-model="account" autocomplete="username" required /></label>
       <label>密码<input v-model="password" type="password" autocomplete="current-password" required /></label>
       <button class="btn" type="submit" :disabled="loading">{{ loading ? "正在登录…" : "登录" }}</button>
       <p class="muted">还没有账号？ <router-link to="/register">注册</router-link></p>
+      <button class="btn-ghost" type="button" @click="showRecover = !showRecover">找回密码</button>
+      <div v-if="showRecover" class="stack">
+        <p class="muted">向已注册的手机号或邮箱发送验证码。手机找回需要配置短信，邮箱找回需要配置邮件。未注册的账号不会提示是否存在。</p>
+        <label>手机号或邮箱<input v-model="recoverAccount" autocomplete="username" /></label>
+        <button class="btn-ghost" type="button" @click="sendRecover">发送验证码</button>
+        <label>验证码<input v-model="recoverCode" inputmode="numeric" /></label>
+        <label>新密码<input v-model="recoverPassword" type="password" autocomplete="new-password" /></label>
+        <button class="btn" type="button" @click="resetRecover">重置密码</button>
+      </div>
       <button v-if="scanEnabled" class="btn-ghost" type="button" @click="startScan">微信扫码登录</button>
     </form>
     <div class="stack">
@@ -18,6 +28,10 @@
           <button class="btn-ghost" type="button" :disabled="sending" @click="sendCode">{{ sending ? "正在发送…" : "获取验证码" }}</button>
         </div>
         <label>验证码<input v-model="smsCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required /></label>
+        <label class="check">
+          <input v-model="deviceConsent" type="checkbox" />
+          <span>同意保存本机标识，仅用于邀请防刷。不勾选也可以登录。</span>
+        </label>
         <label class="check">
           <input v-model="agree" type="checkbox" />
           <span>新手机号注册时，我已阅读并同意 <router-link to="/legal/user_agreement" target="_blank">《用户协议》</router-link> 和 <router-link to="/legal/privacy" target="_blank">《隐私政策》</router-link>，并确认本人已满 18 周岁。</span>
@@ -59,9 +73,55 @@ const loading = ref(false);
 const sending = ref(false);
 const smsEnabled = ref(false);
 const scanEnabled = ref(false);
+const deviceConsent = ref(false);
 const ticket = ref(typeof route.query.ticket === "string" ? route.query.ticket : "");
 const needAgree = ref(false);
 const inviteCode = typeof route.query.invite === "string" ? route.query.invite : "";
+const showRecover = ref(false);
+const recoverAccount = ref("");
+const recoverCode = ref("");
+const recoverPassword = ref("");
+const notice = ref("");
+
+function deviceID() {
+  const key = "gonghao-device";
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+  }
+  return id;
+}
+
+async function sendRecover() {
+  error.value = "";
+  try {
+    await api("/api/auth/recover/send", { method: "POST", body: { account: recoverAccount.value } });
+    notice.value = "如果这个账号已注册，并且短信或邮件已配置，验证码会发到该账号。";
+    account.value = recoverAccount.value;
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function resetRecover() {
+  error.value = "";
+  loading.value = true;
+  try {
+    await api("/api/auth/recover/reset", {
+      method: "POST",
+      body: { account: recoverAccount.value, code: recoverCode.value, password: recoverPassword.value },
+    });
+    account.value = recoverAccount.value;
+    password.value = recoverPassword.value;
+    showRecover.value = false;
+    notice.value = "密码已重置，请登录。";
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    loading.value = false;
+  }
+}
 
 async function submit() {
   error.value = "";
@@ -95,7 +155,14 @@ async function submitSMS() {
   try {
     const data = await api("/api/auth/sms/login", {
       method: "POST",
-      body: { phone: phone.value, code: smsCode.value, agree: agree.value, invite_code: inviteCode },
+      body: {
+        phone: phone.value,
+        code: smsCode.value,
+        agree: agree.value,
+        invite_code: inviteCode,
+        device_id: deviceConsent.value ? deviceID() : "",
+        device_consent: deviceConsent.value,
+      },
     });
     await acceptLogin(data);
     router.push(route.query.next || "/app");

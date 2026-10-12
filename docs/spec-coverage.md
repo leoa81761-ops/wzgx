@@ -37,7 +37,7 @@
 | 会员中心：等级、额度、开通续费、订单 | done；在线支付 needs-external-credentials |
 | 立即生成、指定题目、暂停 / 恢复、否决选题 | done |
 | 邀请链接与奖励额度 | added。会员页展示链接、计数和规则；无效邀请码不影响注册 |
-| 同意记录、撤回、注销、导出 | 同意记录、注销、导出 done；单独同意可再记一条，撤回入口 未做 |
+| 同意记录、撤回、注销、导出 | done。会员页可以撤回一条同意。撤回用户协议或隐私政策后需要重新同意。撤回自动发布会关闭该用户的自动发布 |
 
 ## 3.2 智能体
 
@@ -60,7 +60,7 @@
 | 用户与订单 | done |
 | 套餐与额度 | done |
 | 服务配置中心（5.9） | 文本、生图、检索路由、审核词、来源名单 done；热点源 added（管理员填写地址，没配来源就关闭）；支付与邮件 needs-external-credentials |
-| 买断与定制授权、权益调整 | 买断用管理员改档位 done；独立定制套餐合同字段 未做 |
+| 买断与定制授权、权益调整 | done。买断用管理员改档位。用户行可以保存公司、合同编号和备注 |
 | 邀请奖励配置与风控审核 | added。配置中心可改参数，冻结的邀请可通过或撤销 |
 | 垂类、风格、模板 | done |
 | 页面与法律文本版本化 | added |
@@ -87,13 +87,13 @@
 | --- | --- |
 | 落地页、功能、定价、帮助、教程、投诉 | done。示例文章在 `/examples`，关于我们在 `/about`。示例页标明是示例。`page_about` 仍可发布补充文本 |
 | 邀请落地页 | added。`/register?invite=` 带上邀请码，规则在会员页和邀请规则草案 |
-| 找回账号 / 换绑手机 | 未做 |
+| 找回账号 / 换绑手机 | done。邮箱找回需要 `SMTP_*`，手机找回和换绑需要 `SMS_*`。没配就关闭。验证码先占用次数再比对，最多 5 次 |
 | 六类法律文本 | done（草案） |
 | 后台版本化，旧版本可查 | added |
 | 注册主动勾选，consent_log 含版本、时间、IP、设备 | done |
 | 条款重大变更重新同意 | added |
 | 单独同意：绑号、自动发布 | done |
-| 单独同意：读他人草稿标题、数据分析、设备指纹、修改差异学风格 | 草稿标题 done：同意后才读取本账号草稿标题并并入去重。数据分析 done：同意后才拉取认证号统计。设备指纹、修改差异学风格 未做 |
+| 单独同意：读他人草稿标题、数据分析、设备指纹、修改差异学风格 | 草稿标题 done：同意后才读取本账号草稿标题并并入去重。数据分析 done：同意后才拉取认证号统计。设备指纹 done：勾选后写入 `device_fingerprint` 版本 1，未勾选不保存标识。修改差异 done：同意 `style_diff` 版本 1 后，高级版和买断版回读到改动时只保存句数和人称差值，不保存改后全文 |
 | 注销删凭证、导出 | done |
 | 仅限成年人 | done（注册声明） |
 | 宣传页不写绝对化承诺 | done |
@@ -115,10 +115,10 @@
 | 风格与模板档位 | done |
 | 事实核查 | done。原创度会拒绝与来源连续 40 字相同的正文 |
 | AI 标识默认不加、开关可开 | added |
-| 到期前提醒、宽限期、降级保留 | 宽限期与降级 done；到期前 7/3/1 天提醒 未做 |
-| 升级补差、退款规则 | 升级立即生效 done；按剩余天数折算补差、7 天未使用全额退款 未做。管理员可标记已退款 |
+| 到期前提醒、宽限期、降级保留 | done。宽限期与降级仍在。到期前 7、3、1 天各写一条站内通知，同一天不重复 |
+| 升级补差、退款规则 | done。同周期升级按剩余天数补差并保持到期时间；换周期先扣未使用天数再开新周期。首次付费订单在 7 天内且没有确认消耗时，用户可申请全额退款并回到免费。管理员标记退款仍不改档位。款项退回在商户平台手工完成 |
 | 买断与授权写审计 | done |
-| 加量包 | 未做 |
+| 加量包 | done。订阅额度用完后扣加量包，每天上限仍在。价格 `PAY_PRICE_PACK`，篇数 `PAY_PACK_ARTICLES` |
 | 4.1 成本测算表 | 文档假设，不是功能。熔断按真实用量 added |
 | 4.2 邀请：+2 篇、上限 +20、付费不计、观察期、防刷 | added。虚拟号撤销，同设备或同一 IP 段当天满 3 个冻结，解绑、停用、曾绑定过的 AppID 撤销。观察满 7 天且写出 3 篇后才生效 |
 
@@ -146,7 +146,7 @@
 | search、hot_topics 统一接口 | 检索走资料检索环节 done；热点 added，HTTP JSON 与远程 MCP，只读缓存 |
 | 自定义 HTTP 模板 | done。协议 `http` 可用 `response_text`、`response_prompt_tokens`、`response_completion_tokens` 做点分字段映射 |
 | 单价计入每篇并驱动熔断 | added |
-| 5.10 环境变量、迁移、备份命令 | 迁移随启动执行 done；独立备份命令 未做 |
+| 5.10 环境变量、迁移、备份命令 | done。迁移随启动执行。`gonghao backup <文件>` 与 `gonghao restore <文件>` 导出、恢复 JSON |
 
 ## 6 微信
 
@@ -193,7 +193,7 @@
 | 每日 / 周期按用户合计 | done |
 | 首次重写免费 | done |
 | 邀请额度 | added。只加在免费版月额度上 |
-| 加量包 90 天 | 未做 |
+| 加量包 90 天 | done。支付入账后 90 天到期 |
 | 会员状态、宽限、降级 | done |
 | 幂等、草稿更新不覆盖用户改过的稿 | done |
 | 连续 5 篇无反馈自动暂停 | done。最近 5 篇成功稿都没有反馈时暂停并通知。已开启自动发布的计划不暂停。反馈里可以选「已处理」 |
@@ -227,7 +227,7 @@
 | 失败转发 | `NOTIFY_WEBHOOK_URL` |
 | 真实模型 / 微信 | 配置中心或 `LLM_*`、`WX_APP_ID`、`WX_APP_SECRET` |
 | 服务号模板消息 | `WECHAT_TPL_APP_ID`、`WECHAT_TPL_APP_SECRET`、`WECHAT_TPL_ID`；可选 `WECHAT_TPL_API_BASE`、`WECHAT_TPL_FIELDS` |
-| 短信登录 | `SMS_PROVIDER`（`aliyun` 或 `tencent`）、`SMS_ACCESS_KEY`、`SMS_ACCESS_SECRET`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`；腾讯云再加 `SMS_SDK_APP_ID`。可选 `SMS_REGION`、`SMS_API_BASE` |
+| 短信登录、找回密码、换绑手机 | 同一组变量：`SMS_PROVIDER`（`aliyun` 或 `tencent`）、`SMS_ACCESS_KEY`、`SMS_ACCESS_SECRET`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`；腾讯云再加 `SMS_SDK_APP_ID`。可选 `SMS_REGION`、`SMS_API_BASE` |
 | 微信扫码登录 | `WECHAT_OPEN_APP_ID`、`WECHAT_OPEN_APP_SECRET`、`WECHAT_OPEN_REDIRECT_URL`。接口基址用 `WECHAT_API_BASE` |
 | 微信开放平台授权 | `WECHAT_COMPONENT_APP_ID`、`WECHAT_COMPONENT_APP_SECRET`、`WECHAT_COMPONENT_TOKEN`、`WECHAT_COMPONENT_AES_KEY`、`WECHAT_COMPONENT_REDIRECT_URL` |
 

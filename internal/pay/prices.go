@@ -21,6 +21,8 @@ func PriceCents(cfg config.Settings, tier, period string) (int, bool) {
 		return orPrice(cfg.PricePremiumYear, 99000), true
 	case "lifetime:once":
 		return orPrice(cfg.PriceLifetime, 300000), true
+	case "pack:pack":
+		return orPrice(cfg.PricePack, 1900), true
 	default:
 		return 0, false
 	}
@@ -43,7 +45,12 @@ func Subject(tier, period string) string {
 		return "公号智写" + name + "年付"
 	case "once":
 		return "公号智写" + name
+	case "pack":
+		return "公号智写加量包"
 	default:
+		if len(period) >= 4 && period[:4] == "pack" {
+			return "公号智写加量包"
+		}
 		return "公号智写" + name + "月付"
 	}
 }

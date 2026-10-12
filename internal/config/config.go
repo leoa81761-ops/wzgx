@@ -55,6 +55,8 @@ type Settings struct {
 	PricePremiumMonth       int
 	PricePremiumYear        int
 	PriceLifetime           int
+	PricePack               int
+	PackArticles            int
 	ResearchTimeout         time.Duration
 	ResearchBackupModel     string
 	SMSProvider             string
@@ -152,6 +154,8 @@ func Load() Settings {
 		PricePremiumMonth:       positiveOr("PAY_PRICE_PREMIUM_MONTH", 9900),
 		PricePremiumYear:        positiveOr("PAY_PRICE_PREMIUM_YEAR", 99000),
 		PriceLifetime:           positiveOr("PAY_PRICE_LIFETIME", 300000),
+		PricePack:               positiveOr("PAY_PRICE_PACK", 1900),
+		PackArticles:            positiveOr("PAY_PACK_ARTICLES", 10),
 		ResearchTimeout:         researchTimeout(),
 		ResearchBackupModel:     getenv("RESEARCH_BACKUP_MODEL", "grok-chat-fast"),
 		SMSProvider:             strings.ToLower(strings.TrimSpace(os.Getenv("SMS_PROVIDER"))),

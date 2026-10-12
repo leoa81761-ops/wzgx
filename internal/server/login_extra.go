@@ -173,7 +173,10 @@ func (a *App) loginSMS(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 		}
-		deviceHash := deviceFrom(r, body.DeviceID, body.DeviceConsent)
+		deviceHash, err := a.deviceForInvite(r.Context(), tx, r, user.ID, body.DeviceID, body.DeviceConsent, now)
+		if err != nil {
+			return err
+		}
 		return attachInvite(r.Context(), a.Store, tx, user, body.InviteCode, deviceHash, growth.IPPrefix(clientIP(r)), now)
 	})
 	if err != nil {

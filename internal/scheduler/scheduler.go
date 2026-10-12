@@ -132,6 +132,9 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 		}
 		return nil, err
 	}
+	if err := r.remindExpiring(ctx, now); err != nil {
+		log.Printf("到期提醒失败: %v", err)
+	}
 	var wg sync.WaitGroup
 	for _, id := range claimed {
 		wg.Add(1)

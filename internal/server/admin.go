@@ -42,6 +42,13 @@ func (a *App) adminUsers(w http.ResponseWriter, r *http.Request, admin *model.Us
 			"tier_expires_at": jtime(row.TierExpiresAt), "is_admin": row.IsAdmin, "is_active": row.IsActive,
 			"is_self": admin != nil && row.ID == admin.ID, "created_at": jtimev(row.CreatedAt),
 		}
+		if contract, err := a.Store.GetContract(r.Context(), row.ID); err != nil {
+			return err
+		} else if contract != nil {
+			item["company"] = contract.Company
+			item["contract_no"] = contract.ContractNo
+			item["contract_note"] = contract.Note
+		}
 		if pending, err := a.Store.GetPendingTier(r.Context(), nil, row.ID); err != nil {
 			return err
 		} else if pending != nil {
