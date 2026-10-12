@@ -45,12 +45,18 @@
           · <router-link :to="'/app/plans?account=' + account.id">这个号的写作计划</router-link>
           · <router-link :to="'/app/stats/' + account.id">阅读数据与周报</router-link>
         </p>
+        <label>读者<input v-model="account.audience" maxlength="80" placeholder="这个号的读者" /></label>
+        <label>语气<input v-model="account.tone" maxlength="80" placeholder="例如：务实，少形容词" /></label>
+        <label>常设栏目<input v-model="account.persona_columns" maxlength="80" placeholder="例如：现场笔记,验收清单" /></label>
+        <label>口头禅<input v-model="account.signatures" maxlength="80" placeholder="例如：先看现场，再谈方案" /></label>
+        <label>不写的话题<input v-model="account.taboos" maxlength="80" placeholder="例如：保证中标" /></label>
         <ul>
           <li v-for="check in account.permission_report.checks || []" :key="check.name">
             {{ check.ok ? "通过" : "未通过" }} · {{ check.detail }}
           </li>
         </ul>
         <div class="row">
+          <button class="btn" type="button" @click="saveVoice(account)">保存这个号的语气</button>
           <button class="btn-ghost" type="button" @click="recheck(account)">重新检测</button>
           <button class="btn-ghost" type="button" @click="unbind(account)">解绑</button>
         </div>
@@ -114,6 +120,26 @@ async function submit() {
     error.value = err.message;
   } finally {
     loading.value = false;
+  }
+}
+
+async function saveVoice(account) {
+  error.value = "";
+  try {
+    const saved = await api(`/api/accounts/${account.id}/voice`, {
+      method: "PUT",
+      body: {
+        audience: account.audience || "",
+        tone: account.tone || "",
+        persona_columns: account.persona_columns || "",
+        signatures: account.signatures || "",
+        taboos: account.taboos || "",
+      },
+    });
+    Object.assign(account, saved);
+    message.value = "已保存这个号的语气";
+  } catch (err) {
+    error.value = err.message;
   }
 }
 

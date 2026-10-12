@@ -62,7 +62,11 @@
         <label>栏目名<input v-model="form.column_name" placeholder="留空则整号用上面的风格" /></label>
         <label>该栏目风格<input v-model="form.column_style" placeholder="例如 plain，只在这一栏切换" /></label>
         <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房,弱电" /></label>
-        <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
+        <label>读者<input v-model="form.audience" maxlength="80" placeholder="留空则用这个号已保存的读者" /></label>
+        <label>语气<input v-model="form.tone" maxlength="80" placeholder="留空则用这个号已保存的语气" /></label>
+        <label>常设栏目<input v-model="form.persona_columns" maxlength="80" placeholder="留空则用这个号已保存的栏目" /></label>
+        <label>口头禅<input v-model="form.signatures" maxlength="80" placeholder="留空则用这个号已保存的口头禅" /></label>
+        <label>不写的话题<input v-model="form.taboos" maxlength="80" placeholder="留空则用这个号已保存的不写话题" /></label>
         <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔，这篇里不要出现" /></label>
         <label>垂类资料包
           <select v-model="form.vertical_key">
@@ -221,6 +225,10 @@ const form = reactive({
   keywords: "",
   audience: "",
   banned_words: "",
+  tone: "",
+  persona_columns: "",
+  signatures: "",
+  taboos: "",
   vertical_key: "",
   topic_mode: "auto",
   image_mode: "auto",

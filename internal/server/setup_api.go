@@ -53,6 +53,7 @@ func (a *App) setupPreview(w http.ResponseWriter, r *http.Request, user *model.U
 		"template_key": sug.TemplateKey, "template_name": template.Name,
 		"time_window": sug.TimeWindow, "window_label": catalog.WindowLabel(sug.TimeWindow),
 		"vertical_key": sug.VerticalKey, "audience": sug.Audience, "keywords": sug.Keywords,
+		"tone": sug.Tone, "persona_columns": sug.Columns, "signatures": sug.Signatures, "taboos": sug.Taboos,
 		"word_target": sug.WordTarget, "schedule_type": "daily", "daily_count": 1,
 		"topic_mode": sug.TopicMode, "image_mode": sug.ImageMode,
 		"sample": text, "runes": utf8.RuneCountInString(text), "reason": sug.Reason,

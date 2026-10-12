@@ -51,7 +51,11 @@
       <details class="stack">
         <summary>更多设置</summary>
         <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房" /></label>
-        <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
+        <label>读者<input v-model="form.audience" maxlength="80" :placeholder="plan.account_audience || plan.suggested_audience || '留空则用这个号的读者'" /></label>
+        <label>语气<input v-model="form.tone" maxlength="80" :placeholder="plan.account_tone || plan.suggested_tone || '留空则用这个号的语气'" /></label>
+        <label>常设栏目<input v-model="form.persona_columns" maxlength="80" :placeholder="plan.account_persona_columns || plan.suggested_columns || '留空则用这个号的栏目'" /></label>
+        <label>口头禅<input v-model="form.signatures" maxlength="80" :placeholder="plan.account_signatures || plan.suggested_signatures || '留空则用这个号的口头禅'" /></label>
+        <label>不写的话题<input v-model="form.taboos" maxlength="80" :placeholder="plan.account_taboos || plan.suggested_taboos || '留空则用这个号不写的话题'" /></label>
         <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔" /></label>
         <label>排版
           <select v-model="form.template_key">
@@ -135,6 +139,10 @@ const form = reactive({
   keywords: "",
   audience: "",
   banned_words: "",
+  tone: "",
+  persona_columns: "",
+  signatures: "",
+  taboos: "",
   vertical_key: "",
   topic_mode: "auto",
   image_mode: "auto",
@@ -171,6 +179,10 @@ function fill(row) {
   form.keywords = row.keywords || "";
   form.audience = row.audience || "";
   form.banned_words = row.banned_words || "";
+  form.tone = row.tone || "";
+  form.persona_columns = row.persona_columns || "";
+  form.signatures = row.signatures || "";
+  form.taboos = row.taboos || "";
   form.vertical_key = row.vertical_key || "";
   form.topic_mode = row.topic_mode || "auto";
   form.image_mode = row.image_mode || "auto";
@@ -243,6 +255,10 @@ async function save() {
         keywords: form.keywords,
         audience: form.audience,
         banned_words: form.banned_words,
+        tone: form.tone,
+        persona_columns: form.persona_columns,
+        signatures: form.signatures,
+        taboos: form.taboos,
         vertical_key: form.vertical_key,
         topic_mode: form.topic_mode,
         image_mode: form.image_mode,

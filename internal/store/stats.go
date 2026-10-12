@@ -19,6 +19,7 @@ type StatRow struct {
 	Favors    int
 	Follows   int
 	Source    string
+	Title     string
 	CreatedAt time.Time
 }
 
@@ -62,16 +63,17 @@ func (s *Store) SaveStat(ctx context.Context, q db.Q, row StatRow) error {
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `INSERT INTO mp_stats (account_id, stat_date, article_key, reads, shares, favors, follows, source, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := q.Exec(ctx, `INSERT INTO mp_stats (account_id, stat_date, article_key, reads, shares, favors, follows, source, article_title, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(account_id, stat_date, article_key, source) DO UPDATE SET
-		reads = excluded.reads, shares = excluded.shares, favors = excluded.favors, follows = excluded.follows`,
-		row.AccountID, row.Date, row.Key, row.Reads, row.Shares, row.Favors, row.Follows, row.Source, timeReq(row.CreatedAt))
+		reads = excluded.reads, shares = excluded.shares, favors = excluded.favors, follows = excluded.follows,
+		article_title = CASE WHEN excluded.article_title != '' THEN excluded.article_title ELSE mp_stats.article_title END`,
+		row.AccountID, row.Date, row.Key, row.Reads, row.Shares, row.Favors, row.Follows, row.Source, row.Title, timeReq(row.CreatedAt))
 	return err
 }
 
 func (s *Store) ListStats(ctx context.Context, accountID int64) ([]StatRow, error) {
-	rows, err := s.DB.Query(ctx, `SELECT stat_date, article_key, reads, shares, favors, follows, source, created_at FROM mp_stats WHERE account_id = ? ORDER BY stat_date ASC, article_key ASC`, accountID)
+	rows, err := s.DB.Query(ctx, `SELECT stat_date, article_key, reads, shares, favors, follows, source, article_title, created_at FROM mp_stats WHERE account_id = ? ORDER BY stat_date ASC, article_key ASC`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +83,7 @@ func (s *Store) ListStats(ctx context.Context, accountID int64) ([]StatRow, erro
 		var row StatRow
 		var created string
 		row.AccountID = accountID
-		if err := rows.Scan(&row.Date, &row.Key, &row.Reads, &row.Shares, &row.Favors, &row.Follows, &row.Source, &created); err != nil {
+		if err := rows.Scan(&row.Date, &row.Key, &row.Reads, &row.Shares, &row.Favors, &row.Follows, &row.Source, &row.Title, &created); err != nil {
 			return nil, err
 		}
 		row.CreatedAt, _ = schedule.Parse(created)
@@ -165,6 +167,25 @@ func (s *Store) ListTopicWeights(ctx context.Context, q db.Q, planID int64) (map
 		out[sub] = weight
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SaveTitleBias(ctx context.Context, accountID int64, shape string, now time.Time) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO title_bias (account_id, shape, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(account_id) DO UPDATE SET shape = excluded.shape, updated_at = excluded.updated_at`,
+		accountID, shape, timeReq(now))
+	return err
+}
+
+func (s *Store) GetTitleBias(ctx context.Context, q db.Q, accountID int64) (string, error) {
+	if q == nil {
+		q = s.DB
+	}
+	var shape string
+	err := q.QueryRow(ctx, `SELECT shape FROM title_bias WHERE account_id = ?`, accountID).Scan(&shape)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return shape, err
 }
 
 func (s *Store) ClearTopicWeights(ctx context.Context, planID int64) error {

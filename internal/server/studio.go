@@ -17,6 +17,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
 	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/persona"
 	"github.com/leoa81761-ops/wzgx/internal/pipeline"
 	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
@@ -220,6 +221,8 @@ func accountDict(account *model.WxAccount) map[string]any {
 		"type_label":    subject + " · " + service + " · " + verified,
 		"delivery_mode": account.DeliveryMode, "delivery_label": delivery,
 		"bind_status": account.BindStatus, "permission_report": report, "bound_at": jtime(account.BoundAt),
+		"audience": account.Audience, "tone": account.Tone, "persona_columns": account.PersonaColumns,
+		"signatures": account.Signatures, "taboos": account.Taboos,
 	}
 }
 
@@ -362,6 +365,16 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 		}
 		view["topic_mode"] = topicMode
 		view["image_mode"] = imageMode
+		view["tone"] = extra.Tone
+		view["persona_columns"] = extra.PersonaColumns
+		view["signatures"] = extra.Signatures
+		view["taboos"] = extra.Taboos
+		suggested := persona.Suggest(plan.Direction, extra.VerticalKey)
+		view["suggested_tone"] = suggested.Tone
+		view["suggested_columns"] = suggested.Columns
+		view["suggested_signatures"] = suggested.Signatures
+		view["suggested_taboos"] = suggested.Taboos
+		view["suggested_audience"] = suggested.Audience
 	}
 	if err := a.attachProposal(ctx, view, plan.ID); err != nil {
 		return nil, err
@@ -389,10 +402,46 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 	} else {
 		view["account_name"] = ""
 	}
+	attachVoice(view, account)
 	ready, block := publish.Ready(owner, account, time.Now().UTC())
 	view["publish_ready"] = ready
 	view["publish_block"] = block
 	return view, nil
+}
+
+func attachVoice(view map[string]any, account *model.WxAccount) {
+	plan := persona.Profile{
+		Audience: asText(view["audience"]), Tone: asText(view["tone"]),
+		Columns: asText(view["persona_columns"]), Signatures: asText(view["signatures"]), Taboos: asText(view["taboos"]),
+	}
+	stored := persona.Profile{}
+	if account != nil {
+		stored = persona.Profile{
+			Audience: account.Audience, Tone: account.Tone, Columns: account.PersonaColumns,
+			Signatures: account.Signatures, Taboos: account.Taboos,
+		}
+		view["account_audience"] = account.Audience
+		view["account_tone"] = account.Tone
+		view["account_persona_columns"] = account.PersonaColumns
+		view["account_signatures"] = account.Signatures
+		view["account_taboos"] = account.Taboos
+	}
+	suggested := persona.Profile{
+		Audience: asText(view["suggested_audience"]), Tone: asText(view["suggested_tone"]),
+		Columns: asText(view["suggested_columns"]), Signatures: asText(view["suggested_signatures"]),
+		Taboos: asText(view["suggested_taboos"]),
+	}
+	effective := persona.Effective(plan, stored, suggested)
+	view["effective_audience"] = effective.Audience
+	view["effective_tone"] = effective.Tone
+	view["effective_columns"] = effective.Columns
+	view["effective_signatures"] = effective.Signatures
+	view["effective_taboos"] = effective.Taboos
+}
+
+func asText(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 func (a *App) listAccounts(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -590,6 +639,59 @@ type secretBody struct {
 	AppSecret string `json:"app_secret"`
 }
 
+type voiceBody struct {
+	Audience       string `json:"audience"`
+	Tone           string `json:"tone"`
+	PersonaColumns string `json:"persona_columns"`
+	Signatures     string `json:"signatures"`
+	Taboos         string `json:"taboos"`
+}
+
+func (a *App) saveAccountVoice(w http.ResponseWriter, r *http.Request, user *model.User) error {
+	id, err := pathID(r, "account_id", "找不到这个公众号")
+	if err != nil {
+		return err
+	}
+	var body voiceBody
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	account, err := a.ownAccount(r.Context(), nil, user.ID, id)
+	if err != nil {
+		return err
+	}
+	audience, err := boundedText("读者", body.Audience, 80)
+	if err != nil {
+		return err
+	}
+	tone, err := boundedText("语气", body.Tone, 80)
+	if err != nil {
+		return err
+	}
+	columns, err := boundedText("常设栏目", body.PersonaColumns, 80)
+	if err != nil {
+		return err
+	}
+	signatures, err := boundedText("口头禅", body.Signatures, 80)
+	if err != nil {
+		return err
+	}
+	taboos, err := boundedText("不写的话题", body.Taboos, 80)
+	if err != nil {
+		return err
+	}
+	if err := a.Store.SaveAccountVoice(r.Context(), nil, account.ID, audience, tone, columns, signatures, taboos); err != nil {
+		return err
+	}
+	account.Audience = audience
+	account.Tone = tone
+	account.PersonaColumns = columns
+	account.Signatures = signatures
+	account.Taboos = taboos
+	writeJSON(w, 200, accountDict(account))
+	return nil
+}
+
 func (a *App) recheckAccount(w http.ResponseWriter, r *http.Request, user *model.User) error {
 	id, err := pathID(r, "account_id", "找不到这个公众号")
 	if err != nil {
@@ -764,27 +866,31 @@ func (a *App) listPlans(w http.ResponseWriter, r *http.Request, user *model.User
 }
 
 type planBody struct {
-	WxAccountID  int64  `json:"wx_account_id"`
-	Direction    string `json:"direction"`
-	StyleKey     string `json:"style_key"`
-	TemplateKey  string `json:"template_key"`
-	WordTarget   int    `json:"word_target"`
-	DailyCount   int    `json:"daily_count"`
-	ScheduleType string `json:"schedule_type"`
-	Weekdays     []int  `json:"weekdays"`
-	TimeWindow   string `json:"time_window"`
-	Opening      string `json:"opening"`
-	Ending       string `json:"ending"`
-	ColumnName   string `json:"column_name"`
-	ColumnStyle  string `json:"column_style"`
-	AssetID      int64  `json:"asset_id"`
-	ProfileID    int64  `json:"profile_id"`
-	Keywords     string `json:"keywords"`
-	Audience     string `json:"audience"`
-	BannedWords  string `json:"banned_words"`
-	VerticalKey  string `json:"vertical_key"`
-	TopicMode    string `json:"topic_mode"`
-	ImageMode    string `json:"image_mode"`
+	WxAccountID    int64  `json:"wx_account_id"`
+	Direction      string `json:"direction"`
+	StyleKey       string `json:"style_key"`
+	TemplateKey    string `json:"template_key"`
+	WordTarget     int    `json:"word_target"`
+	DailyCount     int    `json:"daily_count"`
+	ScheduleType   string `json:"schedule_type"`
+	Weekdays       []int  `json:"weekdays"`
+	TimeWindow     string `json:"time_window"`
+	Opening        string `json:"opening"`
+	Ending         string `json:"ending"`
+	ColumnName     string `json:"column_name"`
+	ColumnStyle    string `json:"column_style"`
+	AssetID        int64  `json:"asset_id"`
+	ProfileID      int64  `json:"profile_id"`
+	Keywords       string `json:"keywords"`
+	Audience       string `json:"audience"`
+	BannedWords    string `json:"banned_words"`
+	VerticalKey    string `json:"vertical_key"`
+	TopicMode      string `json:"topic_mode"`
+	ImageMode      string `json:"image_mode"`
+	Tone           string `json:"tone"`
+	PersonaColumns string `json:"persona_columns"`
+	Signatures     string `json:"signatures"`
+	Taboos         string `json:"taboos"`
 }
 
 func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -875,6 +981,7 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			Opening: body.Opening, Ending: body.Ending, ColumnName: body.ColumnName, ColumnStyle: body.ColumnStyle,
 			Keywords: body.Keywords, Audience: body.Audience, BannedWords: body.BannedWords,
 			VerticalKey: body.VerticalKey, TopicMode: body.TopicMode, ImageMode: body.ImageMode,
+			Tone: body.Tone, PersonaColumns: body.PersonaColumns, Signatures: body.Signatures, Taboos: body.Taboos,
 			AssetID: body.AssetID, ProfileID: body.ProfileID,
 		})
 		if err != nil {

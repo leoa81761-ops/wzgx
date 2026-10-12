@@ -8,6 +8,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/hot"
 	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/pipeline"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 	"github.com/leoa81761-ops/wzgx/internal/store"
@@ -123,6 +124,13 @@ func (r *Runner) SuggestTopic(ctx context.Context, q db.Q, plan *model.WritingPl
 	for _, row := range historyRows {
 		history = append(history, topics.Coverage{Subtopic: row.Subtopic, Column: row.ColumnType, Angle: row.Angle, CreatedAt: row.CreatedAt})
 		used[row.Subtopic+"|"+row.ColumnType+"|"+row.Angle] = true
+	}
+	history, err = pipeline.AppendSiblingCoverage(ctx, r.Deps.Store, q, plan.UserID, plan.ID, history)
+	if err != nil {
+		return topics.Choice{}, "", err
+	}
+	for _, row := range history[len(historyRows):] {
+		used[row.Subtopic+"|"+row.Column+"|"+row.Angle] = true
 	}
 	for _, tag := range veto {
 		used[tag] = true

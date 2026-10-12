@@ -58,6 +58,7 @@
         <p class="banner info">{{ preview.reason }}</p>
         <p>{{ preview.sample }}</p>
         <p class="muted">{{ preview.runes }} 字 · {{ preview.style_name }} · {{ preview.window_label }} · 读者：{{ preview.audience }}</p>
+        <p v-if="preview.tone" class="muted">语气会记在这个公众号上：{{ preview.tone }} · 口头禅：{{ preview.signatures }} · 不写：{{ preview.taboos }}</p>
         <button class="btn" type="button" :disabled="starting" @click="start">{{ starting ? "正在启动…" : "4. 启动这个号" }}</button>
       </article>
     </section>
@@ -151,6 +152,16 @@ async function start() {
   error.value = "";
   starting.value = true;
   try {
+    await api(`/api/accounts/${accountId.value}/voice`, {
+      method: "PUT",
+      body: {
+        audience: preview.value.audience || "",
+        tone: preview.value.tone || "",
+        persona_columns: preview.value.persona_columns || "",
+        signatures: preview.value.signatures || "",
+        taboos: preview.value.taboos || "",
+      },
+    });
     const plan = await api("/api/plans", {
       method: "POST",
       body: {
@@ -163,7 +174,6 @@ async function start() {
         time_window: preview.value.time_window,
         daily_count: 1,
         keywords: preview.value.keywords || "",
-        audience: preview.value.audience || "",
         vertical_key: preview.value.vertical_key || "",
         topic_mode: preview.value.topic_mode || "auto",
         image_mode: preview.value.image_mode || "auto",

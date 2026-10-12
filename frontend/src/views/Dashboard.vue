@@ -41,6 +41,9 @@
           {{ card.plan.direction }}
           · {{ card.plan.status === "active" ? "下次 " + formatTime(card.plan.next_run_at) : "启动后才会按点写" }}
         </p>
+        <p v-if="card.plan && card.plan.effective_tone" class="muted">
+          {{ card.plan.effective_tone }}<span v-if="card.plan.effective_audience"> · {{ card.plan.effective_audience }}</span>
+        </p>
         <p v-else class="muted">这个号还没有写作计划。</p>
         <p v-if="card.plan && card.plan.pause_reason" class="muted">原因：{{ card.plan.pause_reason }}</p>
         <p class="muted">今天全账号还剩 {{ quota.daily_remaining ?? 0 }} 篇。<span v-if="card.plan">这个号计划每天 {{ card.plan.daily_count || 1 }} 篇。</span></p>

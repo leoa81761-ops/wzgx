@@ -183,6 +183,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/accounts", a.withUser(false, a.listAccounts))
 	mux.HandleFunc("POST /api/accounts", a.withUser(false, a.bindAccount))
 	mux.HandleFunc("POST /api/accounts/component/start", a.withUser(false, a.componentStart))
+	mux.HandleFunc("PUT /api/accounts/{account_id}/voice", a.withUser(false, a.saveAccountVoice))
 	mux.HandleFunc("POST /api/accounts/{account_id}/recheck", a.withUser(false, a.recheckAccount))
 	mux.HandleFunc("DELETE /api/accounts/{account_id}", a.withUser(false, a.unbindAccount))
 	mux.HandleFunc("GET /api/accounts/{account_id}/stats", a.withUser(false, a.listStats))

@@ -9,19 +9,23 @@ import (
 )
 
 type PlanExtra struct {
-	PlanID      int64
-	Opening     string
-	Ending      string
-	ColumnName  string
-	ColumnStyle string
-	AssetID     int64
-	ProfileID   int64
-	Keywords    string
-	Audience    string
-	BannedWords string
-	VerticalKey string
-	TopicMode   string
-	ImageMode   string
+	PlanID         int64
+	Opening        string
+	Ending         string
+	ColumnName     string
+	ColumnStyle    string
+	AssetID        int64
+	ProfileID      int64
+	Keywords       string
+	Audience       string
+	BannedWords    string
+	VerticalKey    string
+	TopicMode      string
+	ImageMode      string
+	Tone           string
+	PersonaColumns string
+	Signatures     string
+	Taboos         string
 }
 
 type StyleProfile struct {
@@ -55,9 +59,9 @@ func (s *Store) SavePlanExtra(ctx context.Context, q db.Q, row PlanExtra) error 
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `INSERT INTO plan_extra (plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(plan_id) DO UPDATE SET opening = excluded.opening, ending = excluded.ending, column_name = excluded.column_name, column_style = excluded.column_style, asset_id = excluded.asset_id, profile_id = excluded.profile_id, keywords = excluded.keywords, audience = excluded.audience, banned_words = excluded.banned_words, vertical_key = excluded.vertical_key, topic_mode = excluded.topic_mode, image_mode = excluded.image_mode`,
-		row.PlanID, row.Opening, row.Ending, row.ColumnName, row.ColumnStyle, row.AssetID, row.ProfileID, row.Keywords, row.Audience, row.BannedWords, row.VerticalKey, row.TopicMode, row.ImageMode)
+	_, err := q.Exec(ctx, `INSERT INTO plan_extra (plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode, tone, persona_columns, signatures, taboos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(plan_id) DO UPDATE SET opening = excluded.opening, ending = excluded.ending, column_name = excluded.column_name, column_style = excluded.column_style, asset_id = excluded.asset_id, profile_id = excluded.profile_id, keywords = excluded.keywords, audience = excluded.audience, banned_words = excluded.banned_words, vertical_key = excluded.vertical_key, topic_mode = excluded.topic_mode, image_mode = excluded.image_mode, tone = excluded.tone, persona_columns = excluded.persona_columns, signatures = excluded.signatures, taboos = excluded.taboos`,
+		row.PlanID, row.Opening, row.Ending, row.ColumnName, row.ColumnStyle, row.AssetID, row.ProfileID, row.Keywords, row.Audience, row.BannedWords, row.VerticalKey, row.TopicMode, row.ImageMode, row.Tone, row.PersonaColumns, row.Signatures, row.Taboos)
 	return err
 }
 
@@ -66,8 +70,8 @@ func (s *Store) GetPlanExtra(ctx context.Context, q db.Q, planID int64) (PlanExt
 		q = s.DB
 	}
 	var row PlanExtra
-	err := q.QueryRow(ctx, `SELECT plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode FROM plan_extra WHERE plan_id = ?`, planID).
-		Scan(&row.PlanID, &row.Opening, &row.Ending, &row.ColumnName, &row.ColumnStyle, &row.AssetID, &row.ProfileID, &row.Keywords, &row.Audience, &row.BannedWords, &row.VerticalKey, &row.TopicMode, &row.ImageMode)
+	err := q.QueryRow(ctx, `SELECT plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode, tone, persona_columns, signatures, taboos FROM plan_extra WHERE plan_id = ?`, planID).
+		Scan(&row.PlanID, &row.Opening, &row.Ending, &row.ColumnName, &row.ColumnStyle, &row.AssetID, &row.ProfileID, &row.Keywords, &row.Audience, &row.BannedWords, &row.VerticalKey, &row.TopicMode, &row.ImageMode, &row.Tone, &row.PersonaColumns, &row.Signatures, &row.Taboos)
 	if err == sql.ErrNoRows {
 		return PlanExtra{PlanID: planID}, nil
 	}

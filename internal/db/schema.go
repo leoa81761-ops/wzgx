@@ -2,7 +2,10 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
+	"time"
 )
 
 func (d *DB) migrate(ctx context.Context) error {
@@ -39,7 +42,12 @@ CREATE TABLE IF NOT EXISTS wx_account (
   bind_status TEXT NOT NULL DEFAULT 'active',
   permission_report TEXT,
   bound_at TEXT,
-  unbound_at TEXT
+  unbound_at TEXT,
+  audience TEXT NOT NULL DEFAULT '',
+  tone TEXT NOT NULL DEFAULT '',
+  persona_columns TEXT NOT NULL DEFAULT '',
+  signatures TEXT NOT NULL DEFAULT '',
+  taboos TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_wx_user ON wx_account(user_id);
 CREATE INDEX IF NOT EXISTS idx_wx_app ON wx_account(app_id);
@@ -473,6 +481,7 @@ CREATE TABLE IF NOT EXISTS mp_stats (
   favors INTEGER NOT NULL DEFAULT 0,
   follows INTEGER NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT '',
+  article_title TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE(account_id, stat_date, article_key, source)
 );
@@ -528,7 +537,17 @@ CREATE TABLE IF NOT EXISTS plan_extra (
   banned_words TEXT NOT NULL DEFAULT '',
   vertical_key TEXT NOT NULL DEFAULT '',
   topic_mode TEXT NOT NULL DEFAULT '',
-  image_mode TEXT NOT NULL DEFAULT ''
+  image_mode TEXT NOT NULL DEFAULT '',
+  tone TEXT NOT NULL DEFAULT '',
+  persona_columns TEXT NOT NULL DEFAULT '',
+  signatures TEXT NOT NULL DEFAULT '',
+  taboos TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS title_bias (
+  account_id INTEGER PRIMARY KEY,
+  shape TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS style_profile (
@@ -688,12 +707,74 @@ CREATE TABLE IF NOT EXISTS user_contract (
 		{"plan_extra", "vertical_key", "TEXT NOT NULL DEFAULT ''"},
 		{"plan_extra", "topic_mode", "TEXT NOT NULL DEFAULT ''"},
 		{"plan_extra", "image_mode", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "tone", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "persona_columns", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "signatures", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "taboos", "TEXT NOT NULL DEFAULT ''"},
+		{"mp_stats", "article_title", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "audience", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "tone", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "persona_columns", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "signatures", "TEXT NOT NULL DEFAULT ''"},
+		{"wx_account", "taboos", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err
 		}
 	}
-	return nil
+	return d.MigrateAccountVoice(ctx)
+}
+
+// AccountVoiceMigrationKey marks the one-time copy of plan voice onto accounts.
+// A later startup does not fill a field the user has cleared.
+const AccountVoiceMigrationKey = "account_voice_migrated"
+
+// MigrateAccountVoice copies the earliest non-empty plan voice onto an account that does not have one yet.
+// It runs once. A later plan that stored a different value stays as that plan's override.
+func (d *DB) MigrateAccountVoice(ctx context.Context) error {
+	var done string
+	err := d.QueryRow(ctx, `SELECT value FROM app_setting WHERE key = ?`, AccountVoiceMigrationKey).Scan(&done)
+	if err == nil && strings.TrimSpace(done) == "1" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	for _, col := range []string{"audience", "tone", "persona_columns", "signatures", "taboos"} {
+		stmt := `UPDATE wx_account SET ` + col + ` = (
+			SELECT pe.` + col + ` FROM plan_extra pe
+			INNER JOIN writing_plan wp ON wp.id = pe.plan_id
+			WHERE wp.wx_account_id = wx_account.id AND TRIM(pe.` + col + `) != ''
+			ORDER BY wp.id ASC LIMIT 1
+		) WHERE TRIM(` + col + `) = '' AND EXISTS (
+			SELECT 1 FROM plan_extra pe
+			INNER JOIN writing_plan wp ON wp.id = pe.plan_id
+			WHERE wp.wx_account_id = wx_account.id AND TRIM(pe.` + col + `) != ''
+		)`
+		if _, err := d.SQL.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	stamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	res, err := d.Exec(ctx, `UPDATE app_setting SET value = ?, updated_at = ? WHERE key = ?`, "1", stamp, AccountVoiceMigrationKey)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err = d.Exec(ctx, `INSERT INTO app_setting (key, value, updated_at) VALUES (?, ?, ?)`, AccountVoiceMigrationKey, "1", stamp)
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate") {
+			return nil
+		}
+	}
+	return err
 }
 
 func (d *DB) ensureColumn(ctx context.Context, table, column, decl string) error {

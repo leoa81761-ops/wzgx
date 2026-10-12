@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
+	"github.com/leoa81761-ops/wzgx/internal/persona"
 	"github.com/leoa81761-ops/wzgx/internal/store"
 	"github.com/leoa81761-ops/wzgx/internal/vertical"
 )
@@ -18,6 +19,10 @@ type Suggestion struct {
 	VerticalKey string
 	Audience    string
 	Keywords    string
+	Tone        string
+	Columns     string
+	Signatures  string
+	Taboos      string
 	WordTarget  int
 	TopicMode   string
 	ImageMode   string
@@ -89,9 +94,11 @@ func Suggest(in Input) Suggestion {
 		keywords = clipRunes(keywordList(pack), 80)
 	}
 	reason := explain(name, in.SubjectType, in.ServiceType, in.Tier, direction, style, window, pack)
+	voice := persona.Suggest(direction, verticalKey)
 	return Suggestion{
 		Direction: direction, StyleKey: style, TemplateKey: template, TimeWindow: window,
 		VerticalKey: verticalKey, Audience: audience, Keywords: keywords,
+		Tone: voice.Tone, Columns: voice.Columns, Signatures: voice.Signatures, Taboos: voice.Taboos,
 		WordTarget: pickWords(in.MaxWords), TopicMode: "auto", ImageMode: "auto", Reason: reason,
 	}
 }

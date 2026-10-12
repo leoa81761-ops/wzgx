@@ -159,7 +159,7 @@ func (a *App) saveCollected(r *http.Request, accountID int64, day string, rows [
 		}
 		if err := a.Store.SaveStat(r.Context(), nil, store.StatRow{
 			AccountID: accountID, Date: row.Date, Key: row.Key, Reads: row.Reads, Shares: row.Shares,
-			Favors: row.Favors, Follows: row.Follows, Source: "wechat", CreatedAt: now,
+			Favors: row.Favors, Follows: row.Follows, Source: "wechat", Title: row.Title, CreatedAt: now,
 		}); err != nil {
 			return err
 		}
@@ -207,7 +207,7 @@ func (a *App) createReport(w http.ResponseWriter, r *http.Request, user *model.U
 	}
 	statRows := make([]stats.Row, 0, len(saved))
 	for _, row := range saved {
-		statRows = append(statRows, stats.Row{Date: row.Date, Key: row.Key, Reads: row.Reads, Shares: row.Shares, Favors: row.Favors, Follows: row.Follows})
+		statRows = append(statRows, stats.Row{Date: row.Date, Key: row.Key, Title: row.Title, Reads: row.Reads, Shares: row.Shares, Favors: row.Favors, Follows: row.Follows})
 	}
 	summary, advice, days := stats.Describe(statRows)
 	adjustment := "样本不足，不调整选题权重。"
@@ -222,7 +222,22 @@ func (a *App) createReport(w http.ResponseWriter, r *http.Request, user *model.U
 			topics = append(topics, stats.TopicCount{Subtopic: sub, Published: pair[0], Discarded: pair[1]})
 		}
 		weights, note := stats.SuggestWeights(topics)
+		briefs, err := a.Store.ListArticleBriefs(r.Context(), account.ID)
+		if err != nil {
+			return err
+		}
+		hits := make([]stats.ArticleHit, 0, len(briefs))
+		for _, article := range briefs {
+			hits = append(hits, stats.ArticleHit{ID: article.ID, Title: article.Title, Subtopic: article.Subtopic, DraftMediaID: article.DraftMediaID})
+		}
+		var shape string
+		weights, note, shape = stats.MergeTune(weights, note, stats.MatchReads(hits, statRows))
 		adjustment = note
+		if shape != "" {
+			if err := a.Store.SaveTitleBias(r.Context(), account.ID, shape, now); err != nil {
+				return err
+			}
+		}
 		if len(weights) > 0 {
 			plans, err := a.Store.ListPlansByAccount(r.Context(), nil, account.ID, "active")
 			if err != nil {

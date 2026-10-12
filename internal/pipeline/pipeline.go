@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -13,11 +14,14 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/cover"
 	"github.com/leoa81761-ops/wzgx/internal/db"
+	"github.com/leoa81761-ops/wzgx/internal/editorial"
+	"github.com/leoa81761-ops/wzgx/internal/headline"
 	"github.com/leoa81761-ops/wzgx/internal/hot"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/notify"
 	"github.com/leoa81761-ops/wzgx/internal/ops"
+	"github.com/leoa81761-ops/wzgx/internal/persona"
 	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/render"
@@ -31,6 +35,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/wechat"
 	"math/rand"
 	"net/http"
+	"regexp"
 )
 
 type Deps struct {
@@ -87,6 +92,11 @@ type work struct {
 	BannedWords       string
 	TopicMode         string
 	ImageMode         string
+	Tone              string
+	PersonaColumns    string
+	Signatures        string
+	Taboos            string
+	TitlePrefer       string
 }
 
 type Built struct {
@@ -305,10 +315,42 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		for _, row := range historyRows {
 			history = append(history, topics.Coverage{Subtopic: row.Subtopic, Column: row.ColumnType, Angle: row.Angle, CreatedAt: row.CreatedAt})
 		}
+		history, err = AppendSiblingCoverage(ctx, deps.Store, tx, user.ID, plan.ID, history)
+		if err != nil {
+			return err
+		}
+		siblingTitles, err := deps.Store.SiblingTitles(ctx, tx, user.ID, plan.ID, 20)
+		if err != nil {
+			return err
+		}
+		seenTitle := map[string]bool{}
+		for _, title := range titles {
+			seenTitle[title] = true
+		}
+		for _, title := range siblingTitles {
+			if title == "" || seenTitle[title] {
+				continue
+			}
+			seenTitle[title] = true
+			titles = append(titles, title)
+		}
+		prefer, err := deps.Store.GetTitleBias(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
 		weights, err := deps.Store.ListTopicWeights(ctx, tx, plan.ID)
 		if err != nil {
 			return err
 		}
+		voice := persona.Fill(persona.Profile{
+			Audience: strings.TrimSpace(extra.Audience), Tone: strings.TrimSpace(extra.Tone),
+			Columns: strings.TrimSpace(extra.PersonaColumns), Signatures: strings.TrimSpace(extra.Signatures),
+			Taboos: strings.TrimSpace(extra.Taboos),
+		}, persona.Profile{
+			Audience: strings.TrimSpace(account.Audience), Tone: strings.TrimSpace(account.Tone),
+			Columns: strings.TrimSpace(account.PersonaColumns), Signatures: strings.TrimSpace(account.Signatures),
+			Taboos: strings.TrimSpace(account.Taboos),
+		})
 		w = &work{
 			TaskID: task.ID, UserID: user.ID, Tier: tier, PlanID: plan.ID, Direction: plan.Direction,
 			StyleKey: plan.StyleKey, TemplateKey: plan.TemplateKey, WordTarget: plan.WordTarget,
@@ -318,9 +360,11 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
 			History: history, RecentTitles: titles, Vetoed: vetoed, SpecifiedTitle: pinned, Pack: pack,
 			StyleName: styleName, StyleHint: styleHint, Weights: weights,
-			Audience: strings.TrimSpace(extra.Audience), Keywords: strings.TrimSpace(extra.Keywords),
+			Audience: voice.Audience, Keywords: strings.TrimSpace(extra.Keywords),
 			BannedWords: strings.TrimSpace(extra.BannedWords), TopicMode: strings.TrimSpace(extra.TopicMode),
-			ImageMode: strings.TrimSpace(extra.ImageMode),
+			ImageMode: strings.TrimSpace(extra.ImageMode), Tone: voice.Tone,
+			PersonaColumns: voice.Columns, Signatures: voice.Signatures,
+			Taboos: voice.Taboos, TitlePrefer: strings.TrimSpace(prefer),
 		}
 		ok = true
 		return nil
@@ -339,6 +383,14 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if msg := draftWaitMessage(ctx, deps, w); msg != "" {
 		return nil, errors.New(msg)
 	}
+	if w != nil {
+		filled := fillPersona(w.input())
+		w.Audience = filled.Audience
+		w.Tone = filled.Tone
+		w.PersonaColumns = filled.PersonaColumns
+		w.Signatures = filled.Signatures
+		w.Taboos = filled.Taboos
+	}
 	var sensitive []string
 	var wx runtime.WeChat
 	var image *llm.Provider
@@ -351,6 +403,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 			return err
 		}
 		sensitive = mergeBanned(sensitive, w.BannedWords)
+		sensitive = mergeBanned(sensitive, w.Taboos)
 		wx, err = deps.Cache.WeChat(ctx, tx)
 		if err != nil {
 			return err
@@ -492,6 +545,11 @@ type Input struct {
 	BannedWords    string
 	TopicMode      string
 	ImageMode      string
+	Tone           string
+	PersonaColumns string
+	Signatures     string
+	Taboos         string
+	TitlePrefer    string
 }
 
 func hotAllowed(in *Input) bool {
@@ -539,7 +597,32 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer}
+}
+
+// AppendSiblingCoverage keeps another account's recent angles out of this plan's rotation.
+func AppendSiblingCoverage(ctx context.Context, st *store.Store, q db.Q, userID, planID int64, history []topics.Coverage) ([]topics.Coverage, error) {
+	rows, err := st.ListSiblingCoverage(ctx, q, userID, planID)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		history = append(history, topics.Coverage{Subtopic: row.Subtopic, Column: row.ColumnType, Angle: row.Angle, CreatedAt: row.CreatedAt})
+	}
+	return history, nil
+}
+
+func fillPersona(in Input) Input {
+	suggested := persona.Suggest(in.Direction, in.Pack.Key)
+	filled := persona.Fill(persona.Profile{
+		Audience: in.Audience, Tone: in.Tone, Columns: in.PersonaColumns, Signatures: in.Signatures, Taboos: in.Taboos,
+	}, suggested)
+	in.Audience = filled.Audience
+	in.Tone = filled.Tone
+	in.PersonaColumns = filled.Columns
+	in.Signatures = filled.Signatures
+	in.Taboos = filled.Taboos
+	return in
 }
 
 func voiceFields(in Input) map[string]any {
@@ -555,6 +638,18 @@ func voiceFields(in Input) map[string]any {
 	}
 	if mode := strings.TrimSpace(in.TopicMode); mode != "" && mode != "auto" {
 		out["topic_mode"] = mode
+	}
+	if text := strings.TrimSpace(in.Tone); text != "" {
+		out["tone"] = text
+	}
+	if text := strings.TrimSpace(in.PersonaColumns); text != "" {
+		out["persona_columns"] = text
+	}
+	if text := strings.TrimSpace(in.Signatures); text != "" {
+		out["signatures"] = text
+	}
+	if text := strings.TrimSpace(in.Taboos); text != "" {
+		out["taboos"] = text
 	}
 	return out
 }
@@ -591,7 +686,350 @@ func ImagePlan(mode string, hasAsset, aiCover bool, inline int) (useModel bool, 
 	return true, aiCover, inline
 }
 
+func finishPiece(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft map[string]any, w Input, fallbackTitle string, base map[string]any, sensitive []string) (map[string]any, int, []map[string]any) {
+	if draft == nil {
+		return draft, 0, nil
+	}
+	var tokens int
+	var trace []map[string]any
+	if strings.TrimSpace(w.CostNote) == "" {
+		rewritten, rewriteTokens, rewriteTrace := rewriteWeak(ctx, gateway, providers, draft, base)
+		draft = rewritten
+		tokens += rewriteTokens
+		trace = append(trace, rewriteTrace...)
+	}
+	if w.WordTarget > 0 && content.BodyRunes(draft) > w.WordTarget*130/100 {
+		shortened, condenseTokens, condenseTrace := condenseOnce(ctx, gateway, providers, draft, base)
+		draft = shortened
+		tokens += condenseTokens
+		trace = append(trace, condenseTrace...)
+	}
+	if strings.TrimSpace(w.CostNote) == "" {
+		ranked, titleTokens, titleTrace := rankTitles(ctx, gateway, providers, draft, w, fallbackTitle, base, sensitive)
+		draft = ranked
+		tokens += titleTokens
+		trace = append(trace, titleTrace...)
+	}
+	return draft, tokens, trace
+}
+
+func rewriteWeak(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
+	need := editorial.NeedsRewrite(draft)
+	if !need.Any() {
+		return draft, 0, nil
+	}
+	payload := cloneMap(base)
+	payload["draft"] = draft
+	payload["rewrite_hook"] = need.Hook
+	payload["rewrite_headings"] = need.Headings
+	payload["rewrite_closing"] = need.Closing
+	if need.Hook {
+		payload["current_hook"] = draftHook(draft)
+	}
+	if need.Headings {
+		payload["current_headings"] = draftHeadings(draft)
+	}
+	if need.Closing {
+		payload["current_closing"] = strings.TrimSpace(str(draft["closing"]))
+	}
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("结构润色", payload), llm.StageSchema("结构润色"), validatePolish)
+	trace := appendStage(nil, "polish", completion, err)
+	if err != nil {
+		return draft, tokensOf(completion), trace
+	}
+	return editorial.Apply(draft, model, nil), tokensOf(completion), trace
+}
+
+func condenseOnce(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
+	before := content.BodyRunes(draft)
+	payload := cloneMap(base)
+	payload["draft"] = draft
+	payload["current_chars"] = before
+	condensed, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("缩写", payload), llm.StageSchema("正文"), validateDraft)
+	trace := appendStage(nil, "condense", completion, err)
+	if err != nil || condensed == nil {
+		return draft, tokensOf(completion), trace
+	}
+	kept, ok := keepCondensed(draft, condensed)
+	if !ok {
+		return draft, tokensOf(completion), trace
+	}
+	return kept, tokensOf(completion), trace
+}
+
+var (
+	citationMarks = regexp.MustCompile(`\[\d+\]`)
+	claimNumbers  = regexp.MustCompile(`\d+`)
+)
+
+// keepCondensed accepts a shorter draft only when it does not add numbers or change which citations appear.
+// Sources stay as they were on the pre-condense draft. Dropping a repeated marker is fine; a new marker, a missing marker, or a new number is rejected.
+func keepCondensed(original, condensed map[string]any) (map[string]any, bool) {
+	if original == nil || condensed == nil {
+		return original, false
+	}
+	before := content.BodyRunes(original)
+	next := content.BodyRunes(condensed)
+	if next == 0 || next >= before {
+		return original, false
+	}
+	if citationsChanged(original, condensed) || claimsAdded(original, condensed) {
+		return original, false
+	}
+	copySources(condensed, original)
+	return condensed, true
+}
+
+func citationsChanged(original, condensed map[string]any) bool {
+	before := map[string]bool{}
+	for _, mark := range citationMarks.FindAllString(bodyPlain(original), -1) {
+		before[mark] = true
+	}
+	after := map[string]bool{}
+	for _, mark := range citationMarks.FindAllString(bodyPlain(condensed), -1) {
+		after[mark] = true
+	}
+	if len(before) != len(after) {
+		return true
+	}
+	for mark := range before {
+		if !after[mark] {
+			return true
+		}
+	}
+	return false
+}
+
+func claimsAdded(original, condensed map[string]any) bool {
+	seen := map[string]int{}
+	for _, token := range claimNumbers.FindAllString(bodyPlain(original), -1) {
+		seen[token]++
+	}
+	for _, token := range claimNumbers.FindAllString(bodyPlain(condensed), -1) {
+		if seen[token] == 0 {
+			return true
+		}
+		seen[token]--
+	}
+	return false
+}
+
+func bodyPlain(draft map[string]any) string {
+	var b strings.Builder
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		b.WriteString(str(section["heading"]))
+		b.WriteByte('\n')
+		for _, item := range asList(section["paragraphs"]) {
+			b.WriteString(str(item))
+			b.WriteByte('\n')
+		}
+		for _, item := range asList(section["list"]) {
+			b.WriteString(str(item))
+			b.WriteByte('\n')
+		}
+		if table, _ := section["table"].(map[string]any); table != nil {
+			for _, item := range asList(table["headers"]) {
+				b.WriteString(str(item))
+				b.WriteByte('\n')
+			}
+			for _, row := range asList(table["rows"]) {
+				cells, _ := row.([]any)
+				for _, cell := range cells {
+					b.WriteString(str(cell))
+					b.WriteByte('\n')
+				}
+			}
+		}
+	}
+	b.WriteString(str(draft["closing"]))
+	return b.String()
+}
+
+func copySources(dst, src map[string]any) {
+	raw, err := json.Marshal(asList(src["sources"]))
+	if err != nil {
+		return
+	}
+	var list []any
+	if json.Unmarshal(raw, &list) != nil || list == nil {
+		list = []any{}
+	}
+	dst["sources"] = list
+}
+
+// reviewSensitive repeats the sensitive-word rewrite on text produced after the main review.
+// One rewrite is requested. A remaining hit fails the article the same way the main path does.
+func reviewSensitive(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, draft, reviewPayload map[string]any, sensitive []string) (map[string]any, int, []map[string]any, error) {
+	hits := sensitiveHits(draft, sensitive)
+	if len(hits) == 0 {
+		return draft, 0, nil, nil
+	}
+	payload := cloneMap(reviewPayload)
+	payload["draft"] = draft
+	payload["issues"] = hits
+	reviewed, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("审核", payload), llm.StageSchema("审核"), validateDraft)
+	trace := appendStage(nil, "review", completion, err)
+	if err != nil {
+		return draft, tokensOf(completion), trace, err
+	}
+	cleaned, _ := content.StripCliches(reviewed).(map[string]any)
+	if cleaned == nil {
+		cleaned = draft
+	}
+	hits = sensitiveHits(cleaned, sensitive)
+	if len(hits) > 0 {
+		message := "审核未通过，命中敏感词：" + strings.Join(hits, "、")
+		trace = append(trace, map[string]any{"stage": "audit", "ok": false, "error": clip(message, 300)})
+		return cleaned, tokensOf(completion), trace, &llm.Error{Message: message}
+	}
+	return cleaned, tokensOf(completion), trace, nil
+}
+
+func sensitiveHits(draft map[string]any, words []string) []string {
+	seen := map[string]bool{}
+	var hits []string
+	add := func(list []string) {
+		for _, word := range list {
+			if word == "" || seen[word] {
+				continue
+			}
+			seen[word] = true
+			hits = append(hits, word)
+		}
+	}
+	add(content.FindSensitive(draft, words))
+	add(content.FindSensitive(map[string]any{"title": str(draft["title"])}, words))
+	return hits
+}
+
+func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft map[string]any, w Input, fallbackTitle string, base map[string]any, sensitive []string) (map[string]any, int, []map[string]any) {
+	payload := cloneMap(base)
+	payload["draft_title"] = strings.TrimSpace(str(draft["title"]))
+	payload["alt_titles"] = asList(draft["alt_titles"])
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("标题", payload), llm.StageSchema("标题"), validateTitles)
+	trace := appendStage(nil, "titles", completion, err)
+	var candidates []string
+	if err == nil && model != nil {
+		candidates = append(candidates, stringList(asList(model["titles"]))...)
+	}
+	if title := strings.TrimSpace(str(draft["title"])); title != "" {
+		candidates = append(candidates, title)
+	}
+	candidates = append(candidates, stringList(asList(draft["alt_titles"]))...)
+	best, alts := headline.Rank(candidates, append(splitWords(w.Pack.RedLines, w.BannedWords, w.Taboos), sensitive...), w.RecentTitles, w.TitlePrefer)
+	title, altAny := chosenTitle(best, alts, w.SpecifiedTitle, str(draft["title"]), fallbackTitle)
+	draft["title"] = title
+	draft["alt_titles"] = altAny
+	return draft, tokensOf(completion), trace
+}
+
+func chosenTitle(best string, alts []string, specified, current, fallback string) (string, []any) {
+	title := strings.TrimSpace(best)
+	pinned := strings.TrimSpace(specified)
+	if pinned != "" {
+		title = pinned
+	}
+	if title == "" {
+		title = strings.TrimSpace(current)
+	}
+	if title == "" {
+		title = strings.TrimSpace(fallback)
+	}
+	seen := map[string]bool{}
+	var out []any
+	add := func(item string) {
+		item = strings.TrimSpace(item)
+		if item == "" || item == title || seen[item] {
+			return
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	if pinned != "" {
+		add(best)
+	}
+	for _, item := range alts {
+		add(item)
+	}
+	if out == nil {
+		out = []any{}
+	}
+	return title, out
+}
+
+func pieceProviders(providers map[string][]llm.Provider) []llm.Provider {
+	if len(providers["review"]) > 0 {
+		return providers["review"]
+	}
+	return providers["draft"]
+}
+
+func tokensOf(completion llm.Completion) int {
+	return completion.PromptTokens + completion.CompletionTokens
+}
+
+func draftHook(draft map[string]any) string {
+	sections := asList(draft["sections"])
+	if len(sections) == 0 {
+		return ""
+	}
+	section, _ := sections[0].(map[string]any)
+	if section == nil {
+		return ""
+	}
+	for _, item := range asList(section["paragraphs"]) {
+		if text := strings.TrimSpace(str(item)); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func draftHeadings(draft map[string]any) []string {
+	var out []string
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		if text := strings.TrimSpace(str(section["heading"])); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func stringList(items []any) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text := strings.TrimSpace(str(item)); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func splitWords(parts ...string) []string {
+	var out []string
+	for _, part := range parts {
+		for _, word := range strings.FieldsFunc(part, func(r rune) bool {
+			return r == ',' || r == '，' || r == '\n' || r == '、' || r == ';' || r == '；'
+		}) {
+			word = strings.TrimSpace(word)
+			if word != "" {
+				out = append(out, word)
+			}
+		}
+	}
+	return out
+}
+
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
+	w = fillPersona(w)
 	topic := topics.PickTree(topics.ExpandTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.Weights), w.Direction, w.Tier, w.History, now, w.Vetoed...)
 	if w.Locked != nil {
 		topic = *w.Locked
@@ -645,6 +1083,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	for key, value := range voiceFields(w) {
 		base[key] = value
 	}
+	base["structure"] = editorial.Structure(w.Pack.Key, w.Direction)
 	var trace []map[string]any
 	tokens := 0
 	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
@@ -755,18 +1194,17 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft["sources"] = []any{}
 	}
 	missingSources := w.Tier != "free" && len(providers["research"]) > 0 && !listedHaveURL(asList(draft["sources"]))
-	// 事实核对和审核都可能把已经压过长度的正文重新写长。裁剪是最后一次改正文。
-	if high := w.WordTarget * 130 / 100; w.WordTarget > 0 && content.BodyRunes(draft) > high {
-		draft = content.TrimToMax(draft, high)
+	finished, pieceTokens, pieceTrace := finishPiece(ctx, gateway, providers, draft, w, topicTitle, base, sensitive)
+	draft = finished
+	tokens += pieceTokens
+	trace = append(trace, pieceTrace...)
+	audited, auditTokens, auditTrace, err := reviewSensitive(ctx, gateway, providers["review"], draft, reviewPayload, sensitive)
+	trace = append(trace, auditTrace...)
+	tokens += auditTokens
+	if err != nil {
+		return Built{Trace: trace}, err
 	}
-	title := str(draft["title"])
-	if w.SpecifiedTitle != "" {
-		title = w.SpecifiedTitle
-	}
-	if title == "" {
-		title = topicTitle
-	}
-	draft["title"] = clip(title, 64)
+	draft = audited
 	footnotes := []any{"请发布前审阅。"}
 	if w.Pack.Disclaimer != "" {
 		footnotes = append(footnotes, w.Pack.Disclaimer)
@@ -1622,7 +2060,6 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 	low := target * 85 / 100
 	high := target * 130 / 100
 	goal := target * 105 / 100
-	ceiling := target * 110 / 100
 	var trace []map[string]any
 	tokens := 0
 	if content.BodyRunes(draft) < low {
@@ -1635,24 +2072,21 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 		if err == nil {
 			draft = expanded
 			tokens += completion.PromptTokens + completion.CompletionTokens
-			if content.BodyRunes(draft) > ceiling {
-				draft = content.TrimToMax(draft, goal)
-			}
 		}
 	}
 	if content.BodyRunes(draft) > high {
+		before := content.BodyRunes(draft)
 		condensePayload := cloneMap(payload)
 		condensePayload["draft"] = draft
-		condensePayload["current_chars"] = content.BodyRunes(draft)
+		condensePayload["current_chars"] = before
 		condensed, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("缩写", condensePayload), llm.StageSchema("正文"), validateDraft)
 		trace = appendStage(trace, "condense", completion, err)
-		if err == nil {
-			draft = condensed
+		if err == nil && condensed != nil {
 			tokens += completion.PromptTokens + completion.CompletionTokens
+			if kept, ok := keepCondensed(draft, condensed); ok {
+				draft = kept
+			}
 		}
-	}
-	if content.BodyRunes(draft) > high {
-		draft = content.TrimToMax(draft, high)
 	}
 	return draft, tokens, trace
 }
@@ -1904,6 +2338,42 @@ func validateDraft(data map[string]any) (map[string]any, error) {
 		}
 	}
 	return map[string]any{"title": clip(title, 64), "alt_titles": alts, "summary": clip(str(data["summary"]), 120), "sections": normalized, "closing": clip(str(data["closing"]), 300), "sources": sources}, nil
+}
+
+func validatePolish(data map[string]any) (map[string]any, error) {
+	if data == nil {
+		return nil, errStr("润色结果为空")
+	}
+	var headings []any
+	for _, item := range asList(data["headings"]) {
+		if text := strings.TrimSpace(str(item)); text != "" {
+			headings = append(headings, text)
+		}
+	}
+	if headings == nil {
+		headings = []any{}
+	}
+	return map[string]any{
+		"hook":     strings.TrimSpace(str(data["hook"])),
+		"headings": headings,
+		"closing":  strings.TrimSpace(str(data["closing"])),
+	}, nil
+}
+
+func validateTitles(data map[string]any) (map[string]any, error) {
+	var titles []any
+	for _, item := range asList(data["titles"]) {
+		if len(titles) >= 12 {
+			break
+		}
+		if text := strings.TrimSpace(str(item)); text != "" {
+			titles = append(titles, text)
+		}
+	}
+	if len(titles) == 0 {
+		return nil, errStr("没有可用标题")
+	}
+	return map[string]any{"titles": titles}, nil
 }
 
 type strErr string
