@@ -161,7 +161,7 @@ func TestSourceQuality(t *testing.T) {
 	if !strings.Contains(asText(out[0]["url"]), "mohurd.gov.cn") {
 		t.Fatalf("first %#v", out[0])
 	}
-	for _, domain := range []string{"bzko.com", "yuanlin8.com", "bbs.co188.com", "ireader.com", "abook.qq.com", "gcs66.com", "bzfyw.com", "baijiantest.com"} {
+	for _, domain := range []string{"bzko.com", "yuanlin8.com", "bbs.co188.com", "ireader.com", "abook.qq.com", "gcs66.com", "bzfyw.com", "baijiantest.com", "netkao.com", "www.netkao.cn", "biaozhun.org", "51cps.net"} {
 		if policy.AllowsURL("https://" + domain + "/a") {
 			t.Fatalf("default blocklist should drop %s", domain)
 		}

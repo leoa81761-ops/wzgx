@@ -175,7 +175,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 		case "大纲":
 			data = map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"}
 		default:
-			data = map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"先做最小的一步。"}, "list": []any{}}}, "closing": "结束", "sources": []any{}}
+			data = map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}}
 		}
 		body, _ := json.Marshal(data)
 		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(body)}}}})
@@ -207,7 +207,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 		t.Fatal("empty tag")
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "example点com") || strings.Contains(articles[0].BodyHTML, "made-up") {
+	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") || strings.Contains(articles[0].BodyHTML, "made-up") {
 		html := ""
 		if len(articles) > 0 {
 			html = articles[0].BodyHTML
@@ -255,7 +255,7 @@ func TestResearchRetriesWhenEmpty(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"先做最小的一步。"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -267,7 +267,7 @@ func TestResearchRetriesWhenEmpty(t *testing.T) {
 		t.Fatalf("research calls %d", researchCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "example点com") {
+	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
 		t.Fatal(articles, err)
 	}
 }
@@ -407,7 +407,7 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "补救检索成功", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "补救检索成功", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -422,7 +422,7 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if !strings.Contains(articles[0].BodyHTML, "mohurd点gov点cn") || strings.Contains(articles[0].BodyHTML, "fake") || strings.Contains(articles[0].DeliveryNote, "无参考来源") {
+	if !strings.Contains(articles[0].BodyHTML, "www.mohurd.gov.cn") || strings.Contains(articles[0].BodyHTML, "mohurd点gov点cn") || strings.Contains(articles[0].BodyHTML, "fake") || strings.Contains(articles[0].DeliveryNote, "无参考来源") {
 		t.Fatal(articles[0].BodyHTML, articles[0].DeliveryNote)
 	}
 	notes, _, err := st.ListNotifications(ctx, user.ID, 20)
@@ -475,9 +475,12 @@ func TestExpandAsksToCondenseInsteadOfCutting(t *testing.T) {
 		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
 		"closing":  "结束", "sources": []any{},
 	}
-	out, _, trace := fitBody(context.Background(), gw, []llm.Provider{{
+	out, _, trace, stillShort := fitBody(context.Background(), gw, []llm.Provider{{
 		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
 	}}, map[string]any{"word_target": 800}, draft, 800)
+	if stillShort {
+		t.Fatal("expanded draft should clear the short flag")
+	}
 	if !sawGoal || condense < 1 {
 		t.Fatalf("goal %v condense %d", sawGoal, condense)
 	}
@@ -534,7 +537,7 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 		default:
 			writeChoice(w, map[string]any{
 				"title": "只要官方来源", "summary": "摘要",
-				"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}},
+				"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body + "[1]"}, "list": []any{}}},
 				"closing":  "结束",
 				"sources":  []any{map[string]any{"name": "西陆", "title": "转载", "url": "https://fyun.com/a", "source_type": "news"}},
 			})
@@ -553,7 +556,7 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := articles[0].BodyHTML
-	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "gov点cn") || strings.Contains(html, "xilu") || strings.Contains(html, "fyun") {
+	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "www.gov.cn") || strings.Contains(html, "gov点cn") || strings.Contains(html, "xilu") || strings.Contains(html, "fyun") {
 		t.Fatal(html)
 	}
 }
@@ -578,7 +581,7 @@ func TestResearchReadsChatCitations(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1][2]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -594,7 +597,7 @@ func TestResearchReadsChatCitations(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := articles[0].BodyHTML
-	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "gov点cn") || !strings.Contains(html, "openstd点samr点gov点cn") {
+	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "www.gov.cn") || !strings.Contains(html, "openstd.samr.gov.cn") || strings.Contains(html, "点gov") {
 		t.Fatal(html)
 	}
 }
@@ -614,7 +617,7 @@ func TestResearchRelaxesAllowlist(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "允许名单外的来源", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "允许名单外的来源", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -630,7 +633,7 @@ func TestResearchRelaxesAllowlist(t *testing.T) {
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "example点com") {
+	if !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "news.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
 		t.Fatal(articles[0].BodyHTML)
 	}
 	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
@@ -658,7 +661,7 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "屏蔽后再放宽", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "屏蔽后再放宽", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -675,7 +678,7 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := articles[0].BodyHTML
-	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "example点com") || strings.Contains(html, "xilu") {
+	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "news.example.com") || strings.Contains(html, "example点com") || strings.Contains(html, "xilu") {
 		t.Fatal(html)
 	}
 	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
@@ -864,7 +867,7 @@ func TestSensitiveWordFromFinishPieceFailsTheDraft(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		case "结构润色":
-			writeChoice(w, map[string]any{"hook": "为什么这里出现稳赚不赔？", "headings": []any{"先看问题", "一个做法"}, "closing": "可以先记住。欢迎留言。"})
+			writeChoice(w, map[string]any{"hook": "为什么这里出现稳赚不赔？", "headings": []any{"先看问题", "一个做法"}, "closing": "可以先记住。欢迎留言。稳赚不赔。"})
 		case "审核":
 			reviews++
 			if reviews >= 2 {

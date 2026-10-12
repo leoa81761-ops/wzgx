@@ -52,11 +52,22 @@ func StageSchema(stageLabel string) *Schema {
 			map[string]any{
 				"titles": map[string]any{
 					"type":        "array",
-					"description": "10 到 12 个彼此不同的完整标题。不要截断，不要用套话补长度",
-					"items":       map[string]any{"type": "string"},
+					"description": "10 到 12 个彼此不同的完整标题。每个标题自评分 hook、concrete、consistent、persona，都是 1 到 5",
+					"items": objectSchema(
+						[]string{"title", "hook", "concrete", "consistent", "persona"},
+						map[string]any{
+							"title":      strField("完整标题，不要截断，不要用套话补长度"),
+							"hook":       scoreField("开头有没有具体场景或问题，1 到 5"),
+							"concrete":   scoreField("有没有具体场景或数字，1 到 5"),
+							"consistent": scoreField("和 summary、正文是不是同一件事，对不上就低于 3"),
+							"persona":    scoreField("是否像这个账号的语气，1 到 5"),
+						},
+					),
 				},
 			},
 		)}
+	case "审核":
+		return &Schema{Name: "review", Body: reviewSchema()}
 	case "结构润色":
 		return &Schema{Name: "polish", Body: objectSchema(
 			[]string{"hook", "headings", "closing"},
@@ -73,6 +84,27 @@ func StageSchema(stageLabel string) *Schema {
 	default:
 		return &Schema{Name: "draft", Body: draftSchema()}
 	}
+}
+
+func reviewSchema() map[string]any {
+	body := draftSchema()
+	props, _ := body["properties"].(map[string]any)
+	props["quality"] = objectSchema(
+		[]string{"hook", "headings", "closing", "motif"},
+		map[string]any{
+			"hook":     scoreField("开头钩子 1 到 5，4 分及以上表示不必再改开头"),
+			"headings": map[string]any{"type": "boolean", "description": "小标题已经够扫读时为 true"},
+			"closing":  map[string]any{"type": "boolean", "description": "结尾已有收获和邀请时为 true"},
+			"motif":    map[string]any{"type": "boolean", "description": "同一句式或意象反复出现、需要改写时为 true"},
+		},
+	)
+	required, _ := body["required"].([]any)
+	body["required"] = append(required, "quality")
+	return body
+}
+
+func scoreField(desc string) map[string]any {
+	return map[string]any{"type": "integer", "description": desc}
 }
 
 func draftSchema() map[string]any {

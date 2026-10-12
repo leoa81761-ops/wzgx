@@ -106,6 +106,8 @@ type Built struct {
 	Tokens         int
 	Trace          []map[string]any
 	MissingSources bool
+	Uncited        bool
+	LengthShort    bool
 	Searched       bool
 }
 
@@ -475,7 +477,15 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if deps.Gateway != nil && !deps.Gateway.Mock {
 		content.AnnotateAccess(ctx, deps.HTTP, built.Draft)
 	}
-	push, err := pushDraft(ctx, deps, w, built, wx, image)
+	var push pushed
+	if built.LengthShort {
+		push = pushed{
+			Status: "held", HTML: built.HTML, RiskLevel: risk.Grade(w.Direction, built.Draft),
+			DeliveryNote: "篇幅不到目标的 85%，已再扩写一次，仍偏短，未写入公众号草稿。",
+		}
+	} else {
+		push, err = pushDraft(ctx, deps, w, built, wx, image)
+	}
 	if err != nil {
 		trace := append([]map[string]any{}, built.Trace...)
 		if push.CoverTrace != nil {
@@ -498,6 +508,9 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	note := push.DeliveryNote
 	if built.MissingSources {
 		note = joinNote(note, "无参考来源")
+	}
+	if built.Uncited {
+		note = joinNote(note, "正文没有标注引用")
 	}
 	if in.CostNote != "" {
 		note = joinNote(note, "本月成本已达上限")
@@ -871,7 +884,7 @@ func reviewSensitive(ctx context.Context, gateway *llm.Gateway, providers []llm.
 	payload := cloneMap(reviewPayload)
 	payload["draft"] = draft
 	payload["issues"] = hits
-	reviewed, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("审核", payload), llm.StageSchema("审核"), validateDraft)
+	reviewed, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("审核", payload), llm.StageSchema("审核"), validateReview)
 	trace := appendStage(nil, "review", completion, err)
 	if err != nil {
 		return draft, tokensOf(completion), trace, err
@@ -912,23 +925,23 @@ func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string]
 	payload["alt_titles"] = asList(draft["alt_titles"])
 	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("标题", payload), llm.StageSchema("标题"), validateTitles)
 	trace := appendStage(nil, "titles", completion, err)
-	var candidates []string
+	var candidates []headline.Scored
 	if err == nil && model != nil {
-		candidates = append(candidates, stringList(asList(model["titles"]))...)
+		candidates = append(candidates, scoredTitles(asList(model["titles"]))...)
 	}
 	if title := strings.TrimSpace(str(draft["title"])); title != "" {
-		candidates = append(candidates, title)
+		candidates = append(candidates, headline.Scored{Title: title})
 	}
-	candidates = append(candidates, stringList(asList(draft["alt_titles"]))...)
-	best, alts := headline.Rank(candidates, append(splitWords(w.Pack.RedLines, w.BannedWords, w.Taboos), sensitive...), w.RecentTitles, w.TitlePrefer)
+	candidates = append(candidates, scoredTitles(asList(draft["alt_titles"]))...)
+	best, alts := headline.RankScored(candidates, str(draft["summary"]), bodyPlain(draft), append(splitWords(w.Pack.RedLines, w.BannedWords, w.Taboos), sensitive...), w.RecentTitles, w.TitlePrefer)
 	title, altAny := chosenTitle(best, alts, w.SpecifiedTitle, str(draft["title"]), fallbackTitle)
 	draft["title"] = title
 	draft["alt_titles"] = altAny
 	return draft, tokensOf(completion), trace
 }
 
-func chosenTitle(best string, alts []string, specified, current, fallback string) (string, []any) {
-	title := strings.TrimSpace(best)
+func chosenTitle(best headline.Scored, alts []headline.Scored, specified, current, fallback string) (string, []any) {
+	title := strings.TrimSpace(best.Title)
 	pinned := strings.TrimSpace(specified)
 	if pinned != "" {
 		title = pinned
@@ -941,12 +954,19 @@ func chosenTitle(best string, alts []string, specified, current, fallback string
 	}
 	seen := map[string]bool{}
 	var out []any
-	add := func(item string) {
-		item = strings.TrimSpace(item)
+	add := func(row headline.Scored) {
+		item := strings.TrimSpace(row.Title)
 		if item == "" || item == title || seen[item] {
 			return
 		}
 		seen[item] = true
+		if row.HasScores {
+			out = append(out, map[string]any{
+				"title": item, "hook": row.Hook, "concrete": row.Concrete,
+				"consistent": row.Consistent, "persona": row.Persona,
+			})
+			return
+		}
 		out = append(out, item)
 	}
 	if pinned != "" {
@@ -959,6 +979,39 @@ func chosenTitle(best string, alts []string, specified, current, fallback string
 		out = []any{}
 	}
 	return title, out
+}
+
+func scoredTitles(items []any) []headline.Scored {
+	out := make([]headline.Scored, 0, len(items))
+	for _, item := range items {
+		switch row := item.(type) {
+		case string:
+			if text := strings.TrimSpace(row); text != "" {
+				out = append(out, headline.Scored{Title: text})
+			}
+		case map[string]any:
+			text := strings.TrimSpace(str(row["title"]))
+			if text == "" {
+				text = strings.TrimSpace(str(row["text"]))
+			}
+			if text == "" {
+				continue
+			}
+			scored := headline.Scored{Title: text}
+			if _, ok := row["hook"]; ok {
+				scored.HasScores = true
+				scored.Hook = intOf(row["hook"])
+				scored.Concrete = intOf(row["concrete"])
+				scored.Consistent = intOf(row["consistent"])
+				scored.Persona = intOf(row["persona"])
+			}
+			if row["scored"] == true {
+				scored.HasScores = true
+			}
+			out = append(out, scored)
+		}
+	}
+	return out
 }
 
 func pieceProviders(providers map[string][]llm.Provider) []llm.Provider {
@@ -1033,6 +1086,8 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	topic := topics.PickTree(topics.ExpandTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.Weights), w.Direction, w.Tier, w.History, now, w.Vetoed...)
 	if w.Locked != nil {
 		topic = *w.Locked
+	} else {
+		topic = topics.AssignColumn(topic, w.PersonaColumns, w.History)
 	}
 	if w.ColumnName != "" && w.ColumnStyle != "" && topic.Column == w.ColumnName {
 		w.StyleKey = w.ColumnStyle
@@ -1141,7 +1196,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("draft", completion)...)
-	fitted, fitTokens, fitTrace := fitBody(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget)
+	fitted, fitTokens, fitTrace, lengthShort := fitBody(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget)
 	draft = fitted
 	tokens += fitTokens
 	trace = append(trace, fitTrace...)
@@ -1152,7 +1207,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	trace = append(trace, checkTrace...)
 	reviewPayload["draft"] = draft
 	reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
-	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateDraft)
+	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
 	if err != nil {
 		return stageFail(trace, "review", completion, err)
 	}
@@ -1164,7 +1219,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if len(hits) > 0 {
 		reviewPayload["draft"] = draft
 		reviewPayload["issues"] = hits
-		reviewed, completion, err = gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateDraft)
+		reviewed, completion, err = gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
 		if err != nil {
 			return stageFail(trace, "review", completion, err)
 		}
@@ -1193,7 +1248,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.Tier == "free" {
 		draft["sources"] = []any{}
 	}
-	missingSources := w.Tier != "free" && len(providers["research"]) > 0 && !listedHaveURL(asList(draft["sources"]))
+	hadSources := w.Tier != "free" && listedHaveURL(asList(draft["sources"]))
 	finished, pieceTokens, pieceTrace := finishPiece(ctx, gateway, providers, draft, w, topicTitle, base, sensitive)
 	draft = finished
 	tokens += pieceTokens
@@ -1205,11 +1260,22 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace}, err
 	}
 	draft = audited
+	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
+	draft = editorial.RepairNearDuplicates(draft)
+	draft = editorial.DedupeBlocks(draft)
+	delete(draft, "_quality")
+	uncited := false
+	if w.Tier != "free" {
+		cited := applyCitations(draft)
+		uncited = hadSources && !cited
+	}
+	missingSources := w.Tier != "free" && searched && !hadSources
+	if w.WordTarget > 0 && content.BodyRunes(draft) >= w.WordTarget*85/100 {
+		lengthShort = false
+	}
 	footnotes := []any{"请发布前审阅。"}
-	if w.Pack.Disclaimer != "" {
-		footnotes = append(footnotes, w.Pack.Disclaimer)
-	} else if strings.Contains(w.Direction, "母婴") {
-		footnotes = append(footnotes, "本文仅供科普，不能替代医生诊疗意见。")
+	if text := footnoteDisclaimer(w.Pack); text != "" {
+		footnotes = append(footnotes, text)
 	}
 	if level := risk.Grade(w.Direction, draft); level == "medium" || level == "high" {
 		footnotes = append(footnotes, "涉及健康或专业判断时，请自行核对来源，本文不能替代专业意见。")
@@ -1237,7 +1303,28 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if err != nil {
 		return Built{Trace: trace}, err
 	}
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Searched: searched}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, Searched: searched}, nil
+}
+
+func footnoteDisclaimer(pack store.VerticalPack) string {
+	text := strings.TrimSpace(pack.Disclaimer)
+	switch pack.Key {
+	case "family":
+		if text == "" || strings.Contains(text, "医生") {
+			return "本文是家庭生活分享，请结合自己的情况判断。"
+		}
+		return text
+	case "elv":
+		if text != "" {
+			return text
+		}
+		return "本文是工程科普，不能代替设计图纸和验收规范。"
+	default:
+		if strings.Contains(text, "医生") {
+			return ""
+		}
+		return text
+	}
 }
 
 func wechatClient(deps Deps, appID, secret, refresh, mode, base string) wechat.Client {
@@ -1563,6 +1650,9 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	}
 	if strings.Contains(str(result["delivery_note"]), "无参考来源") {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "无参考来源", "这篇稿已经在草稿箱，但没有可用的参考来源。发布前请自行核对事实。")
+	}
+	if strings.Contains(str(result["delivery_note"]), "没有标注引用") {
+		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "正文没有标注引用", "检索到了来源，但正文没有用 [n] 标出来，这些来源没有写入文末。")
 	}
 	if str(result["status"]) == "in_draft" {
 		body := str(result["delivery_note"])
@@ -2012,6 +2102,39 @@ func stampSourceTrace(completion *llm.Completion, sources []map[string]any, drop
 	}
 }
 
+func applyCitations(draft map[string]any) bool {
+	marks := map[int]bool{}
+	for _, mark := range citationMarks.FindAllString(bodyPlain(draft), -1) {
+		n := 0
+		for _, r := range mark {
+			if r >= '0' && r <= '9' {
+				n = n*10 + int(r-'0')
+			}
+		}
+		if n > 0 {
+			marks[n] = true
+		}
+	}
+	if len(marks) == 0 {
+		draft["sources"] = []any{}
+		return false
+	}
+	var kept []any
+	for i, raw := range asList(draft["sources"]) {
+		source, _ := raw.(map[string]any)
+		if source == nil || !marks[i+1] {
+			continue
+		}
+		source["cite"] = i + 1
+		kept = append(kept, source)
+	}
+	if kept == nil {
+		kept = []any{}
+	}
+	draft["sources"] = kept
+	return len(kept) > 0
+}
+
 func listedHaveURL(sources []any) bool {
 	for _, raw := range sources {
 		source, _ := raw.(map[string]any)
@@ -2053,25 +2176,21 @@ func factCheck(ctx context.Context, gateway *llm.Gateway, providers []llm.Provid
 	return checked, completion.PromptTokens + completion.CompletionTokens, trace
 }
 
-func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, target int) (map[string]any, int, []map[string]any) {
+func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, target int) (map[string]any, int, []map[string]any, bool) {
 	if target <= 0 {
-		return draft, 0, nil
+		return draft, 0, nil, false
 	}
 	low := target * 85 / 100
 	high := target * 130 / 100
 	goal := target * 105 / 100
 	var trace []map[string]any
 	tokens := 0
+	stillShort := false
 	if content.BodyRunes(draft) < low {
-		expandPayload := cloneMap(payload)
-		expandPayload["draft"] = draft
-		expandPayload["current_chars"] = content.BodyRunes(draft)
-		expandPayload["expand_goal"] = goal
-		expanded, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("扩写", expandPayload), llm.StageSchema("正文"), validateDraft)
-		trace = appendStage(trace, "expand", completion, err)
-		if err == nil {
-			draft = expanded
-			tokens += completion.PromptTokens + completion.CompletionTokens
+		draft, tokens, trace = expandBody(ctx, gateway, providers, payload, draft, goal, 0, tokens, trace)
+		if content.BodyRunes(draft) < low {
+			draft, tokens, trace = expandBody(ctx, gateway, providers, payload, draft, goal, low-content.BodyRunes(draft), tokens, trace)
+			stillShort = content.BodyRunes(draft) < low
 		}
 	}
 	if content.BodyRunes(draft) > high {
@@ -2088,7 +2207,23 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 			}
 		}
 	}
-	return draft, tokens, trace
+	return draft, tokens, trace, stillShort
+}
+
+func expandBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, goal, shortfall, tokens int, trace []map[string]any) (map[string]any, int, []map[string]any) {
+	expandPayload := cloneMap(payload)
+	expandPayload["draft"] = draft
+	expandPayload["current_chars"] = content.BodyRunes(draft)
+	expandPayload["expand_goal"] = goal
+	if shortfall > 0 {
+		expandPayload["shortfall"] = shortfall
+	}
+	expanded, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("扩写", expandPayload), llm.StageSchema("正文"), validateDraft)
+	trace = appendStage(trace, "expand", completion, err)
+	if err != nil {
+		return draft, tokens, trace
+	}
+	return expanded, tokens + completion.PromptTokens + completion.CompletionTokens, trace
 }
 
 func loadSourcePolicy(ctx context.Context, st *store.Store, q db.Q) (content.SourcePolicy, error) {
@@ -2329,15 +2464,51 @@ func validateDraft(data map[string]any) (map[string]any, error) {
 	}
 	alts := []any{}
 	for _, item := range asList(data["alt_titles"]) {
-		if len(alts) >= 5 {
+		if len(alts) >= 12 {
 			break
 		}
-		text := strings.TrimSpace(str(item))
-		if text != "" {
-			alts = append(alts, clip(text, 64))
+		switch row := item.(type) {
+		case string:
+			if text := strings.TrimSpace(row); text != "" {
+				alts = append(alts, clip(text, 64))
+			}
+		case map[string]any:
+			text := strings.TrimSpace(str(row["title"]))
+			if text == "" {
+				continue
+			}
+			alt := map[string]any{"title": clip(text, 64)}
+			if _, ok := row["hook"]; ok {
+				alt["hook"] = intOf(row["hook"])
+				alt["concrete"] = intOf(row["concrete"])
+				alt["consistent"] = intOf(row["consistent"])
+				alt["persona"] = intOf(row["persona"])
+			}
+			alts = append(alts, alt)
 		}
 	}
-	return map[string]any{"title": clip(title, 64), "alt_titles": alts, "summary": clip(str(data["summary"]), 120), "sections": normalized, "closing": clip(str(data["closing"]), 300), "sources": sources}, nil
+	out := map[string]any{"title": clip(title, 64), "alt_titles": alts, "summary": clip(str(data["summary"]), 120), "sections": normalized, "closing": clip(str(data["closing"]), 300), "sources": sources}
+	if quality, ok := data["_quality"].(map[string]any); ok {
+		out["_quality"] = quality
+	}
+	if quality, ok := data["quality"].(map[string]any); ok && out["_quality"] == nil {
+		out["_quality"] = quality
+	}
+	return out, nil
+}
+
+func validateReview(data map[string]any) (map[string]any, error) {
+	draft, err := validateDraft(data)
+	if err != nil {
+		return nil, err
+	}
+	if quality, ok := data["quality"].(map[string]any); ok {
+		draft["_quality"] = map[string]any{
+			"hook": intOf(quality["hook"]), "headings": quality["headings"] == true,
+			"closing": quality["closing"] == true, "motif": quality["motif"] == true,
+		}
+	}
+	return draft, nil
 }
 
 func validatePolish(data map[string]any) (map[string]any, error) {
@@ -2366,8 +2537,23 @@ func validateTitles(data map[string]any) (map[string]any, error) {
 		if len(titles) >= 12 {
 			break
 		}
-		if text := strings.TrimSpace(str(item)); text != "" {
-			titles = append(titles, text)
+		switch row := item.(type) {
+		case string:
+			if text := strings.TrimSpace(row); text != "" {
+				titles = append(titles, map[string]any{"title": text})
+			}
+		case map[string]any:
+			text := strings.TrimSpace(str(row["title"]))
+			if text == "" {
+				text = strings.TrimSpace(str(row["text"]))
+			}
+			if text == "" {
+				continue
+			}
+			titles = append(titles, map[string]any{
+				"title": text, "hook": intOf(row["hook"]), "concrete": intOf(row["concrete"]),
+				"consistent": intOf(row["consistent"]), "persona": intOf(row["persona"]), "scored": true,
+			})
 		}
 	}
 	if len(titles) == 0 {

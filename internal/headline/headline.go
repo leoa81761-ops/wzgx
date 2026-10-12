@@ -6,29 +6,63 @@ import (
 	"unicode/utf8"
 )
 
+// Scored is one title plus the model's own scores. Zero scores mean the model did not score it.
+type Scored struct {
+	Title      string
+	Hook       int
+	Concrete   int
+	Consistent int
+	Persona    int
+	HasScores  bool
+}
+
 // Rank orders titles the model already wrote. It filters red lines and clickbait.
 // Titles are returned unchanged: no padding, no clipping, no template fill.
 func Rank(candidates, redLines, recent []string, prefer string) (string, []string) {
+	items := make([]Scored, 0, len(candidates))
+	for _, title := range candidates {
+		items = append(items, Scored{Title: title})
+	}
+	best, alts := RankScored(items, "", "", redLines, recent, prefer)
+	out := make([]string, 0, len(alts))
+	for _, alt := range alts {
+		out = append(out, alt.Title)
+	}
+	return best.Title, out
+}
+
+// RankScored ranks titles using length, a number or concrete scene, and the model's scores.
+// A consistency score below 3, or a number that is not in the summary or body, drops the title.
+func RankScored(candidates []Scored, summary, body string, redLines, recent []string, prefer string) (Scored, []Scored) {
 	type item struct {
-		title string
+		row   Scored
 		score int
 	}
 	var ranked []item
 	seen := map[string]bool{}
-	for _, title := range candidates {
-		title = strings.TrimSpace(title)
-		if title == "" || seen[title] {
+	for _, row := range candidates {
+		row.Title = strings.TrimSpace(row.Title)
+		if row.Title == "" || seen[row.Title] {
 			continue
 		}
-		seen[title] = true
-		score := Score(title, redLines, recent, prefer)
+		seen[row.Title] = true
+		score := Score(row.Title, redLines, recent, prefer)
 		if score <= 0 {
 			continue
 		}
-		ranked = append(ranked, item{title: title, score: score})
+		if row.HasScores {
+			if row.Consistent < 3 {
+				continue
+			}
+			score += clampScore(row.Hook) + clampScore(row.Concrete) + clampScore(row.Consistent) + clampScore(row.Persona)
+		}
+		if digitMissing(row.Title, summary, body) {
+			continue
+		}
+		ranked = append(ranked, item{row: row, score: score})
 	}
 	if len(ranked) == 0 {
-		return "", nil
+		return Scored{}, nil
 	}
 	best := 0
 	for i := 1; i < len(ranked); i++ {
@@ -36,18 +70,19 @@ func Rank(candidates, redLines, recent []string, prefer string) (string, []strin
 			best = i
 		}
 	}
-	chosen := ranked[best].title
-	var alts []string
+	chosen := ranked[best].row
+	var alts []Scored
 	for _, row := range ranked {
-		if row.title == chosen {
+		if row.row.Title == chosen.Title {
 			continue
 		}
-		alts = append(alts, row.title)
+		alts = append(alts, row.row)
 	}
 	return chosen, alts
 }
 
 // Score ranks one title. Length outside 18–28 runes is a mild penalty.
+// A digit or other concrete number is preferred. Keyword and emotion lists are not rewarded.
 // Clickbait, red lines and duplicates score zero and are dropped.
 func Score(title string, redLines, recent []string, prefer string) int {
 	title = strings.TrimSpace(title)
@@ -67,26 +102,56 @@ func Score(title string, redLines, recent []string, prefer string) int {
 	if hasDigit(title) {
 		score += 4
 	}
-	if containsAny(title, "为什么", "怎么", "哪", "吗", "？", "?") {
-		score += 6
-	}
-	if containsAny(title, "可惜", "值得", "安心", "麻烦", "省", "稳", "容易") {
+	if strings.TrimSpace(prefer) == "number" && hasDigit(title) {
 		score += 4
-	}
-	switch strings.TrimSpace(prefer) {
-	case "question":
-		if containsAny(title, "为什么", "怎么", "哪", "吗", "？", "?") {
-			score += 4
-		}
-	case "number":
-		if hasDigit(title) {
-			score += 4
-		}
 	}
 	if score < 1 {
 		return 1
 	}
 	return score
+}
+
+func clampScore(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > 5 {
+		return 5
+	}
+	return n
+}
+
+func digitMissing(title, summary, body string) bool {
+	if strings.TrimSpace(summary) == "" && strings.TrimSpace(body) == "" {
+		return false
+	}
+	hay := summary + "\n" + body
+	for _, token := range digitTokens(title) {
+		if !strings.Contains(hay, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func digitTokens(title string) []string {
+	var out []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range title {
+		if unicode.IsDigit(r) {
+			cur.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
 }
 
 func banned(title string, redLines []string) bool {
@@ -104,15 +169,6 @@ func banned(title string, redLines []string) bool {
 func hasDigit(title string) bool {
 	for _, r := range title {
 		if unicode.IsDigit(r) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsAny(title string, words ...string) bool {
-	for _, word := range words {
-		if strings.Contains(title, word) {
 			return true
 		}
 	}

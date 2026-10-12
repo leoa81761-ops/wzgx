@@ -99,7 +99,16 @@ func TestMockRewriteKeepsParagraphsAndLeavesTitlesWhole(t *testing.T) {
 	alts, _ := out["alt_titles"].([]any)
 	found := false
 	for _, alt := range alts {
-		title, _ := alt.(string)
+		title := ""
+		switch row := alt.(type) {
+		case string:
+			title = row
+		case map[string]any:
+			title, _ = row["title"].(string)
+			if row["hook"] == nil || row["consistent"] == nil {
+				t.Fatal("scores missing", row)
+			}
+		}
 		if title == whole {
 			found = true
 		}

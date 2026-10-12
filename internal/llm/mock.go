@@ -13,6 +13,37 @@ const lengthRule = "正文字数统计各小节的小标题、段落、列表、
 
 const sourcedFacts = "不得编造来源里没有的阈值、电压、标准编号或统计数字。没有来源支撑时写成定性说明，不要写具体数字。"
 
+const citationRule = "用到 research_sources 里的事实时，在句末用 [1]、[2] 这种序号标出对应来源，序号从 1 开始，对应 sources 的顺序。没有用到的来源不要写进 sources。没有来源时不要编造 [n]。"
+
+const anecdoteRule = "事例只能来自已经给出的来源，或者明确写成假设，例如「比如……假设」。不要编造读者的生活，不要编造别人的原话。"
+
+func voiceRule(payload map[string]any) string {
+	if !technicalVoice(payload) {
+		return ""
+	}
+	return "技术号可以用第一人称写现场里反复见到的规律，例如「我在现场见过这类情况」。这是经验模式，不是某一天编出来的事件，也不要写成某个有名有姓的人的原话。"
+}
+
+func technicalVoice(payload map[string]any) bool {
+	if asString(payload["vertical_key"]) == "elv" {
+		return true
+	}
+	text := asString(payload["vertical"]) + asString(payload["direction"]) + asString(payload["tone"])
+	return strings.Contains(text, "弱电") || strings.Contains(text, "工程") || strings.Contains(text, "智能化") || strings.Contains(text, "现场")
+}
+
+func elvContext(payload map[string]any) bool {
+	if asString(payload["vertical_key"]) == "elv" {
+		return true
+	}
+	blob := asString(payload["vertical"]) + asString(payload["direction"])
+	if strings.Contains(blob, "弱电") || strings.Contains(blob, "工程") || strings.Contains(blob, "智能化") {
+		return true
+	}
+	raw, _ := json.Marshal(payload["draft"])
+	return strings.Contains(string(raw), "弱电")
+}
+
 func StageMessages(stageLabel string, payload map[string]any) []map[string]string {
 	schema := StageSchema(stageLabel)
 	var system string
@@ -36,8 +67,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写。" +
 			"目标大约是 word_target 的 105%（输入里的 expand_goal）。写到 100% 到 110% 就停，不要为了凑到 130% 而注水。" +
+			"如果输入里有 shortfall，这是离目标 85% 还差的字数，请优先补上这段篇幅。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
-			sourcedFacts +
+			sourcedFacts + anecdoteRule +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
 		schema = StageSchema("正文")
@@ -47,13 +79,17 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "标题":
 		system = "你是公众号标题编辑。请用输入里的语气，写 10 到 12 个彼此不同的标题。" +
 			"每个标题都是完整的一句，不要为了凑字数截断，也不要在后面补套话。" +
-			"不要用「震惊」「不转不是」「稳赚不赔」。" +
+			"不要用「震惊」「不转不是」「稳赚不赔」。不要靠关键词堆砌。" +
+			"优先写具体场景或数字。每个标题都要自评分：hook、concrete、consistent、persona，都是 1 到 5 的整数。" +
+			"consistent 表示标题和 summary、正文是不是同一件事，对不上就低于 3。" +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "结构润色":
 		system = "你是公众号编辑。只改写输入里标记为需要改的部分：rewrite_hook、rewrite_headings、rewrite_closing 为 true 的才写。" +
 			"没有要求改的部分返回空字符串或空数组。" +
 			"不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" +
-			"开头要能钩住读者，小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
+			"开头如果要改，只写不超过 40 个字的一句，用来替换原来的第一段，不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
+			"小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
+			anecdoteRule + voiceRule(payload) +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "事实核对":
 		schema = StageSchema("正文")
@@ -61,9 +97,11 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"与来源或领域常识冲突的说法要直接改对。来源没有支撑、又不是稳定常识的数字、电压阈值和标准编号，删掉或改成不带具体数字的说法。" +
 			"不要编造网址，也不要编造标准编号（包括 GB、GB/T）。research_sources 里没有的链接和标准号必须删掉，不能补一条看起来像真的网址或标准号。" +
 			sourcedFacts +
-			"行业术语不要套用相邻概念。建筑智能化里的「弱电」指电子信息系统，包括通信、安防、楼宇自控、火灾报警和音视频，工作电压通常在安全特低电压（常见 36V 及以下）和信号电平，不是供配电里交流 1000V 或直流 1500V 以下的低压电力。不要把 1000V 写成弱电的定义。" +
-			"保留原有结构、标题和 sources，不要新造网址。核对时不要把正文撑过 word_target 的 130%。" + lengthRule +
-			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+			"保留原有结构、标题和 sources，不要新造网址。核对时不要把正文撑过 word_target 的 130%。" + lengthRule
+		if elvContext(payload) {
+			system += "行业术语不要套用相邻概念。建筑智能化里的「弱电」指电子信息系统，包括通信、安防、楼宇自控、火灾报警和音视频，工作电压通常在安全特低电压（常见 36V 及以下）和信号电平，不是供配电里交流 1000V 或直流 1500V 以下的低压电力。不要把 1000V 写成弱电的定义。"
+		}
+		system += "只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	default:
 		system = "你是公众号写作助手。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要输出解释或 HTML。" +
 			"字段必须和下面的 JSON Schema 完全一致，不要增加字段，字符串字段没有内容时用空字符串，数组没有内容时用空数组。" +
@@ -72,7 +110,11 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "正文" || stageLabel == "审核" {
-			system += lengthRule
+			system += lengthRule + citationRule + anecdoteRule + voiceRule(payload)
+		}
+		if stageLabel == "审核" {
+			system += "如果同一句式、意象或口头禅反复出现，在返回的正文里改写掉，并把 quality.motif 标为 true；没有反复就标 false。" +
+				"quality.hook 是开头 1 到 5 分，4 分及以上表示开头已经够具体，不必再改。quality.headings 和 quality.closing 表示小标题和结尾是否已经够用。"
 		}
 		system += "\nJSON Schema：\n" + schemaText(schema)
 	}
@@ -197,7 +239,7 @@ func mockTitles(payload map[string]any) map[string]any {
 	}
 	out := make([]any, len(lines))
 	for i, line := range lines {
-		out[i] = line
+		out[i] = map[string]any{"title": line, "hook": 4, "concrete": 4, "consistent": 5, "persona": 4}
 	}
 	return map[string]any{"titles": out}
 }
