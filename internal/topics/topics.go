@@ -1,8 +1,10 @@
 package topics
 
 import (
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
@@ -311,6 +313,103 @@ func splitColumns(text string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+// Diverge moves off a subtopic or angle that already appears in recent account titles.
+func Diverge(choice Choice, subs, angles, titles []string) Choice {
+	if next := nextUnused(subs, choice.Subtopic, titles); next != "" {
+		choice.Subtopic = next
+	}
+	if next := nextUnused(angles, choice.Angle, titles); next != "" {
+		choice.Angle = next
+	}
+	choice.TopicTag = choice.Subtopic + "|" + choice.Column + "|" + choice.Angle
+	return choice
+}
+
+// AngleOptions lists the current angle first, then the catalog angles in a stable order.
+func AngleOptions(current string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" || seen[text] {
+			return
+		}
+		seen[text] = true
+		out = append(out, text)
+	}
+	add(current)
+	var rest []string
+	for _, list := range catalog.Angles {
+		rest = append(rest, list...)
+	}
+	sort.Strings(rest)
+	for _, item := range rest {
+		add(item)
+	}
+	return out
+}
+
+func nextUnused(options []string, current string, titles []string) string {
+	if len(options) == 0 {
+		if usedInTitles(current, titles) {
+			return current
+		}
+		return current
+	}
+	start := 0
+	for i, item := range options {
+		if item == current {
+			start = i
+			break
+		}
+	}
+	for offset := 0; offset < len(options); offset++ {
+		item := options[(start+offset)%len(options)]
+		if !usedInTitles(item, titles) {
+			return item
+		}
+	}
+	return options[start]
+}
+
+func usedInTitles(text string, titles []string) bool {
+	text = strings.TrimSpace(text)
+	if utf8.RuneCountInString(text) < 2 {
+		return false
+	}
+	for _, title := range titles {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		if strings.Contains(title, text) {
+			return true
+		}
+		if utf8.RuneCountInString(text) >= 4 && shareRunes(text, title, 4) {
+			return true
+		}
+	}
+	return false
+}
+
+func shareRunes(a, b string, n int) bool {
+	ar := []rune(a)
+	br := []rune(b)
+	if len(ar) < n || len(br) < n {
+		return false
+	}
+	seen := map[string]bool{}
+	for i := 0; i+n <= len(ar); i++ {
+		seen[string(ar[i:i+n])] = true
+	}
+	for i := 0; i+n <= len(br); i++ {
+		if seen[string(br[i:i+n])] {
+			return true
+		}
+	}
+	return false
 }
 
 func choice(sub, column, angle string) Choice {

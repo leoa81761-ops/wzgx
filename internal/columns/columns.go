@@ -203,7 +203,8 @@ func NormalizeStructure(raw string) string {
 	}
 }
 
-// Pick chooses the column for one run. Weekday mode uses the plan map, then weight rotation.
+// Pick chooses the column for one run. Weekday mode uses the plan map.
+// Otherwise it picks the least-recently-used active column. Names that are not active are ignored.
 func Pick(active []Column, mode string, weekday int, days map[int]int64, recent []string) (Column, bool) {
 	var pool []Column
 	for _, col := range active {
@@ -227,31 +228,35 @@ func Pick(active []Column, mode string, weekday int, days map[int]int64, recent 
 			}
 		}
 	}
-	var bag []Column
+	names := map[string]bool{}
 	for _, col := range pool {
-		weight := col.Weight
-		if weight < 1 {
-			weight = 1
+		names[col.Name] = true
+	}
+	lastAt := map[string]int{}
+	for i, name := range recent {
+		name = strings.TrimSpace(name)
+		if name == "" || !names[name] {
+			continue
 		}
-		if weight > 3 {
-			weight = 3
-		}
-		for i := 0; i < weight; i++ {
-			bag = append(bag, col)
+		lastAt[name] = i + 1
+	}
+	best := 0
+	bestAt := lastAt[pool[0].Name]
+	for i := 1; i < len(pool); i++ {
+		at := lastAt[pool[i].Name]
+		if at < bestAt || (at == bestAt && columnBefore(pool[i], pool[best])) {
+			best = i
+			bestAt = at
 		}
 	}
-	last := ""
-	if len(recent) > 0 {
-		last = recent[len(recent)-1]
+	return pool[best], true
+}
+
+func columnBefore(a, b Column) bool {
+	if a.SortOrder != b.SortOrder {
+		return a.SortOrder < b.SortOrder
 	}
-	start := len(recent)
-	for offset := 0; offset < len(bag); offset++ {
-		col := bag[(start+offset)%len(bag)]
-		if col.Name != last || len(pool) == 1 {
-			return col, true
-		}
-	}
-	return bag[0], true
+	return a.ID < b.ID
 }
 
 // ParseDays reads a weekday-to-column-id map. Keys are ISO weekdays 1 to 7.

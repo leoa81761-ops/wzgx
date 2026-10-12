@@ -47,6 +47,9 @@ func StructuredResearchSources(raw []byte) []map[string]any {
 		if item == nil {
 			continue
 		}
+		if snippet := strings.TrimSpace(row["snippet"]); snippet != "" {
+			item["snippet"] = clipRunes(snippet, 180)
+		}
 		out = append(out, item)
 	}
 	return out
@@ -161,7 +164,8 @@ func appendCitationItem(item any, out *[]map[string]string) {
 		if rawURL == "" {
 			return
 		}
-		*out = append(*out, map[string]string{"url": rawURL, "title": title})
+		snippet := firstNonEmpty(v, "snippet", "summary")
+		*out = append(*out, map[string]string{"url": rawURL, "title": title, "snippet": snippet})
 	}
 }
 

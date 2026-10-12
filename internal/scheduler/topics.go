@@ -174,7 +174,15 @@ func (r *Runner) SuggestTopic(ctx context.Context, q db.Q, plan *model.WritingPl
 	}
 	choice := topics.PickTree(pipeline.TopicTree(pack, plan.Direction, extra.Keywords, extra.PersonaColumns, accountColumns), plan.Direction, tier, history, now, veto...)
 	if len(active) > 0 {
-		choice, _, _ = pipeline.ApplyColumnChoice(choice, now, active, extra.ColumnRotation, columns.ParseDays(extra.ColumnWeekdays), plan.Direction, extra.Keywords, history)
+		uses, err := r.Deps.Store.RecentColumnUses(ctx, q, plan.WxAccountID)
+		if err != nil {
+			return topics.Choice{}, "", err
+		}
+		titles, err := r.Deps.Store.AccountTitles(ctx, q, plan.WxAccountID, 20)
+		if err != nil {
+			return topics.Choice{}, "", err
+		}
+		choice, _, _ = pipeline.ApplyColumnChoice(choice, now, active, extra.ColumnRotation, columns.ParseDays(extra.ColumnWeekdays), plan.Direction, extra.Keywords, history, uses, titles)
 	}
 	title := choice.Subtopic + " / " + choice.Column + " / " + choice.Angle
 	return choice, title, nil

@@ -66,7 +66,7 @@ func Open(cfg config.Settings) (*App, error) {
 	gateway.CacheTTL = 24 * time.Hour
 	gateway.ResearchTimeout = cfg.ResearchTimeout
 	gateway.ResearchBackupModel = cfg.ResearchBackupModel
-	gateway.BackupSearchURL = cfg.ResearchBackupSearch
+	syncSearch(gateway, cfg)
 	app := &App{
 		Cfg: cfg, DB: database, Store: st, HTTP: client, Tokens: wechat.NewTokenCache(),
 		Cache: runtime.New(st, cfg), Gateway: gateway,
@@ -83,8 +83,20 @@ func Open(cfg config.Settings) (*App, error) {
 	return app, nil
 }
 
+func syncSearch(gateway *llm.Gateway, cfg config.Settings) {
+	if gateway == nil {
+		return
+	}
+	gateway.BackupSearchURL = cfg.ResearchBackupSearch
+	gateway.BackupSearchAlt = cfg.ResearchBackupSearchAlt
+	gateway.BackupSearchBaidu = cfg.ResearchBackupSearchBaidu
+	gateway.SearchAPIURL = cfg.ResearchSearchAPI
+	gateway.SearchAPIKey = cfg.ResearchSearchKey
+}
+
 func (a *App) deps() pipeline.Deps {
 	cfg := a.effective(context.Background())
+	syncSearch(a.Gateway, cfg)
 	return pipeline.Deps{
 		Store: a.Store, Settings: cfg, Gateway: a.Gateway, HTTP: a.HTTP, Tokens: a.Tokens, Cache: a.Cache,
 		Notifier: notify.Fanout{Senders: []notify.Sender{

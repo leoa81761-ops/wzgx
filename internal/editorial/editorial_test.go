@@ -294,6 +294,59 @@ func TestForeignTitleSceneIsRemoved(t *testing.T) {
 	}
 }
 
+func TestDuplicateTablesAreDropped(t *testing.T) {
+	table := map[string]any{"headers": []any{"项目", "说明"}, "rows": []any{[]any{"回路", "先编号"}}}
+	same := map[string]any{"headers": []any{"项目", "说明"}, "rows": []any{[]any{"回路", "先编号"}}}
+	draft := map[string]any{"sections": []any{
+		map[string]any{"paragraphs": []any{"第一条。"}, "table": table},
+		map[string]any{"paragraphs": []any{"第二条。"}, "table": same},
+	}}
+	out := DedupeTables(draft)
+	sections := sectionsOf(out)
+	if _, ok := sections[0]["table"]; !ok {
+		t.Fatal("first table dropped")
+	}
+	if _, ok := sections[1]["table"]; ok {
+		t.Fatal("duplicate table kept")
+	}
+}
+
+func TestMetaLeakIsStripped(t *testing.T) {
+	draft := map[string]any{
+		"title":    "按原稿再改一版",
+		"summary":  "上一版写得太满。",
+		"sections": []any{map[string]any{"paragraphs": []any{"这是改写时留下的话。现场先核对回路。"}}},
+	}
+	out := StripMeta(draft)
+	raw := dump(out)
+	for _, word := range []string{"原稿", "改写", "上一版"} {
+		if strings.Contains(raw, word) {
+			t.Fatal(raw)
+		}
+	}
+	if !strings.Contains(raw, "现场先核对回路") {
+		t.Fatal(raw)
+	}
+}
+
+func TestUnsupportedCitationIsRewritten(t *testing.T) {
+	draft := map[string]any{
+		"sources": []any{map[string]any{"title": "综合布线验收标准", "snippet": "回路编号要逐点核对", "url": "https://www.mohurd.gov.cn/a"}},
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"爷爷奶奶捧着温茶转圈，下午继续喝茶养生。[1]",
+			"综合布线验收时要逐点核对回路编号。[1]",
+		}}},
+	}
+	out := SupportCitations(draft)
+	paras := paragraphsOf(out)
+	if strings.Contains(paras[0], "[1]") || !strings.Contains(paras[0], "爷爷奶奶") {
+		t.Fatal(paras)
+	}
+	if !strings.Contains(paras[1], "[1]") {
+		t.Fatal(paras)
+	}
+}
+
 func dump(draft map[string]any) string {
 	buf, err := json.Marshal(draft)
 	if err != nil {

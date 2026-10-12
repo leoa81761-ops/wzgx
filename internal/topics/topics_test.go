@@ -37,6 +37,18 @@ func TestAccountTreeFollowsTheAccount(t *testing.T) {
 	}
 }
 
+func TestDivergeSkipsATitleAlreadyUsed(t *testing.T) {
+	choice := Choice{Subtopic: "环形布线", Column: "方案拆解", Angle: "对比两种常见做法"}
+	titles := []string{"环形布线：对比两种常见做法"}
+	got := Diverge(choice, []string{"环形布线", "星形拓扑", "验收记录"}, AngleOptions(choice.Angle), titles)
+	if got.Subtopic == "环形布线" || strings.Contains(got.Subtopic, "环形") {
+		t.Fatal(got)
+	}
+	if got.Angle == choice.Angle {
+		t.Fatal(got)
+	}
+}
+
 func TestVetoSkipsTagAndCalendarAdvances(t *testing.T) {
 	now := time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC)
 	first := Pick("职场成长", "free", nil, now)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/leoa81761-ops/wzgx/internal/config"
 	"github.com/leoa81761-ops/wzgx/internal/integrate"
+	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/notify"
 	"github.com/leoa81761-ops/wzgx/internal/pay"
@@ -198,6 +199,15 @@ func (a *App) probeIntegration(ctx context.Context, section string, cfg config.S
 			return errString("模板消息还没配齐")
 		}
 		return fetchClientToken(ctx, a.HTTP, cfg.TplAPIBase, cfg.TplAppID, cfg.TplSecret)
+	case "search":
+		rows, err := llm.SearchChain(ctx, a.HTTP, searchTargets(cfg), "综合布线验收")
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return errString("检索没有返回结果")
+		}
+		return nil
 	case "notify":
 		if strings.TrimSpace(cfg.NotifyWebhookURL) == "" {
 			return errString("失败转发还没配置")
@@ -347,6 +357,19 @@ func (a *App) integrationView(ctx context.Context, docs map[string]integrate.Doc
 			"verify": verify, "sms_ready": smsReady, "email_ready": emailReady, "reason": reason, "note": note,
 		},
 	}
+}
+
+func searchTargets(cfg config.Settings) []llm.SearchTarget {
+	var out []llm.SearchTarget
+	if strings.TrimSpace(cfg.ResearchSearchAPI) != "" && strings.TrimSpace(cfg.ResearchSearchKey) != "" {
+		out = append(out, llm.SearchTarget{URL: cfg.ResearchSearchAPI, APIKey: cfg.ResearchSearchKey})
+	}
+	for _, raw := range []string{cfg.ResearchBackupSearch, cfg.ResearchBackupSearchAlt, cfg.ResearchBackupSearchBaidu} {
+		if strings.TrimSpace(raw) != "" {
+			out = append(out, llm.SearchTarget{URL: raw})
+		}
+	}
+	return out
 }
 
 func knownSection(key string) bool {

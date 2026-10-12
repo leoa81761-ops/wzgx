@@ -95,6 +95,29 @@ func TestColumnStructure(t *testing.T) {
 	if !StructureOK("qa", qaParas) {
 		t.Fatal(qaParas)
 	}
+	repeat := Fixture{Title: "快报", Paragraphs: []string{"近日，第一条。[1]", "近日，第二条。[1]"}, Sources: 1, WordTarget: 10, Structure: "news"}
+	if !has(Check(repeat), "structure") {
+		t.Fatal(Check(repeat))
+	}
+	repaired := RepairDraft("news", map[string]any{
+		"sources":  []any{map[string]any{"url": "https://www.gov.cn/a"}},
+		"sections": []any{map[string]any{"paragraphs": []any{"近日，第一条。", "近日，第二条。"}}},
+	})
+	var varied []string
+	for _, item := range repaired["sections"].([]any)[0].(map[string]any)["paragraphs"].([]any) {
+		varied = append(varied, item.(string))
+	}
+	if !StructureOK("news", varied) {
+		t.Fatal(varied)
+	}
+	stray := Fixture{Title: "问答", Paragraphs: []string{"验收要看什么？", "答：这样做对吗？"}, Sources: 1, WordTarget: 10, Structure: "qa"}
+	if !has(Check(stray), "structure") {
+		t.Fatal(Check(stray))
+	}
+	orphan := Fixture{Title: "问答", Paragraphs: []string{"答：直接给结论。"}, Sources: 1, WordTarget: 8, Structure: "qa"}
+	if !has(Check(orphan), "structure") {
+		t.Fatal(Check(orphan))
+	}
 }
 
 func has(list []string, want string) bool {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
@@ -62,6 +63,60 @@ func (s *Store) ListArticlesByUser(ctx context.Context, userID int64, limit int)
 		out = append(out, *a)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) AccountTitles(ctx context.Context, q db.Q, accountID int64, limit int) ([]string, error) {
+	if q == nil {
+		q = s.DB
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	rows, err := q.Query(ctx, `SELECT title FROM article WHERE wx_account_id = ? AND title != '' AND title != '正在生成' ORDER BY id DESC LIMIT ?`, accountID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var titles []string
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			return nil, err
+		}
+		if title != "" {
+			titles = append(titles, title)
+		}
+	}
+	return titles, rows.Err()
+}
+
+func (s *Store) RecentColumnUses(ctx context.Context, q db.Q, accountID int64) ([]string, error) {
+	if q == nil {
+		q = s.DB
+	}
+	var since sql.NullString
+	if err := q.QueryRow(ctx, `SELECT MIN(created_at) FROM account_column WHERE wx_account_id = ?`, accountID).Scan(&since); err != nil {
+		return nil, err
+	}
+	if !since.Valid || strings.TrimSpace(since.String) == "" {
+		return []string{}, nil
+	}
+	rows, err := q.Query(ctx, `SELECT column_type FROM article WHERE wx_account_id = ? AND column_type != '' AND created_at >= ? AND status IN ('failed', 'held', 'in_draft', 'exported') ORDER BY id ASC`, accountID, strings.TrimSpace(since.String))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(name) != "" {
+			names = append(names, name)
+		}
+	}
+	return names, rows.Err()
 }
 
 func (s *Store) RecentTitles(ctx context.Context, q db.Q, planID int64, limit int) ([]string, error) {

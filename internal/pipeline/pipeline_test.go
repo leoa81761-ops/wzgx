@@ -595,7 +595,7 @@ func TestResearchReadsChatCitations(t *testing.T) {
 				_, _ = w.Write([]byte("upstream"))
 				return
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到公开资料，正文不写网址。"}}],"citations":["https://www.gov.cn/zhengce/2024/elv",{"url":"https://openstd.samr.gov.cn/std/1","title":"综合布线标准"}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到公开资料，正文不写网址。"}}],"citations":[{"url":"https://www.gov.cn/zhengce/2024/elv","title":"弱电入门公开说明","snippet":"弱电入门要先看公开说明"},{"url":"https://openstd.samr.gov.cn/std/1","title":"弱电入门综合布线标准","snippet":"弱电入门的综合布线标准"}]}`))
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -706,7 +706,7 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 }
 
 func TestFactCheckExpansionIsTrimmed(t *testing.T) {
-	inBand := strings.Repeat("合适的正文。", 120)
+	inBand := strings.Repeat("合适的正文。", 130)
 	cell := strings.Repeat("表", 40)
 	var rows []any
 	for i := 0; i < 8; i++ {
@@ -828,7 +828,7 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 
 func TestDraftSkipsRewriteWhenInBand(t *testing.T) {
 	var expandCalls, condenseCalls int
-	text := strings.Repeat("合适的正文。", 120)
+	text := strings.Repeat("合适的正文。", 130)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
@@ -1547,10 +1547,14 @@ func writeCited(w http.ResponseWriter, content string, citations ...string) {
 	payload := map[string]any{
 		"choices": []any{map[string]any{"message": map[string]any{"content": content}}},
 	}
+	title := "职场成长说明"
+	if strings.Contains(content, "弱电") {
+		title = "弱电智能化说明"
+	}
 	if len(citations) > 0 {
 		list := make([]any, len(citations))
 		for i, item := range citations {
-			list[i] = item
+			list[i] = map[string]any{"url": item, "title": title, "snippet": title}
 		}
 		payload["citations"] = list
 	}
@@ -1712,11 +1716,13 @@ func traceStage(rows []map[string]any, stage string) map[string]any {
 }
 
 func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
-	_, kept, _, _ := takeSources("笔记", []map[string]any{
+	_, kept, dropped, _ := takeSources("笔记", []map[string]any{
 		{"title": "综合布线验收", "name": "住建部", "url": "https://www.mohurd.gov.cn/a"},
 		{"title": "PPT模板下载", "name": "模板", "url": "https://www.1ppt.com/moban/1"},
 		{"title": "奶奶养生茶", "name": "茶", "url": "https://example.com/tea"},
-		{"title": "", "name": "", "url": "https://www.gov.cn/zhengce/1"},
+		{"title": "", "snippet": "弱电验收的公开说明", "url": "https://www.gov.cn/zhengce/1"},
+		{"title": "奶奶养生茶", "url": "https://www.gov.cn/tea"},
+		{"title": "", "url": "https://www.gov.cn/zhengce/untitled"},
 	}, content.DefaultSourcePolicy(), "弱电 验收")
 	if len(kept) != 2 {
 		t.Fatal(kept)
@@ -1725,8 +1731,8 @@ func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
 	for _, row := range kept {
 		seen[str(row["url"])] = true
 	}
-	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] {
-		t.Fatal(kept)
+	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] || seen["https://www.gov.cn/tea"] || seen["https://www.gov.cn/zhengce/untitled"] {
+		t.Fatal(kept, dropped)
 	}
 }
 
