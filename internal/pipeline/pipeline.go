@@ -15,6 +15,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/notify"
+	"github.com/leoa81761-ops/wzgx/internal/ops"
 	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/render"
@@ -78,6 +79,7 @@ type Built struct {
 	Tokens         int
 	Trace          []map[string]any
 	MissingSources bool
+	Searched       bool
 }
 
 type pushed struct {
@@ -88,6 +90,7 @@ type pushed struct {
 	DeliveryNote string
 	CoverTrace   map[string]any
 	RiskLevel    string
+	ImageCalls   int
 }
 
 type tracedError struct {
@@ -315,7 +318,26 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	built, err := Build(ctx, deps.Gateway, w.input(), sensitive, providers, policy, now)
+	costPolicy, err := ops.LoadPolicy(func(key string) (string, error) {
+		return deps.Store.GetSetting(ctx, nil, key)
+	})
+	if err != nil {
+		return nil, err
+	}
+	month := schedule.ShanghaiNow(now).Format("2006-01")
+	spent, err := deps.Store.SumMonthCost(ctx, nil, w.UserID, month)
+	if err != nil {
+		return nil, err
+	}
+	costAction := ops.Decide(spent, costPolicy)
+	in := w.input()
+	in.AILabel = costPolicy.AILabel
+	if costAction != "" {
+		providers["research"] = nil
+		image = nil
+		in.CostNote = "本月生成成本已达上限，这篇没有使用联网检索和 AI 配图。"
+	}
+	built, err := Build(ctx, deps.Gateway, in, sensitive, providers, policy, now)
 	if err != nil {
 		return nil, &tracedError{err: err, trace: built.Trace}
 	}
@@ -343,7 +365,21 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if built.MissingSources {
 		note = joinNote(note, "无参考来源")
 	}
-	return map[string]any{"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace, "status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID, "delivery_note": note, "risk_level": level}, nil
+	if in.CostNote != "" {
+		note = joinNote(note, "本月成本已达上限")
+	}
+	searchCents := 0
+	if built.Searched {
+		searchCents = costPolicy.SearchCents
+	}
+	return map[string]any{
+		"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace,
+		"status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID,
+		"delivery_note": note, "risk_level": level, "cost_action": costAction, "month_key": month,
+		"chat_cents":   ops.ChatCents(built.Tokens, costPolicy.ChatCentsPer1K),
+		"search_cents": searchCents, "image_cents": push.ImageCalls * costPolicy.ImageCents,
+		"image_calls": push.ImageCalls,
+	}, nil
 }
 
 // Input 是一次写作需要的业务参数，连通测试和正式任务共用。
@@ -361,6 +397,8 @@ type Input struct {
 	Pack           store.VerticalPack
 	StyleName      string
 	StyleHint      string
+	AILabel        bool
+	CostNote       string
 }
 
 func (w *work) input() Input {
@@ -422,7 +460,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		topicTitle = clip(topic.Subtopic+"："+topic.Angle, 64)
 	}
 	var researchSources []any
+	searched := false
 	if w.Tier != "free" && len(providers["research"]) > 0 {
+		searched = true
 		researchPayload := cloneMap(base)
 		researchPayload["topic_title"] = topicTitle
 		blocked := policy.Block
@@ -538,12 +578,18 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if level := risk.Grade(w.Direction, draft); level == "medium" || level == "high" {
 		footnotes = append(footnotes, "涉及健康或专业判断时，请自行核对来源，本文不能替代专业意见。")
 	}
+	if w.CostNote != "" {
+		footnotes = append(footnotes, w.CostNote)
+	}
 	draft["footnotes"] = footnotes
+	if w.AILabel {
+		draft["ai_label"] = true
+	}
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
 	if err != nil {
 		return Built{Trace: trace}, err
 	}
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Searched: searched}, nil
 }
 
 func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
@@ -567,15 +613,20 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	outHTML := html
 	aiCover, inlineN := catalog.ImageAllowance(w.Tier)
 	png, filename, coverTrace := chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey, aiCover)
+	imageCalls := 0
+	if coverTrace["source"] == "ai" {
+		imageCalls++
+	}
 	thumb, err := client.UploadThumb(ctx, png, filename)
 	if err != nil {
 		if authFailed(err) {
 			return pushed{}, err
 		}
-		return pushed{Status: "exported", HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level}, nil
+		return pushed{Status: "exported", HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level, ImageCalls: imageCalls}, nil
 	}
 	if inlineN > 0 && image != nil {
 		if n := uploadInlineImages(ctx, deps, client, image, article.Draft, inlineN, w.Pack.ImageRules, w.Direction); n > 0 {
+			imageCalls += n
 			if rendered, err := render.RenderWithinLimit(article.Draft, w.TemplateKey, false); err == nil {
 				html = rendered
 				outHTML = rendered
@@ -595,9 +646,9 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		if authFailed(err) {
 			return pushed{}, err
 		}
-		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level}, nil
+		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level, ImageCalls: imageCalls}, nil
 	}
-	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, CoverTrace: coverTrace, RiskLevel: level}, nil
+	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, CoverTrace: coverTrace, RiskLevel: level, ImageCalls: imageCalls}, nil
 }
 
 // placeDraft 先尝试更新仍在草稿箱里的稿件。media_id 或封面失效时重新上传封面，再新建一篇草稿。
@@ -650,6 +701,8 @@ func placeDraft(ctx context.Context, client wechat.Client, existing string, draf
 
 func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[string]any, now time.Time) {
 	var publishNow int64
+	var costPaused bool
+	var noticeUser int64
 	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		task, err := deps.Store.GetTask(ctx, tx, taskID)
 		if err != nil || task == nil || task.ArticleID == nil {
@@ -749,6 +802,15 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 			plan.Status = "active"
 			plan.PauseReason = ""
 		}
+		if str(result["cost_action"]) == ops.ActionPause && plan.Status == "active" {
+			plan.Status = "paused"
+			plan.PauseReason = "本月成本已达上限"
+			costPaused = true
+			noticeUser = task.UserID
+		}
+		if err := recordCost(ctx, deps, tx, task.UserID, task.ID, str(result["month_key"]), intOf(result["tokens"]), intOf(result["chat_cents"]), intOf(result["search_cents"]), intOf(result["image_calls"]), intOf(result["image_cents"]), now); err != nil {
+			return err
+		}
 		if err := deps.Store.ClearPin(ctx, tx, plan.ID); err != nil {
 			return err
 		}
@@ -757,12 +819,35 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	if publishNow > 0 {
 		publish.TryArticle(ctx, publishDeps(deps), publishNow)
 	}
+	if costPaused && noticeUser > 0 {
+		emitNotice(ctx, deps, noticeUser, "cost", "本月成本已达上限", "高成本功能已暂停。调高上限或下个月会自动恢复前，请在写作计划里手动恢复。")
+	}
 	if str(result["status"]) == "held" {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "risk", "有一篇稿没有写入草稿", str(result["delivery_note"]))
 	}
 	if strings.Contains(str(result["delivery_note"]), "无参考来源") {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "无参考来源", "这篇稿已经在草稿箱，但没有可用的参考来源。发布前请自行核对事实。")
 	}
+}
+
+func recordCost(ctx context.Context, deps Deps, tx *db.Tx, userID, taskID int64, month string, tokens, chatCents, searchCents, imageCalls, imageCents int, now time.Time) error {
+	if month == "" || userID == 0 {
+		return nil
+	}
+	rows := []store.UsageCost{
+		{UserID: userID, TaskID: taskID, MonthKey: month, Kind: "chat", Units: tokens, Cents: chatCents, Created: now},
+		{UserID: userID, TaskID: taskID, MonthKey: month, Kind: "search", Units: 1, Cents: searchCents, Created: now},
+		{UserID: userID, TaskID: taskID, MonthKey: month, Kind: "image", Units: imageCalls, Cents: imageCents, Created: now},
+	}
+	for _, row := range rows {
+		if row.Cents <= 0 {
+			continue
+		}
+		if err := deps.Store.InsertUsageCost(ctx, tx, row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func taskUserID(ctx context.Context, deps Deps, taskID int64) int64 {

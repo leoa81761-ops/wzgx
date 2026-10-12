@@ -283,6 +283,101 @@
         </div>
       </article>
     </section>
+
+    <section v-if="tab === 'board'" class="stack">
+      <article class="card stack" v-if="metrics">
+        <h2>数据看板</h2>
+        <p>注册 {{ metrics.users_total }}（7 天 {{ metrics.users_7d }}，30 天 {{ metrics.users_30d }}）。付费用户 {{ metrics.paid_users }}，转化率 {{ Math.round((metrics.conversion || 0) * 1000) / 10 }}%。</p>
+        <p>近 30 天支付成功 {{ metrics.orders_paid_30d }} 笔，其中续费 {{ metrics.renewals_30d }} 笔。成功稿件 {{ metrics.articles_30d }} 篇，成本 {{ metrics.cost_cents_30d }} 分，单篇约 {{ metrics.cost_per_article_cents }} 分。</p>
+        <p class="muted">成本按后台单价和实际 token、检索次数、生图张数估算。单价为 0 或还没有用量时，单篇成本是 0。</p>
+      </article>
+      <article class="card stack" style="max-width: 640px">
+        <h2>成本与熔断</h2>
+        <label>文本，每千 token（分） <input v-model.number="costForm.chat_cents_per_1k" type="number" min="0" /></label>
+        <label>每次检索（分） <input v-model.number="costForm.search_cents" type="number" min="0" /></label>
+        <label>每张 AI 配图（分） <input v-model.number="costForm.image_cents" type="number" min="0" /></label>
+        <label>用户每月上限（分，0 表示不熔断） <input v-model.number="costForm.month_cap_cents" type="number" min="0" /></label>
+        <label>达到上限
+          <select v-model="costForm.action">
+            <option value="degrade">降级：停检索和 AI 配图，文章继续写</option>
+            <option value="pause">暂停：这篇仍降级写出，然后暂停计划</option>
+          </select>
+        </label>
+        <label><input v-model="costForm.ai_label" type="checkbox" /> 文末添加「本文由人工智能辅助生成」（默认关闭）</label>
+        <button class="btn" type="button" @click="saveCost">保存</button>
+      </article>
+    </section>
+
+    <section v-if="tab === 'audit'" class="card stack">
+      <h2>操作审计</h2>
+      <table>
+        <thead><tr><th>时间</th><th>管理员</th><th>动作</th><th>对象</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr v-for="row in auditLogs" :key="row.id">
+            <td>{{ formatTime(row.created_at) }}</td>
+            <td>{{ row.actor_id ?? "—" }}</td>
+            <td>{{ row.action }}</td>
+            <td>{{ row.target }}</td>
+            <td>{{ row.detail }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <h2>同意记录</h2>
+      <div class="row">
+        <input v-model="consentUserID" placeholder="用户 ID" />
+        <button class="btn" type="button" @click="loadConsents">查询</button>
+      </div>
+      <table v-if="consentRows.length">
+        <thead><tr><th>时间</th><th>文档</th><th>版本</th><th>事项</th><th>IP</th></tr></thead>
+        <tbody>
+          <tr v-for="row in consentRows" :key="row.id">
+            <td>{{ formatTime(row.created_at) }}</td>
+            <td>{{ row.doc_type }}</td>
+            <td>{{ row.version }}</td>
+            <td>{{ row.consent_item }}</td>
+            <td>{{ row.ip }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section v-if="tab === 'legal'" class="stack">
+      <article class="card stack" style="max-width: 720px">
+        <h2>发布新版本</h2>
+        <p class="muted">用户协议和隐私政策勾选「要求重新同意」后，已登录用户要重新勾选才能继续用。旧版本仍可在协议页打开。</p>
+        <select v-model="legalForm.doc_type">
+          <option value="user_agreement">用户协议</option>
+          <option value="privacy">隐私政策</option>
+          <option value="disclaimer">免责声明</option>
+          <option value="membership">会员与退款</option>
+          <option value="content_rules">内容规范</option>
+          <option value="invite_rules">邀请规则</option>
+          <option value="page_home">页面 · 首页补充</option>
+          <option value="page_help">页面 · 帮助补充</option>
+          <option value="page_about">页面 · 关于</option>
+        </select>
+        <input v-model="legalForm.version" placeholder="版本号，如 0.2" />
+        <input v-model="legalForm.title" placeholder="标题" />
+        <input v-model="legalForm.effective_date" placeholder="生效日期 YYYY-MM-DD，可空" />
+        <textarea v-model="legalForm.content" rows="8" placeholder="正文"></textarea>
+        <label><input v-model="legalForm.require_reconsent" type="checkbox" /> 重大变更，要求重新同意</label>
+        <button class="btn" type="button" @click="publishLegal">发布</button>
+      </article>
+      <article class="card stack">
+        <h2>已有版本</h2>
+        <table>
+          <thead><tr><th>类型</th><th>版本</th><th>状态</th><th>标题</th></tr></thead>
+          <tbody>
+            <tr v-for="row in legalDocs" :key="row.doc_type + row.version">
+              <td>{{ row.doc_type }}</td>
+              <td><router-link :to="`/legal/${row.doc_type}?version=${encodeURIComponent(row.version)}`">{{ row.version }}</router-link></td>
+              <td>{{ row.status }}</td>
+              <td>{{ row.title }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
   </div>
 </template>
 
@@ -300,6 +395,9 @@ const tabs = [
   { key: "complaints", label: "投诉" },
   { key: "orders", label: "订单" },
   { key: "library", label: "内容库" },
+  { key: "board", label: "看板" },
+  { key: "audit", label: "审计" },
+  { key: "legal", label: "协议" },
 ];
 const tab = ref("models");
 const error = ref("");
@@ -328,6 +426,27 @@ const newStyle = reactive({ key: "", name: "", description: "", tone: "", min_ti
 const newTemplate = reactive({ key: "", name: "", description: "", min_tier: "free", enabled: true });
 const newVertical = reactive({ key: "", name: "", keywords: "", subtopics: "", red_lines: "", source_allow: "", image_rules: "", disclaimer: "", enabled: true });
 const replies = reactive({});
+const metrics = ref(null);
+const auditLogs = ref([]);
+const legalDocs = ref([]);
+const consentUserID = ref("");
+const consentRows = ref([]);
+const legalForm = reactive({
+  doc_type: "user_agreement",
+  version: "",
+  title: "",
+  content: "",
+  effective_date: "",
+  require_reconsent: true,
+});
+const costForm = reactive({
+  chat_cents_per_1k: 2,
+  image_cents: 10,
+  search_cents: 5,
+  month_cap_cents: 0,
+  action: "degrade",
+  ai_label: false,
+});
 const probeText = ref("");
 const wechat = reactive({ mode: "mock", api_base: "https://api.weixin.qq.com", public_egress_ip: "" });
 const provider = reactive({
@@ -412,6 +531,42 @@ function syncOrders() {
   }
 }
 
+async function saveCost() {
+  error.value = "";
+  message.value = "";
+  try {
+    const saved = await api("/api/admin/cost", { method: "PUT", body: costForm });
+    Object.assign(costForm, saved);
+    message.value = "已保存成本和标识开关";
+    metrics.value = await api("/api/admin/metrics");
+    auditLogs.value = await api("/api/admin/audit-logs");
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function publishLegal() {
+  error.value = "";
+  message.value = "";
+  try {
+    await api("/api/admin/legal", { method: "POST", body: legalForm });
+    message.value = "已发布 " + legalForm.version;
+    legalDocs.value = await api("/api/admin/legal");
+    auditLogs.value = await api("/api/admin/audit-logs");
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function loadConsents() {
+  error.value = "";
+  try {
+    consentRows.value = await api("/api/admin/consents?user_id=" + encodeURIComponent(consentUserID.value));
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
 async function load() {
   planConfigs.value = await api("/api/admin/plan-configs");
   users.value = await api("/api/admin/users");
@@ -437,6 +592,10 @@ async function load() {
   styles.value = await api("/api/admin/styles");
   templates.value = await api("/api/admin/templates");
   verticals.value = await api("/api/admin/verticals");
+  metrics.value = await api("/api/admin/metrics");
+  if (metrics.value?.cost) Object.assign(costForm, metrics.value.cost);
+  auditLogs.value = await api("/api/admin/audit-logs");
+  legalDocs.value = await api("/api/admin/legal");
 }
 
 async function savePlanConfig(item) {

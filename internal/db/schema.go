@@ -391,6 +391,24 @@ CREATE TABLE IF NOT EXISTS pay_order (
   paid_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pay_user ON pay_order(user_id, id);
+
+CREATE TABLE IF NOT EXISTS app_setting (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS usage_cost (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  task_id INTEGER,
+  month_key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  units INTEGER NOT NULL DEFAULT 0,
+  cents INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cost_user_month ON usage_cost(user_id, month_key);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	for _, stmt := range strings.Split(schema, ";") {
