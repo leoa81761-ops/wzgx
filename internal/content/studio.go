@@ -109,26 +109,26 @@ func Reachable(ctx context.Context, client *http.Client, rawURL string) string {
 	if err != nil {
 		return "未确认"
 	}
-	resp, err := client.Do(req)
+	resp, err := PublicClient().Do(req)
 	if err != nil {
 		return "未确认"
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
-		return reachableGet(ctx, client, rawURL)
+		return reachableGet(ctx, rawURL)
 	}
 	return reachLabel(resp.StatusCode)
 }
 
-func reachableGet(ctx context.Context, client *http.Client, rawURL string) string {
+func reachableGet(ctx context.Context, rawURL string) string {
 	call, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(call, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "未确认"
 	}
-	resp, err := client.Do(req)
+	resp, err := PublicClient().Do(req)
 	if err != nil {
 		return "未确认"
 	}

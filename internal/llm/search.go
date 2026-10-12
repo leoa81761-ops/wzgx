@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
 var (
@@ -73,6 +76,8 @@ func SearchWeb(ctx context.Context, client *http.Client, endpoint, query string)
 }
 
 // FetchPageMeta reads a page title and meta description. The caller caps how many pages are fetched.
+// The provided client only decides whether a fetch is attempted. The request itself uses PublicClient,
+// which refuses private and loopback addresses.
 func FetchPageMeta(ctx context.Context, client *http.Client, rawURL string) (string, string) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" || client == nil {
@@ -88,19 +93,28 @@ func FetchPageMeta(ctx context.Context, client *http.Client, rawURL string) (str
 		return "", ""
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; gonghao-research/1.0)")
-	resp, err := client.Do(req)
+	resp, err := content.PublicClient().Do(req)
 	if err != nil {
 		return "", ""
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 || !htmlContent(resp.Header.Get("Content-Type")) {
 		return "", ""
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return "", ""
 	}
-	html := string(body)
+	title, desc := pageMeta(string(body))
+	return clipRunes(title, 80), clipRunes(desc, 180)
+}
+
+func htmlContent(header string) bool {
+	media, _, err := mime.ParseMediaType(header)
+	return err == nil && media == "text/html"
+}
+
+func pageMeta(html string) (string, string) {
 	title := ""
 	if match := pageTitle.FindStringSubmatch(html); len(match) > 1 {
 		title = strings.TrimSpace(htmlTag.ReplaceAllString(match[1], ""))
@@ -111,8 +125,7 @@ func FetchPageMeta(ctx context.Context, client *http.Client, rawURL string) (str
 	} else if match := metaDescB.FindStringSubmatch(html); len(match) > 1 {
 		desc = match[1]
 	}
-	desc = strings.TrimSpace(htmlTag.ReplaceAllString(desc, ""))
-	return clipRunes(title, 80), clipRunes(desc, 180)
+	return title, strings.TrimSpace(htmlTag.ReplaceAllString(desc, ""))
 }
 
 // SearchChain tries each endpoint until one returns a result. An API key uses the JSON provider.

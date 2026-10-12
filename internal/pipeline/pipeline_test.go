@@ -1740,33 +1740,31 @@ func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
 }
 
 func TestUntitledSourcesUseFetchedTitle(t *testing.T) {
+	var hits int
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/std":
-			_, _ = w.Write([]byte(`<html><head><title>布线施工记录</title><meta name="description" content="弱电验收要看的公开说明"></head><body>page</body></html>`))
-		case "/plain":
-			_, _ = w.Write([]byte(`<html><head><meta property="og:description" content="综合布线的条文说明"><title></title></head></html>`))
-		default:
-			_, _ = w.Write([]byte(`<html><head><title>奶奶养生茶</title><meta name="description" content="周末喝茶转圈"></head></html>`))
-		}
+		hits++
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><head><title>布线施工记录</title><meta name="description" content="弱电验收要看的公开说明"></head></html>`))
 	}))
 	defer page.Close()
 	_, kept, dropped, _ := takeSources(t.Context(), page.Client(), "笔记", []map[string]any{
 		{"url": page.URL + "/std"},
-		{"url": page.URL + "/plain"},
-		{"url": page.URL + "/tea"},
+		{"url": "http://127.0.0.1/secret"},
 		{"title": "GB 50311 综合布线", "url": "https://www.bzfyw.com/std/50311"},
 		{"title": "GB 50311 条文", "url": "https://bbs.co188.com/thread/1"},
 		{"title": "标准全文", "url": "https://www.biaozhun.org/gb/50311"},
 	}, content.DefaultSourcePolicy(), "弱电智能化综合布线验收 GB 50311")
+	if hits != 0 {
+		t.Fatal(hits)
+	}
 	seen := map[string]bool{}
 	for _, row := range kept {
 		seen[str(row["url"])] = true
-		if strings.HasSuffix(str(row["url"]), "/std") && (str(row["title"]) != "布线施工记录" || !strings.Contains(str(row["snippet"]), "弱电验收")) {
+		if strings.Contains(str(row["url"]), "127.0.0.1") || strings.Contains(str(row["title"]), "布线施工记录") {
 			t.Fatal(row)
 		}
 	}
-	if !seen[page.URL+"/std"] || !seen[page.URL+"/plain"] || seen[page.URL+"/tea"] || !seen["https://www.bzfyw.com/std/50311"] || !seen["https://bbs.co188.com/thread/1"] || !seen["https://www.biaozhun.org/gb/50311"] {
+	if seen[page.URL+"/std"] || seen["http://127.0.0.1/secret"] || !seen["https://www.bzfyw.com/std/50311"] || !seen["https://bbs.co188.com/thread/1"] || !seen["https://www.biaozhun.org/gb/50311"] {
 		t.Fatal(kept, dropped)
 	}
 }
@@ -1780,14 +1778,10 @@ func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
 		_, _ = w.Write([]byte(`{"results":[{"title":"综合布线验收的另一条说明","url":"https://www.mohurd.gov.cn/gongkai/backup"},{"title":"弱电验收记录","url":"https://www.gov.cn/zhengce/backup"}]}`))
 	}))
 	defer search.Close()
-	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`<html><head><title>综合布线验收说明</title><meta name="description" content="弱电验收的公开说明"></head></html>`))
-	}))
-	defer page.Close()
 	var researchCalls int
 	research := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		researchCalls++
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到一条公开说明。"}}],"citations":[{"url":"` + page.URL + `/std"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到一条公开说明。"}}],"citations":[{"url":"https://www.mohurd.gov.cn/gongkai/1","title":"综合布线验收说明"}]}`))
 	}))
 	defer research.Close()
 	gateway := llm.NewGateway(false, research.Client())
@@ -1815,7 +1809,7 @@ func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
 		source, _ := raw.(map[string]any)
 		seen[str(source["url"])] = true
 	}
-	if !seen[page.URL+"/std"] || !seen["https://www.mohurd.gov.cn/gongkai/backup"] {
+	if !seen["https://www.mohurd.gov.cn/gongkai/1"] || !seen["https://www.mohurd.gov.cn/gongkai/backup"] {
 		t.Fatal(seen)
 	}
 }
