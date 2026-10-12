@@ -522,7 +522,13 @@ CREATE TABLE IF NOT EXISTS plan_extra (
   column_name TEXT NOT NULL DEFAULT '',
   column_style TEXT NOT NULL DEFAULT '',
   asset_id INTEGER NOT NULL DEFAULT 0,
-  profile_id INTEGER NOT NULL DEFAULT 0
+  profile_id INTEGER NOT NULL DEFAULT 0,
+  keywords TEXT NOT NULL DEFAULT '',
+  audience TEXT NOT NULL DEFAULT '',
+  banned_words TEXT NOT NULL DEFAULT '',
+  vertical_key TEXT NOT NULL DEFAULT '',
+  topic_mode TEXT NOT NULL DEFAULT '',
+  image_mode TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS style_profile (
@@ -676,6 +682,12 @@ CREATE TABLE IF NOT EXISTS user_contract (
 		{"user_invite", "device_hash", "TEXT NOT NULL DEFAULT ''"},
 		{"hot_item", "reports", "INTEGER NOT NULL DEFAULT 1"},
 		{"oauth_state", "nonce", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "keywords", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "audience", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "banned_words", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "vertical_key", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "topic_mode", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "image_mode", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err

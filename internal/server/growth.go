@@ -94,7 +94,19 @@ func (a *App) setPlanConfirm(w http.ResponseWriter, r *http.Request, user *model
 			return bad("选题确认是高级版和买断版的功能")
 		}
 		plan.ConfirmMode = body.Enabled
-		return a.Store.UpdatePlan(r.Context(), tx, plan)
+		if err := a.Store.UpdatePlan(r.Context(), tx, plan); err != nil {
+			return err
+		}
+		extra, err := a.Store.GetPlanExtra(r.Context(), tx, plan.ID)
+		if err != nil {
+			return err
+		}
+		if body.Enabled {
+			extra.TopicMode = "confirm"
+		} else if extra.TopicMode == "" || extra.TopicMode == "confirm" {
+			extra.TopicMode = "auto"
+		}
+		return a.Store.SavePlanExtra(r.Context(), tx, extra)
 	})
 	if err != nil {
 		return err

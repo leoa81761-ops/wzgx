@@ -119,6 +119,9 @@ th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line
 .choice { border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: white; }
 .choice.active { border-color: var(--cinnabar); background: #fff6f2; }
 .split { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.account-head { margin: 0; font-size: 20px; }
+details.stack { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: white; }
+summary { cursor: pointer; font-weight: 650; }
 
 @media (max-width: 900px) {
   .grid-2, .cards, .price-grid { grid-template-columns: 1fr; }

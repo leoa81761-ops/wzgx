@@ -8,6 +8,7 @@ import Tutorial from "./views/Tutorial.vue";
 import Dashboard from "./views/Dashboard.vue";
 import Accounts from "./views/Accounts.vue";
 import Plans from "./views/Plans.vue";
+import PlanDetail from "./views/PlanDetail.vue";
 import Articles from "./views/Articles.vue";
 import ArticleDetail from "./views/ArticleDetail.vue";
 import Membership from "./views/Membership.vue";
@@ -39,6 +40,7 @@ const router = createRouter({
     { path: "/app/accounts", component: Accounts, meta: { auth: true } },
     { path: "/app/stats/:id", component: Stats, meta: { auth: true } },
     { path: "/app/plans", component: Plans, meta: { auth: true } },
+    { path: "/app/plans/:id", component: PlanDetail, meta: { auth: true } },
     { path: "/app/articles", component: Articles, meta: { auth: true } },
     { path: "/app/articles/:id", component: ArticleDetail, meta: { auth: true } },
     { path: "/app/membership", component: Membership, meta: { auth: true } },

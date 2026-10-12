@@ -193,6 +193,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{account_id}/reports", a.withUser(false, a.createReport))
 	mux.HandleFunc("GET /api/plans", a.withUser(false, a.listPlans))
 	mux.HandleFunc("POST /api/plans", a.withUser(false, a.createPlan))
+	mux.HandleFunc("GET /api/plans/{plan_id}", a.withUser(false, a.getPlan))
+	mux.HandleFunc("PUT /api/plans/{plan_id}", a.withUser(false, a.updatePlan))
 	mux.HandleFunc("POST /api/styles/trial", a.withUser(false, a.styleTrial))
 	mux.HandleFunc("POST /api/sample", a.withUser(false, a.sampleDraft))
 	mux.HandleFunc("POST /api/style-profiles", a.withUser(false, a.saveStyleProfile))

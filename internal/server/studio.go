@@ -23,7 +23,6 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/render"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 	"github.com/leoa81761-ops/wzgx/internal/security"
-	"github.com/leoa81761-ops/wzgx/internal/store"
 	"github.com/leoa81761-ops/wzgx/internal/wechat"
 )
 
@@ -113,6 +112,14 @@ func (a *App) meta(w http.ResponseWriter, r *http.Request) error {
 			"max_accounts": item.MaxAccounts, "max_plans": item.MaxPlans, "max_words": item.MaxWords, "summary": item.Summary,
 		})
 	}
+	packs, err := a.Store.ListVerticals(r.Context(), nil, true)
+	if err != nil {
+		return err
+	}
+	verticals := make([]map[string]any, 0, len(packs))
+	for _, pack := range packs {
+		verticals = append(verticals, map[string]any{"key": pack.Key, "name": pack.Name})
+	}
 	styles, err := a.styleDicts(r.Context(), true)
 	if err != nil {
 		return err
@@ -137,7 +144,7 @@ func (a *App) meta(w http.ResponseWriter, r *http.Request) error {
 		"styles": styles, "templates": templates, "directions": catalog.Directions,
 		"windows": catalog.Windows, "word_choices": catalog.WordChoices, "columns": catalog.Columns,
 		"wechat_mode": wx.Mode, "public_egress_ip": wx.IP, "plans": planOut, "pay": a.payMeta(),
-		"template_enabled": a.effective(r.Context()).TemplateEnabled(),
+		"verticals": verticals, "template_enabled": a.effective(r.Context()).TemplateEnabled(),
 	})
 	return nil
 }
@@ -337,6 +344,24 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 		view["column_style"] = extra.ColumnStyle
 		view["asset_id"] = extra.AssetID
 		view["profile_id"] = extra.ProfileID
+		view["keywords"] = extra.Keywords
+		view["audience"] = extra.Audience
+		view["banned_words"] = extra.BannedWords
+		view["vertical_key"] = extra.VerticalKey
+		topicMode := extra.TopicMode
+		if topicMode == "" {
+			if plan.ConfirmMode {
+				topicMode = "confirm"
+			} else {
+				topicMode = "auto"
+			}
+		}
+		imageMode := extra.ImageMode
+		if imageMode == "" {
+			imageMode = "auto"
+		}
+		view["topic_mode"] = topicMode
+		view["image_mode"] = imageMode
 	}
 	if err := a.attachProposal(ctx, view, plan.ID); err != nil {
 		return nil, err
@@ -358,6 +383,11 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 	owner, err := a.Store.GetUser(ctx, nil, plan.UserID)
 	if err != nil {
 		return nil, err
+	}
+	if account != nil {
+		view["account_name"] = account.Name
+	} else {
+		view["account_name"] = ""
 	}
 	ready, block := publish.Ready(owner, account, time.Now().UTC())
 	view["publish_ready"] = ready
@@ -749,6 +779,12 @@ type planBody struct {
 	ColumnStyle  string `json:"column_style"`
 	AssetID      int64  `json:"asset_id"`
 	ProfileID    int64  `json:"profile_id"`
+	Keywords     string `json:"keywords"`
+	Audience     string `json:"audience"`
+	BannedWords  string `json:"banned_words"`
+	VerticalKey  string `json:"vertical_key"`
+	TopicMode    string `json:"topic_mode"`
+	ImageMode    string `json:"image_mode"`
 }
 
 func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -835,6 +871,15 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 		if tier == "free" {
 			window = "night"
 		}
+		settings, err := a.normalizePlanSettings(r.Context(), tx, user.ID, tier, planSettings{
+			Opening: body.Opening, Ending: body.Ending, ColumnName: body.ColumnName, ColumnStyle: body.ColumnStyle,
+			Keywords: body.Keywords, Audience: body.Audience, BannedWords: body.BannedWords,
+			VerticalKey: body.VerticalKey, TopicMode: body.TopicMode, ImageMode: body.ImageMode,
+			AssetID: body.AssetID, ProfileID: body.ProfileID,
+		})
+		if err != nil {
+			return err
+		}
 		next, err := schedule.ComputeNextRun(now, body.ScheduleType, weekdays, window, sysRNG{})
 		if err != nil {
 			return bad(err.Error())
@@ -843,18 +888,12 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			UserID: user.ID, WxAccountID: account.ID, Direction: direction, Mode: "managed",
 			StyleKey: body.StyleKey, TemplateKey: body.TemplateKey, WordTarget: body.WordTarget, DailyCount: dailyCount,
 			ScheduleType: body.ScheduleType, Weekdays: weekdays, TimeWindow: window, Status: "active",
-			NextRunAt: &next, CreatedAt: now,
+			ConfirmMode: settings.TopicMode == "confirm", NextRunAt: &next, CreatedAt: now,
 		}
 		if err := a.Store.InsertPlan(r.Context(), tx, created); err != nil {
 			return err
 		}
-		opening := clipText(body.Opening, 200)
-		ending := clipText(body.Ending, 200)
-		return a.Store.SavePlanExtra(r.Context(), tx, store.PlanExtra{
-			PlanID: created.ID, Opening: opening, Ending: ending,
-			ColumnName: strings.TrimSpace(body.ColumnName), ColumnStyle: strings.TrimSpace(body.ColumnStyle),
-			AssetID: body.AssetID, ProfileID: body.ProfileID,
-		})
+		return a.Store.SavePlanExtra(r.Context(), tx, settings.extra(created.ID))
 	})
 	if err != nil {
 		return err

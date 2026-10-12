@@ -7,6 +7,7 @@
       </div>
       <router-link class="btn" to="/app/plans">去设置方向</router-link>
     </div>
+    <p v-if="error" class="banner">{{ error }}</p>
     <section class="cards">
       <article class="card">
         <p class="muted">今日剩余</p>
@@ -30,17 +31,28 @@
     </section>
     <section class="card" v-else-if="!plans.length">
       <h2>还没有写作方向</h2>
-      <p>全托管只需要选一个方向、风格和更新节奏。</p>
+      <p>每个公众号单独建一个计划。方向、风格和更新节奏都按号保存。</p>
       <router-link class="btn" to="/app/plans">创建计划</router-link>
     </section>
     <section class="card" v-else>
-      <h2>进行中的计划</h2>
-      <div v-for="plan in plans" :key="plan.id" class="split" style="padding: 8px 0">
-        <div>
-          <strong>{{ plan.direction }}</strong>
-          <p class="muted">{{ plan.schedule_label }} · {{ plan.window_label }} · 下次 {{ formatTime(plan.next_run_at) }}</p>
+      <h2>各号的写作计划</h2>
+      <div v-for="plan in plans" :key="plan.id" class="stack" style="padding: 8px 0">
+        <div class="split">
+          <div>
+            <strong>{{ plan.account_name || "公众号" }} · {{ plan.direction }}</strong>
+            <p class="muted">
+              {{ plan.status === "active" ? "运行中" : "已暂停" }}
+              · {{ plan.schedule_label }} · {{ plan.window_label }}
+              · {{ plan.status === "active" ? "下次 " + formatTime(plan.next_run_at) : "启动后才会按点生成" }}
+            </p>
+            <p v-if="plan.pause_reason" class="muted">原因：{{ plan.pause_reason }}</p>
+          </div>
+          <div class="row">
+            <button v-if="plan.status !== 'active'" class="btn" type="button" @click="resume(plan)">启动</button>
+            <button v-else class="btn-ghost" type="button" @click="pause(plan)">暂停</button>
+            <router-link class="btn-ghost" :to="'/app/plans/' + plan.id">编辑</router-link>
+          </div>
         </div>
-        <router-link class="btn-ghost" :to="'/app/plans'">管理</router-link>
       </div>
     </section>
   </div>
@@ -54,8 +66,9 @@ const quota = ref({});
 const accounts = ref([]);
 const plans = ref([]);
 const articles = ref([]);
+const error = ref("");
 
-onMounted(async () => {
+async function load() {
   const [q, a, p, arts] = await Promise.all([
     api("/api/me/quota"),
     api("/api/accounts"),
@@ -64,7 +77,29 @@ onMounted(async () => {
   ]);
   quota.value = q;
   accounts.value = a;
-  plans.value = p.filter((item) => item.status === "active");
+  plans.value = p;
   articles.value = arts;
-});
+}
+
+async function resume(plan) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/resume`, { method: "POST" });
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function pause(plan) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/pause`, { method: "POST" });
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+onMounted(load);
 </script>
