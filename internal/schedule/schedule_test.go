@@ -48,6 +48,18 @@ func TestNextRunSpreadsInsideWindow(t *testing.T) {
 	}
 }
 
+func TestNextSlotStaysTodayUntilDailyCount(t *testing.T) {
+	inside := time.Date(2026, 10, 12, 14, 0, 0, 0, Shanghai)
+	next, err := NextSlot(inside, "daily", nil, "afternoon", ZeroRNG{}, 0, 2)
+	if err != nil || ShanghaiDay(next) != "2026-10-12" {
+		t.Fatal(next, err)
+	}
+	done, err := NextSlot(inside, "daily", nil, "afternoon", ZeroRNG{}, 2, 2)
+	if err != nil || ShanghaiDay(done) != "2026-10-13" {
+		t.Fatal(done, err)
+	}
+}
+
 func TestRetryOnlyInsideWindow(t *testing.T) {
 	end := time.Date(2026, 10, 13, 6, 0, 0, 0, time.UTC)
 	if !ShouldRetry("schedule", 0, time.Date(2026, 10, 13, 5, 0, 0, 0, time.UTC), end) {

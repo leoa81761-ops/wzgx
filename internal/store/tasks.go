@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
@@ -51,22 +52,32 @@ func (s *Store) FindScheduleTask(ctx context.Context, q db.Q, planID int64, day 
 	return t, err
 }
 
-func (s *Store) BatchTaken(ctx context.Context, q db.Q, accountID int64, day string) (bool, error) {
+func (s *Store) PlanHasOpen(ctx context.Context, q db.Q, planID int64) (bool, error) {
 	if q == nil {
 		q = s.DB
 	}
 	var n int
-	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM article_task WHERE wx_account_id = ? AND schedule_date = ? AND trigger_type IN ('schedule', 'manual') AND status IN ('pending', 'running', 'success')`, accountID, day).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM article_task WHERE plan_id = ? AND status IN ('pending', 'running')`, planID).Scan(&n)
 	return n > 0, err
 }
 
-func (s *Store) UserHasRunning(ctx context.Context, q db.Q, userID int64) (bool, error) {
+func (s *Store) CountPlanTasks(ctx context.Context, q db.Q, planID int64, day string, triggers []string) (int, error) {
 	if q == nil {
 		q = s.DB
 	}
+	if len(triggers) == 0 {
+		triggers = []string{"schedule", "manual"}
+	}
+	placeholders := make([]string, len(triggers))
+	args := []any{planID, day}
+	for i, trigger := range triggers {
+		placeholders[i] = "?"
+		args = append(args, trigger)
+	}
+	query := `SELECT COUNT(*) FROM article_task WHERE plan_id = ? AND schedule_date = ? AND status IN ('pending', 'running', 'success') AND trigger_type IN (` + strings.Join(placeholders, ",") + `)`
 	var n int
-	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM article_task WHERE user_id = ? AND status = 'running'`, userID).Scan(&n)
-	return n > 0, err
+	err := q.QueryRow(ctx, query, args...).Scan(&n)
+	return n, err
 }
 
 func (s *Store) InsertTask(ctx context.Context, q db.Q, t *model.ArticleTask) error {
@@ -101,7 +112,7 @@ func (s *Store) ClaimOne(ctx context.Context, tx *db.Tx, now string) (int64, boo
 	if tx != nil && s.DB.Dialect == "postgres" {
 		lock = " FOR UPDATE SKIP LOCKED"
 	}
-	query := `SELECT id FROM article_task WHERE status = 'pending' AND run_at <= ? AND user_id NOT IN (SELECT user_id FROM article_task WHERE status = 'running') ORDER BY priority DESC, id ASC LIMIT 1` + lock
+	query := `SELECT id FROM article_task WHERE status = 'pending' AND run_at <= ? AND plan_id NOT IN (SELECT plan_id FROM article_task WHERE status = 'running') ORDER BY priority DESC, id ASC LIMIT 1` + lock
 	var id int64
 	err := tx.QueryRow(ctx, query, now).Scan(&id)
 	if err == sql.ErrNoRows {

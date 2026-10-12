@@ -24,12 +24,12 @@ func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan
 		}
 		return nil, &quota.Error{Message: reason}
 	}
-	running, err := st.UserHasRunning(ctx, q, user.ID)
+	open, err := st.PlanHasOpen(ctx, q, plan.ID)
 	if err != nil {
 		return nil, err
 	}
-	if running {
-		return nil, &quota.Error{Message: "已有文章正在生成，请稍后再试"}
+	if open {
+		return nil, &quota.Error{Message: "这个写作方向正在生成，请稍后再试"}
 	}
 	if err := quota.ApplyPending(ctx, st, q, user, now); err != nil {
 		return nil, err
@@ -46,19 +46,14 @@ func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan
 		idem = "regen:" + itoa(regen.ID) + ":" + randHex()
 		id := regen.ID
 		regenID = &id
+	} else if trigger == "schedule" {
+		slot := now
+		if plan.NextRunAt != nil && !plan.NextRunAt.IsZero() {
+			slot = plan.NextRunAt.UTC()
+		}
+		idem = "schedule:" + itoa(plan.ID) + ":" + schedule.Format(slot)
 	} else {
-		taken, err := st.BatchTaken(ctx, q, account.ID, day)
-		if err != nil {
-			return nil, err
-		}
-		if taken {
-			return nil, &quota.Error{Message: "该公众号今日已生成一批（每日最多 1 批）"}
-		}
-		if trigger == "schedule" {
-			idem = "schedule:" + itoa(plan.ID) + ":" + day
-		} else {
-			idem = "manual:" + itoa(plan.ID) + ":" + randHex()
-		}
+		idem = "manual:" + itoa(plan.ID) + ":" + randHex()
 	}
 	tier, _ := quota.Membership(user, now)
 	status := "pending"

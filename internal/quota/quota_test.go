@@ -76,6 +76,68 @@ func TestDailyMonthlyReleaseAndGrace(t *testing.T) {
 	}
 }
 
+func TestPremiumDailyIsFiveAcrossTheUser(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 2, 0, 0, 0, time.UTC)
+	user := &model.User{Email: "premium@example.com", PasswordHash: "x", Tier: "premium", IsActive: true, CreatedAt: now}
+	if err := st.InsertUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		if err := Reserve(ctx, st, nil, user, int64(i), now, false, ""); err != nil {
+			t.Fatal(i, err)
+		}
+	}
+	reason, err := BlockReason(ctx, st, nil, user, now)
+	if err != nil || reason != "今日额度已用完" {
+		t.Fatal(reason, err)
+	}
+	snap, err := Snapshot(ctx, st, nil, user, now)
+	if err != nil || snap["daily_remaining"] != 0 || snap["daily_limit"] != 5 || snap["period_limit"] != 150 {
+		t.Fatal(snap, err)
+	}
+	if err := Release(ctx, st, nil, 5, ""); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = Snapshot(ctx, st, nil, user, now)
+	if err != nil || snap["daily_remaining"] != 1 || snap["daily_used"] != 4 {
+		t.Fatal(snap, err)
+	}
+}
+
+func TestPlanDailyCountsCannotExceedTier(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 2, 0, 0, 0, time.UTC)
+	user := &model.User{Email: "split@example.com", PasswordHash: "x", Tier: "premium", IsActive: true, CreatedAt: now}
+	if err := st.InsertUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	account := &model.WxAccount{UserID: user.ID, Name: "甲", AppID: "wx_split", BindStatus: "active", SubjectType: "personal", ServiceType: "subscription"}
+	if err := st.InsertAccount(ctx, nil, account); err != nil {
+		t.Fatal(err)
+	}
+	first := &model.WritingPlan{UserID: user.ID, WxAccountID: account.ID, Direction: "甲", StyleKey: "warm", TemplateKey: "fresh", WordTarget: 800, DailyCount: 3, ScheduleType: "daily", TimeWindow: "night", Status: "active", CreatedAt: now, Weekdays: []int{}}
+	second := &model.WritingPlan{UserID: user.ID, WxAccountID: account.ID, Direction: "乙", StyleKey: "warm", TemplateKey: "fresh", WordTarget: 800, DailyCount: 2, ScheduleType: "daily", TimeWindow: "night", Status: "active", CreatedAt: now, Weekdays: []int{}}
+	if err := st.InsertPlan(ctx, nil, first); err != nil || st.InsertPlan(ctx, nil, second) != nil {
+		t.Fatal(err)
+	}
+	if err := CheckDailyCount(ctx, st, nil, user, now, 0, 1); err == nil {
+		t.Fatal("6th article per day should be rejected")
+	}
+	if err := CheckDailyCount(ctx, st, nil, user, now, first.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	free := &model.User{Email: "one@example.com", PasswordHash: "x", Tier: "free", IsActive: true, CreatedAt: now}
+	if err := st.InsertUser(ctx, nil, free); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckDailyCount(ctx, st, nil, free, now, 0, 2); err == nil {
+		t.Fatal("free tier is 1 per day")
+	}
+}
+
 func openStore(t *testing.T) *store.Store {
 	t.Helper()
 	database, err := db.Open("sqlite://"+filepath.Join(t.TempDir(), "t.db"), 4, 2)

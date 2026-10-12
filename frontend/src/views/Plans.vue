@@ -4,7 +4,8 @@
       <h1 style="font-size: 32px">写作方向</h1>
       <p class="muted">全托管：只选方向。系统按子话题和栏目轮换，90 天内尽量不重复同一主题。</p>
       <p v-if="error" class="banner">{{ error }}</p>
-      <p v-if="quota.tier === 'free'" class="banner info">免费版固定在夜间低峰生成，每天 1 批，单篇不超过 {{ quota.max_words || 1000 }} 字。</p>
+      <p class="banner info">今天还剩 {{ quota.daily_remaining ?? 0 }} 篇，{{ quota.period_label || "本月" }}还剩 {{ quota.period_remaining ?? 0 }} 篇。各方向每天篇数加起来不能超过 {{ quota.daily_limit || 1 }} 篇。</p>
+      <p v-if="quota.tier === 'free'" class="banner info">免费版固定在夜间低峰生成，每天最多 {{ quota.daily_limit || 1 }} 篇，单篇不超过 {{ quota.max_words || 1000 }} 字。</p>
       <label>公众号
         <select v-model="form.wx_account_id" required>
           <option disabled value="">请选择</option>
@@ -38,6 +39,9 @@
           <option v-for="words in wordOptions" :key="words" :value="words">{{ words }} 字以内</option>
         </select>
       </label>
+      <label>这个方向每天几篇
+        <input v-model.number="form.daily_count" type="number" min="1" :max="quota.daily_limit || 1" />
+      </label>
       <label>周期
         <select v-model="form.schedule_type">
           <option value="daily">每天</option>
@@ -62,7 +66,11 @@
           <strong>{{ plan.direction }}</strong>
           <span class="pill" :class="plan.status === 'active' ? 'ok' : 'warn'">{{ plan.status === "active" ? "运行中" : "已暂停" }}</span>
         </div>
-        <p>{{ plan.style_name }} · {{ plan.template_name }} · {{ plan.schedule_label }} · {{ plan.window_label }}</p>
+        <p>{{ plan.style_name }} · {{ plan.template_name }} · {{ plan.schedule_label }} · {{ plan.window_label }} · 每天 {{ plan.daily_count || 1 }} 篇</p>
+        <label>每天篇数
+          <input v-model.number="dailyCounts[plan.id]" type="number" min="1" :max="quota.daily_limit || 1" />
+        </label>
+        <button class="btn-ghost" type="button" @click="saveDaily(plan)">保存篇数</button>
         <p class="muted" v-if="plan.pause_reason">原因：{{ plan.pause_reason }}</p>
         <p class="muted">下次生成：{{ formatTime(plan.next_run_at) }}</p>
         <p v-if="plan.specified_title" class="muted">下一篇指定题目：{{ plan.specified_title }}。成功生成后会自动清掉。</p>
@@ -129,6 +137,7 @@ const error = ref("");
 const loading = ref(false);
 const busyId = ref(0);
 const pins = reactive({});
+const dailyCounts = reactive({});
 const calendars = reactive({});
 const publishConsent = reactive({});
 const publishDelay = reactive({});
@@ -142,6 +151,7 @@ const form = reactive({
   schedule_type: "daily",
   weekdays: [1, 3, 5],
   time_window: "night",
+  daily_count: 1,
 });
 
 const wordOptions = computed(() => {
@@ -172,6 +182,7 @@ async function load() {
   plans.value = planData;
   for (const plan of planData) {
     if (pins[plan.id] === undefined) pins[plan.id] = plan.specified_title || "";
+    dailyCounts[plan.id] = plan.daily_count || 1;
     if (publishDelay[plan.id] === undefined) publishDelay[plan.id] = plan.delay_minutes ?? 30;
   }
   if (!form.wx_account_id && accountData[0]) form.wx_account_id = accountData[0].id;
@@ -193,6 +204,16 @@ async function submit() {
     error.value = err.message;
   } finally {
     loading.value = false;
+  }
+}
+
+async function saveDaily(plan) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/daily`, { method: "PUT", body: { daily_count: Number(dailyCounts[plan.id] || 1) } });
+    await load();
+  } catch (err) {
+    error.value = err.message;
   }
 }
 

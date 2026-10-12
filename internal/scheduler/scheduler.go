@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,35 +86,9 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 		if err != nil {
 			return err
 		}
-		grouped := map[int64][]model.WritingPlan{}
-		for _, plan := range plans {
-			grouped[plan.WxAccountID] = append(grouped[plan.WxAccountID], plan)
-		}
-		for _, group := range grouped {
-			day := schedule.ShanghaiDay(now)
-			taken, err := r.Deps.Store.BatchTaken(ctx, tx, group[0].WxAccountID, day)
-			if err != nil {
+		for i := range plans {
+			if err := r.handlePlan(ctx, tx, &plans[i], now); err != nil {
 				return err
-			}
-			if taken {
-				for i := range group {
-					if err := r.bumpTomorrow(ctx, tx, &group[i], now); err != nil {
-						return err
-					}
-				}
-				continue
-			}
-			chosen := group[hashDay(day)%len(group)]
-			if err := r.handlePlan(ctx, tx, &chosen, now); err != nil {
-				return err
-			}
-			for i := range group {
-				if group[i].ID == chosen.ID {
-					continue
-				}
-				if err := r.bumpTomorrow(ctx, tx, &group[i], now); err != nil {
-					return err
-				}
 			}
 		}
 		for {
@@ -192,19 +165,19 @@ func (r *Runner) handlePlan(ctx context.Context, tx *db.Tx, plan *model.WritingP
 		return r.Deps.Store.UpdatePlan(ctx, tx, plan)
 	}
 	day := schedule.ShanghaiDay(now)
-	existing, err := r.Deps.Store.FindScheduleTask(ctx, tx, plan.ID, day)
+	open, err := r.Deps.Store.PlanHasOpen(ctx, tx, plan.ID)
 	if err != nil {
 		return err
 	}
-	if existing != nil {
-		return r.advanceExisting(ctx, tx, plan, existing, now)
+	if open {
+		return nil
 	}
-	taken, err := r.Deps.Store.BatchTaken(ctx, tx, account.ID, day)
+	produced, err := r.Deps.Store.CountPlanTasks(ctx, tx, plan.ID, day, []string{"schedule"})
 	if err != nil {
 		return err
 	}
-	if taken {
-		return r.bumpTomorrow(ctx, tx, plan, now)
+	if produced >= plan.ArticlesPerDay() {
+		return r.advancePlan(ctx, tx, plan, now, produced)
 	}
 	err = tx.Savepoint(ctx, func() error {
 		_, err := jobs.Create(ctx, r.Deps.Store, tx, user, plan, account, "schedule", now, nil)
@@ -214,8 +187,8 @@ func (r *Runner) handlePlan(ctx context.Context, tx *db.Tx, plan *model.WritingP
 		return nil
 	}
 	if db.IsUnique(err) {
-		log.Printf("plan %d already has a task for %s", plan.ID, day)
-		return nil
+		log.Printf("plan %d already has a task at %s", plan.ID, schedule.Format(now))
+		return r.advancePlan(ctx, tx, plan, now, produced+1)
 	}
 	if qe, ok := err.(*quota.Error); ok {
 		if strings.Contains(qe.Message, "额度") {
@@ -223,42 +196,10 @@ func (r *Runner) handlePlan(ctx context.Context, tx *db.Tx, plan *model.WritingP
 			plan.PauseReason = "额度已用完"
 			return r.Deps.Store.UpdatePlan(ctx, tx, plan)
 		}
-		if strings.Contains(qe.Message, "已生成一批") {
-			return r.bumpTomorrow(ctx, tx, plan, now)
-		}
 		log.Printf("skip plan %d: %s", plan.ID, qe.Message)
 		return nil
 	}
 	return err
-}
-
-func (r *Runner) advanceExisting(ctx context.Context, tx *db.Tx, plan *model.WritingPlan, task *model.ArticleTask, now time.Time) error {
-	switch task.Status {
-	case "success":
-		return r.bumpTomorrow(ctx, tx, plan, now)
-	case "pending", "running":
-		return nil
-	case "failed":
-		end, err := schedule.WindowEnd(task.ScheduleDate, plan.TimeWindow)
-		if err == nil && schedule.ShouldRetry(task.TriggerType, task.RetryCount, now, end) {
-			task.Status = "pending"
-			task.RetryCount++
-			task.RunAt = now
-			return r.Deps.Store.UpdateTask(ctx, tx, task)
-		}
-		task.Status = "abandoned"
-		if err := r.Deps.Store.UpdateTask(ctx, tx, task); err != nil {
-			return err
-		}
-		if err := quota.Release(ctx, r.Deps.Store, tx, task.ID, "超出时段放弃"); err != nil {
-			return err
-		}
-		return r.bumpTomorrow(ctx, tx, plan, now)
-	case "abandoned":
-		return r.bumpTomorrow(ctx, tx, plan, now)
-	default:
-		return nil
-	}
 }
 
 func (r *Runner) resumeQuota(ctx context.Context, tx *db.Tx, now time.Time) error {
@@ -293,21 +234,13 @@ func (r *Runner) resumeQuota(ctx context.Context, tx *db.Tx, now time.Time) erro
 	return nil
 }
 
-func (r *Runner) bumpTomorrow(ctx context.Context, tx *db.Tx, plan *model.WritingPlan, now time.Time) error {
-	next, err := schedule.ComputeNextRun(schedule.TomorrowStart(now), plan.ScheduleType, plan.Weekdays, plan.TimeWindow, sysRNG{})
+func (r *Runner) advancePlan(ctx context.Context, tx *db.Tx, plan *model.WritingPlan, now time.Time, produced int) error {
+	next, err := schedule.NextSlot(now, plan.ScheduleType, plan.Weekdays, plan.TimeWindow, sysRNG{}, produced, plan.ArticlesPerDay())
 	if err != nil {
 		return err
 	}
 	plan.NextRunAt = &next
 	return r.Deps.Store.UpdatePlan(ctx, tx, plan)
-}
-
-func hashDay(day string) int {
-	n, _ := strconv.Atoi(strings.ReplaceAll(day, "-", ""))
-	if n < 0 {
-		return -n
-	}
-	return n
 }
 
 type sysRNG struct{}

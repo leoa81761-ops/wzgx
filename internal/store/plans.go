@@ -8,13 +8,13 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/model"
 )
 
-const planCols = `id, user_id, wx_account_id, direction, mode, style_key, template_key, word_target, schedule_type, weekdays, time_window, status, pause_reason, next_run_at, created_at`
+const planCols = `id, user_id, wx_account_id, direction, mode, style_key, template_key, word_target, schedule_type, weekdays, time_window, status, pause_reason, next_run_at, daily_count, created_at`
 
 func scanPlan(row interface{ Scan(dest ...any) error }) (*model.WritingPlan, error) {
 	var p model.WritingPlan
 	var weekdays, next sql.NullString
 	var created string
-	err := row.Scan(&p.ID, &p.UserID, &p.WxAccountID, &p.Direction, &p.Mode, &p.StyleKey, &p.TemplateKey, &p.WordTarget, &p.ScheduleType, &weekdays, &p.TimeWindow, &p.Status, &p.PauseReason, &next, &created)
+	err := row.Scan(&p.ID, &p.UserID, &p.WxAccountID, &p.Direction, &p.Mode, &p.StyleKey, &p.TemplateKey, &p.WordTarget, &p.ScheduleType, &weekdays, &p.TimeWindow, &p.Status, &p.PauseReason, &next, &p.DailyCount, &created)
 	if err != nil {
 		return nil, err
 	}
@@ -126,9 +126,12 @@ func (s *Store) InsertPlan(ctx context.Context, q db.Q, p *model.WritingPlan) er
 	if q == nil {
 		q = s.DB
 	}
-	return q.QueryRow(ctx, `INSERT INTO writing_plan (user_id, wx_account_id, direction, mode, style_key, template_key, word_target, schedule_type, weekdays, time_window, status, pause_reason, next_run_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		p.UserID, p.WxAccountID, p.Direction, p.Mode, p.StyleKey, p.TemplateKey, p.WordTarget, p.ScheduleType, jsonStr(p.Weekdays), p.TimeWindow, p.Status, p.PauseReason, timeArg(p.NextRunAt), timeReq(p.CreatedAt),
+	if p.DailyCount < 1 {
+		p.DailyCount = 1
+	}
+	return q.QueryRow(ctx, `INSERT INTO writing_plan (user_id, wx_account_id, direction, mode, style_key, template_key, word_target, schedule_type, weekdays, time_window, status, pause_reason, next_run_at, daily_count, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		p.UserID, p.WxAccountID, p.Direction, p.Mode, p.StyleKey, p.TemplateKey, p.WordTarget, p.ScheduleType, jsonStr(p.Weekdays), p.TimeWindow, p.Status, p.PauseReason, timeArg(p.NextRunAt), p.DailyCount, timeReq(p.CreatedAt),
 	).Scan(&p.ID)
 }
 
@@ -136,7 +139,10 @@ func (s *Store) UpdatePlan(ctx context.Context, q db.Q, p *model.WritingPlan) er
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `UPDATE writing_plan SET status=?, pause_reason=?, next_run_at=?, style_key=?, template_key=?, word_target=?, schedule_type=?, weekdays=?, time_window=?, direction=? WHERE id=?`,
-		p.Status, p.PauseReason, timeArg(p.NextRunAt), p.StyleKey, p.TemplateKey, p.WordTarget, p.ScheduleType, jsonStr(p.Weekdays), p.TimeWindow, p.Direction, p.ID)
+	if p.DailyCount < 1 {
+		p.DailyCount = 1
+	}
+	_, err := q.Exec(ctx, `UPDATE writing_plan SET status=?, pause_reason=?, next_run_at=?, style_key=?, template_key=?, word_target=?, schedule_type=?, weekdays=?, time_window=?, direction=?, daily_count=? WHERE id=?`,
+		p.Status, p.PauseReason, timeArg(p.NextRunAt), p.StyleKey, p.TemplateKey, p.WordTarget, p.ScheduleType, jsonStr(p.Weekdays), p.TimeWindow, p.Direction, p.DailyCount, p.ID)
 	return err
 }

@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS writing_plan (
   status TEXT NOT NULL DEFAULT 'active',
   pause_reason TEXT NOT NULL DEFAULT '',
   next_run_at TEXT,
+  daily_count INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_plan_user ON writing_plan(user_id);
@@ -404,6 +405,7 @@ CREATE INDEX IF NOT EXISTS idx_pay_user ON pay_order(user_id, id);
 		{"style_preset", "min_tier", "TEXT NOT NULL DEFAULT 'free'"},
 		{"style_preset", "tone", "TEXT NOT NULL DEFAULT ''"},
 		{"layout_template", "min_tier", "TEXT NOT NULL DEFAULT 'free'"},
+		{"writing_plan", "daily_count", "INTEGER NOT NULL DEFAULT 1"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err

@@ -151,7 +151,7 @@ var WordChoices = []int{800, 1000, 1500, 3000}
 var PlanDefaults = []PlanDefault{
 	{Tier: "free", Name: "免费版", PriceLabel: "0 元", DailyQuota: 1, PeriodQuota: 10, PeriodUnit: "month", MaxAccounts: 1, MaxPlans: 1, MaxWords: 1000, Summary: "每天 1 篇，每月 10 篇，可绑定 1 个公众号、1 个写作方向。夜间低峰生成。"},
 	{Tier: "standard", Name: "普通版", PriceLabel: "月付 30 元 / 年付 299 元", DailyQuota: 1, PeriodQuota: 30, PeriodUnit: "month", MaxAccounts: 1, MaxPlans: 3, MaxWords: 2000, Summary: "每天 1 篇，每月 30 篇，可绑定 1 个公众号。由管理员手工开通。"},
-	{Tier: "premium", Name: "高级版", PriceLabel: "月付 99 元 / 年付 990 元", DailyQuota: 5, PeriodQuota: 150, PeriodUnit: "month", MaxAccounts: 5, MaxPlans: 99, MaxWords: 4000, Summary: "每天最多 5 篇（按用户合计），每月 150 篇，最多 5 个公众号。P0 每个公众号每天仍只生成 1 批。"},
+	{Tier: "premium", Name: "高级版", PriceLabel: "月付 99 元 / 年付 990 元", DailyQuota: 5, PeriodQuota: 150, PeriodUnit: "month", MaxAccounts: 5, MaxPlans: 99, MaxWords: 4000, Summary: "每天最多 5 篇（按用户合计，可分配到各写作方向），每月 150 篇，最多 5 个公众号。"},
 	{Tier: "lifetime", Name: "买断版", PriceLabel: "一次性 3000 元（管理员授权）", DailyQuota: 5, PeriodQuota: 365, PeriodUnit: "year", MaxAccounts: 5, MaxPlans: 99, MaxWords: 4000, Summary: "终身指服务存续期间。每天最多 5 篇（按用户合计），每周年最多 365 篇。"},
 }
 
