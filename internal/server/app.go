@@ -62,6 +62,7 @@ func Open(cfg config.Settings) (*App, error) {
 	}
 	client := &http.Client{Transport: transport}
 	gateway := llm.NewGateway(cfg.LLMMode == "mock", client)
+	gateway.CacheTTL = 24 * time.Hour
 	gateway.ResearchTimeout = cfg.ResearchTimeout
 	gateway.ResearchBackupModel = cfg.ResearchBackupModel
 	app := &App{
