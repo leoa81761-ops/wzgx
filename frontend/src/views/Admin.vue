@@ -77,6 +77,7 @@
                 <input v-model="edits[user.id].contract_no" placeholder="合同编号" />
                 <input v-model="edits[user.id].contract_note" placeholder="合同备注" />
                 <label class="check"><input type="checkbox" v-model="edits[user.id].later" /> 降级等到期再生效</label>
+                <label class="check"><input type="checkbox" :checked="user.quota_exempt" @change="setExempt(user, $event.target.checked)" /> 测试账号不限额</label>
                 <div class="row">
                   <button class="btn" type="button" @click="saveTier(user)">保存</button>
                   <button class="btn-ghost" type="button" @click="saveContract(user)">保存合同</button>
@@ -913,6 +914,18 @@ async function replyComplaint(item) {
       body: { status: "closed", reply: replies[item.id] || item.reply || "" },
     });
     message.value = "已回复";
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function setExempt(user, quotaExempt) {
+  error.value = "";
+  message.value = "";
+  try {
+    await api(`/api/admin/users/${user.id}/quota-exempt`, { method: "PUT", body: { quota_exempt: quotaExempt } });
+    message.value = quotaExempt ? "已设为测试账号，不限额" : "已取消测试账号不限额";
     await load();
   } catch (err) {
     error.value = err.message;

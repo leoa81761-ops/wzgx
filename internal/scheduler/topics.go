@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/leoa81761-ops/wzgx/internal/columns"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/hot"
 	"github.com/leoa81761-ops/wzgx/internal/model"
@@ -139,8 +140,26 @@ func (r *Runner) SuggestTopic(ctx context.Context, q db.Q, plan *model.WritingPl
 	if err != nil {
 		return topics.Choice{}, "", err
 	}
-	pack := vertical.Match(plan.Direction, packs)
-	if tier != "free" {
+	extra, err := r.Deps.Store.GetPlanExtra(ctx, q, plan.ID)
+	if err != nil {
+		return topics.Choice{}, "", err
+	}
+	accountColumns := ""
+	if plan.WxAccountID > 0 {
+		account, err := r.Deps.Store.GetAccount(ctx, q, plan.WxAccountID)
+		if err != nil {
+			return topics.Choice{}, "", err
+		}
+		if account != nil {
+			accountColumns = account.PersonaColumns
+		}
+	}
+	pack := vertical.Resolve(plan.Direction, extra, packs)
+	active, err := r.Deps.Store.ListAccountColumns(ctx, q, plan.WxAccountID, "active")
+	if err != nil {
+		return topics.Choice{}, "", err
+	}
+	if tier != "free" && len(active) == 0 {
 		rows, err := r.Deps.Store.ListHotItems(ctx, q)
 		if err != nil {
 			return topics.Choice{}, "", err
@@ -153,7 +172,10 @@ func (r *Runner) SuggestTopic(ctx context.Context, q db.Q, plan *model.WritingPl
 			}
 		}
 	}
-	choice := topics.PickTree(vertical.Subtopics(pack), plan.Direction, tier, history, now, veto...)
+	choice := topics.PickTree(pipeline.TopicTree(pack, plan.Direction, extra.Keywords, extra.PersonaColumns, accountColumns), plan.Direction, tier, history, now, veto...)
+	if len(active) > 0 {
+		choice, _, _ = pipeline.ApplyColumnChoice(choice, now, active, extra.ColumnRotation, columns.ParseDays(extra.ColumnWeekdays), plan.Direction, extra.Keywords, history)
+	}
 	title := choice.Subtopic + " / " + choice.Column + " / " + choice.Angle
 	return choice, title, nil
 }

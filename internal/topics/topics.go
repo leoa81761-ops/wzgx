@@ -47,6 +47,102 @@ func Pick(direction, tier string, history []Coverage, now time.Time, vetoed ...s
 	return PickTree(nil, direction, tier, history, now, vetoed...)
 }
 
+// AccountTree keeps pack subtopics that match the account keywords or direction.
+// A direction that contains the pack's own keywords keeps that pack, so a 弱电 account
+// still rotates 综合布线. Keywords that miss the pack, or a direction outside the pack,
+// derive topics from the columns, keywords, and direction instead of the pack list.
+func AccountTree(packSubs []string, packKeywords, direction, keywords, columns string) []string {
+	userHints := accountHints(keywords)
+	if len(userHints) > 0 {
+		if matched := matchSubs(packSubs, userHints); len(matched) > 0 {
+			return matched
+		}
+		return deriveTopics(columns, keywords, direction, packSubs)
+	}
+	if packOnTheme(packKeywords, direction) {
+		if matched := matchSubs(packSubs, accountHints(direction)); len(matched) > 0 {
+			return matched
+		}
+		return append([]string{}, packSubs...)
+	}
+	if matched := matchSubs(packSubs, accountHints(direction, columns)); len(matched) > 0 {
+		return matched
+	}
+	return deriveTopics(columns, keywords, direction, packSubs)
+}
+
+func matchSubs(packSubs []string, hints []string) []string {
+	if len(hints) == 0 {
+		return nil
+	}
+	var matched []string
+	seen := map[string]bool{}
+	for _, sub := range packSubs {
+		sub = strings.TrimSpace(sub)
+		if sub == "" || seen[sub] {
+			continue
+		}
+		if hintMatches(sub, hints) {
+			seen[sub] = true
+			matched = append(matched, sub)
+		}
+	}
+	return matched
+}
+
+func deriveTopics(columns, keywords, direction string, packSubs []string) []string {
+	var derived []string
+	seen := map[string]bool{}
+	for _, hint := range accountHints(columns, keywords, direction) {
+		if seen[hint] {
+			continue
+		}
+		seen[hint] = true
+		derived = append(derived, hint)
+	}
+	if len(derived) == 0 {
+		return append([]string{}, packSubs...)
+	}
+	return derived
+}
+
+func packOnTheme(packKeywords, direction string) bool {
+	direction = strings.TrimSpace(direction)
+	if direction == "" {
+		return false
+	}
+	for _, word := range accountHints(packKeywords) {
+		if strings.Contains(direction, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func accountHints(parts ...string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range parts {
+		for _, hint := range splitColumns(part) {
+			if len([]rune(hint)) < 2 || seen[hint] {
+				continue
+			}
+			seen[hint] = true
+			out = append(out, hint)
+		}
+	}
+	return out
+}
+
+func hintMatches(sub string, hints []string) bool {
+	for _, hint := range hints {
+		if strings.Contains(sub, hint) || strings.Contains(hint, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExpandTree 按权重重复或跳过子方向。没有权重时原样返回，轮换顺序不变。
 // 权重 0 少用该子方向，2 或 3 多用。缺省按 1。
 func ExpandTree(tree []string, direction, tier string, weights map[string]int) []string {

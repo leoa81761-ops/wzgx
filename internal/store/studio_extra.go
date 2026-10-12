@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
@@ -26,6 +27,8 @@ type PlanExtra struct {
 	PersonaColumns string
 	Signatures     string
 	Taboos         string
+	ColumnRotation string
+	ColumnWeekdays string
 }
 
 type StyleProfile struct {
@@ -59,9 +62,13 @@ func (s *Store) SavePlanExtra(ctx context.Context, q db.Q, row PlanExtra) error 
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `INSERT INTO plan_extra (plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode, tone, persona_columns, signatures, taboos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(plan_id) DO UPDATE SET opening = excluded.opening, ending = excluded.ending, column_name = excluded.column_name, column_style = excluded.column_style, asset_id = excluded.asset_id, profile_id = excluded.profile_id, keywords = excluded.keywords, audience = excluded.audience, banned_words = excluded.banned_words, vertical_key = excluded.vertical_key, topic_mode = excluded.topic_mode, image_mode = excluded.image_mode, tone = excluded.tone, persona_columns = excluded.persona_columns, signatures = excluded.signatures, taboos = excluded.taboos`,
-		row.PlanID, row.Opening, row.Ending, row.ColumnName, row.ColumnStyle, row.AssetID, row.ProfileID, row.Keywords, row.Audience, row.BannedWords, row.VerticalKey, row.TopicMode, row.ImageMode, row.Tone, row.PersonaColumns, row.Signatures, row.Taboos)
+	rotation := row.ColumnRotation
+	if strings.TrimSpace(rotation) == "" {
+		rotation = "weight"
+	}
+	_, err := q.Exec(ctx, `INSERT INTO plan_extra (plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode, tone, persona_columns, signatures, taboos, column_rotation, column_weekdays) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(plan_id) DO UPDATE SET opening = excluded.opening, ending = excluded.ending, column_name = excluded.column_name, column_style = excluded.column_style, asset_id = excluded.asset_id, profile_id = excluded.profile_id, keywords = excluded.keywords, audience = excluded.audience, banned_words = excluded.banned_words, vertical_key = excluded.vertical_key, topic_mode = excluded.topic_mode, image_mode = excluded.image_mode, tone = excluded.tone, persona_columns = excluded.persona_columns, signatures = excluded.signatures, taboos = excluded.taboos, column_rotation = excluded.column_rotation, column_weekdays = excluded.column_weekdays`,
+		row.PlanID, row.Opening, row.Ending, row.ColumnName, row.ColumnStyle, row.AssetID, row.ProfileID, row.Keywords, row.Audience, row.BannedWords, row.VerticalKey, row.TopicMode, row.ImageMode, row.Tone, row.PersonaColumns, row.Signatures, row.Taboos, rotation, row.ColumnWeekdays)
 	return err
 }
 
@@ -70,10 +77,13 @@ func (s *Store) GetPlanExtra(ctx context.Context, q db.Q, planID int64) (PlanExt
 		q = s.DB
 	}
 	var row PlanExtra
-	err := q.QueryRow(ctx, `SELECT plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode, tone, persona_columns, signatures, taboos FROM plan_extra WHERE plan_id = ?`, planID).
-		Scan(&row.PlanID, &row.Opening, &row.Ending, &row.ColumnName, &row.ColumnStyle, &row.AssetID, &row.ProfileID, &row.Keywords, &row.Audience, &row.BannedWords, &row.VerticalKey, &row.TopicMode, &row.ImageMode, &row.Tone, &row.PersonaColumns, &row.Signatures, &row.Taboos)
+	err := q.QueryRow(ctx, `SELECT plan_id, opening, ending, column_name, column_style, asset_id, profile_id, keywords, audience, banned_words, vertical_key, topic_mode, image_mode, tone, persona_columns, signatures, taboos, column_rotation, column_weekdays FROM plan_extra WHERE plan_id = ?`, planID).
+		Scan(&row.PlanID, &row.Opening, &row.Ending, &row.ColumnName, &row.ColumnStyle, &row.AssetID, &row.ProfileID, &row.Keywords, &row.Audience, &row.BannedWords, &row.VerticalKey, &row.TopicMode, &row.ImageMode, &row.Tone, &row.PersonaColumns, &row.Signatures, &row.Taboos, &row.ColumnRotation, &row.ColumnWeekdays)
 	if err == sql.ErrNoRows {
-		return PlanExtra{PlanID: planID}, nil
+		return PlanExtra{PlanID: planID, ColumnRotation: "weight"}, nil
+	}
+	if row.ColumnRotation == "" {
+		row.ColumnRotation = "weight"
 	}
 	return row, err
 }

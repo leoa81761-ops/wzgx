@@ -175,6 +175,67 @@ func TestPlanDailyCountsCannotExceedTier(t *testing.T) {
 	}
 }
 
+func TestExemptUserIsNotBlockedAboveFive(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 2, 0, 0, 0, time.UTC)
+	plain := &model.User{Email: "capped@example.com", PasswordHash: "x", Tier: "premium", IsActive: true, CreatedAt: now}
+	exempt := &model.User{Email: "tester@example.com", PasswordHash: "x", Tier: "premium", IsActive: true, QuotaExempt: true, CreatedAt: now}
+	if err := st.InsertUser(ctx, nil, plain); err != nil || st.InsertUser(ctx, nil, exempt) != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		if err := Reserve(ctx, st, nil, plain, int64(i), now, false, ""); err != nil {
+			t.Fatal(i, err)
+		}
+	}
+	reason, err := BlockReason(ctx, st, nil, plain, now)
+	if err != nil || reason != "今日额度已用完" {
+		t.Fatal(reason, err)
+	}
+	if err := Reserve(ctx, st, nil, plain, 6, now, false, ""); err == nil {
+		t.Fatal("non-exempt user should stop at 5")
+	}
+	for i := 1; i <= 6; i++ {
+		if err := Reserve(ctx, st, nil, exempt, int64(100+i), now, false, ""); err != nil {
+			t.Fatal(i, err)
+		}
+	}
+	reason, err = BlockReason(ctx, st, nil, exempt, now)
+	if err != nil || reason != "" {
+		t.Fatal(reason, err)
+	}
+	snap, err := Snapshot(ctx, st, nil, exempt, now)
+	if err != nil || snap["unlimited"] != true || snap["daily_limit"] != "unlimited" {
+		t.Fatal(snap, err)
+	}
+	rows, err := st.DB.Query(ctx, `SELECT note FROM quota_ledger WHERE user_id = ? AND change_type = 'reserve'`, exempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	notes := 0
+	for rows.Next() {
+		var note string
+		if err := rows.Scan(&note); err != nil {
+			t.Fatal(err)
+		}
+		if note != "测试账号不限额" {
+			t.Fatal(note)
+		}
+		notes++
+	}
+	if notes != 6 {
+		t.Fatal(notes)
+	}
+	if err := CheckDailyCount(ctx, st, nil, exempt, now, 0, 9); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckDailyCount(ctx, st, nil, plain, now, 0, 6); err == nil {
+		t.Fatal("non-exempt daily plan count should still stop at 5")
+	}
+}
+
 func openStore(t *testing.T) *store.Store {
 	t.Helper()
 	database, err := db.Open("sqlite://"+filepath.Join(t.TempDir(), "t.db"), 4, 2)

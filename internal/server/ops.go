@@ -9,6 +9,7 @@ import (
 
 	"encoding/json"
 
+	"github.com/leoa81761-ops/wzgx/internal/columns"
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
@@ -236,15 +237,42 @@ func (a *App) planCalendar(w http.ResponseWriter, r *http.Request, user *model.U
 	if err != nil {
 		return err
 	}
-	pack := vertical.Match(plan.Direction, packs)
+	extra, err := a.Store.GetPlanExtra(r.Context(), nil, plan.ID)
+	if err != nil {
+		return err
+	}
+	accountColumns := ""
+	if plan.WxAccountID > 0 {
+		account, err := a.Store.GetAccount(r.Context(), nil, plan.WxAccountID)
+		if err != nil {
+			return err
+		}
+		if account != nil {
+			accountColumns = account.PersonaColumns
+		}
+	}
+	pack := vertical.Resolve(plan.Direction, extra, packs)
 	weights, err := a.Store.ListTopicWeights(r.Context(), nil, plan.ID)
 	if err != nil {
 		return err
 	}
-	tree := topics.ExpandTree(vertical.Subtopics(pack), plan.Direction, tier, weights)
+	tree := topics.ExpandTree(pipeline.TopicTree(pack, plan.Direction, extra.Keywords, extra.PersonaColumns, accountColumns), plan.Direction, tier, weights)
 	slots, err := topics.ProjectTree(tree, plan.Direction, tier, plan.ScheduleType, plan.Weekdays, plan.TimeWindow, history, now, count, vetoes)
 	if err != nil {
 		return bad(err.Error())
+	}
+	if active, err := a.Store.ListAccountColumns(r.Context(), nil, plan.WxAccountID, "active"); err != nil {
+		return err
+	} else if len(active) > 0 {
+		days := columns.ParseDays(extra.ColumnWeekdays)
+		hist := append([]topics.Coverage{}, history...)
+		for i := range slots {
+			choice, _, ok := pipeline.ApplyColumnChoice(slots[i].Choice, slots[i].At, active, extra.ColumnRotation, days, plan.Direction, extra.Keywords, hist)
+			if ok {
+				slots[i].Choice = choice
+			}
+			hist = append(hist, topics.Coverage{Subtopic: slots[i].Choice.Subtopic, Column: slots[i].Choice.Column, Angle: slots[i].Choice.Angle, CreatedAt: slots[i].At})
+		}
 	}
 	out := make([]map[string]any, 0, len(slots))
 	for _, slot := range slots {

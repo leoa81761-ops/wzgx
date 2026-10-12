@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
+	"github.com/leoa81761-ops/wzgx/internal/columns"
 	"github.com/leoa81761-ops/wzgx/internal/cover"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
@@ -369,6 +370,17 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 		view["persona_columns"] = extra.PersonaColumns
 		view["signatures"] = extra.Signatures
 		view["taboos"] = extra.Taboos
+		rotation := extra.ColumnRotation
+		if rotation == "" {
+			rotation = "weight"
+		}
+		view["column_rotation"] = rotation
+		view["column_weekdays"] = columns.ParseDays(extra.ColumnWeekdays)
+		if cols, err := a.Store.ListAccountColumns(ctx, nil, plan.WxAccountID, ""); err != nil {
+			return nil, err
+		} else {
+			view["account_columns"] = cols
+		}
 		suggested := persona.Suggest(plan.Direction, extra.VerticalKey)
 		view["suggested_tone"] = suggested.Tone
 		view["suggested_columns"] = suggested.Columns
@@ -571,6 +583,14 @@ func (a *App) bindAccount(w http.ResponseWriter, r *http.Request, user *model.Us
 			UserID: user.ID, DocType: "wx_credentials", Version: catalog.LegalVersion, ConsentItem: "wx_credentials",
 			IP: clientIP(r), UserAgent: userAgent(r), CreatedAt: now,
 		}); err != nil {
+			return err
+		}
+		history, err := a.Store.ColumnNames(r.Context(), tx, created.ID)
+		if err != nil {
+			return err
+		}
+		suggested := columns.Suggest(created.Name, "", created.PersonaColumns, history)
+		if err := a.Store.ReplaceSuggestedColumns(r.Context(), tx, created.ID, suggested, now); err != nil {
 			return err
 		}
 		return a.notePriorAppID(r.Context(), tx, user.ID, len(prior) > 0)
@@ -1163,6 +1183,22 @@ func (a *App) pausePlan(w http.ResponseWriter, r *http.Request, user *model.User
 	return nil
 }
 
+// quotaStillShort reports whether a paused plan is still over the numeric daily or period cap.
+// An unlimited snapshot stores those limits as the string "unlimited", which is not an int.
+func quotaStillShort(snap map[string]any) bool {
+	if snap["unlimited"] == true || snap["daily_limit"] == "unlimited" || snap["period_limit"] == "unlimited" {
+		return false
+	}
+	dailyUsed, _ := snap["daily_used"].(int)
+	dailyLimit, dailyOK := snap["daily_limit"].(int)
+	periodUsed, _ := snap["period_used"].(int)
+	periodLimit, periodOK := snap["period_limit"].(int)
+	if !dailyOK || !periodOK {
+		return true
+	}
+	return dailyUsed >= dailyLimit || periodUsed >= periodLimit
+}
+
 func (a *App) resumePlan(w http.ResponseWriter, r *http.Request, user *model.User) error {
 	id, err := pathID(r, "plan_id", "找不到这个写作计划")
 	if err != nil {
@@ -1184,11 +1220,7 @@ func (a *App) resumePlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			if err != nil {
 				return err
 			}
-			dailyUsed, _ := snap["daily_used"].(int)
-			dailyLimit, _ := snap["daily_limit"].(int)
-			periodUsed, _ := snap["period_used"].(int)
-			periodLimit, _ := snap["period_limit"].(int)
-			if dailyUsed >= dailyLimit || periodUsed >= periodLimit {
+			if quotaStillShort(snap) {
 				return bad("额度仍不足，暂时不能恢复")
 			}
 		}

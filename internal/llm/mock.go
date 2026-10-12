@@ -17,6 +17,8 @@ const citationRule = "用到 research_sources 里的事实时，在句末用 [1]
 
 const anecdoteRule = "事例只能来自已经给出的来源，或者明确写成假设，例如「比如……假设」。不要编造读者的生活，不要编造别人的原话。"
 
+const readerRule = "reader_profile 是给编辑看的读者画像，不要用这串文字称呼读者，也不要把它写进标题、摘要或正文。"
+
 func voiceRule(payload map[string]any) string {
 	if !technicalVoice(payload) {
 		return ""
@@ -73,15 +75,18 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
 		schema = StageSchema("正文")
-		system = "你是公众号编辑。当前正文偏长。请压缩到 word_target 的 85% 到 130% 之间，删掉重复和空话，保留事实、步骤和 sources，不要新增材料或网址。" +
-			lengthRule + sourcedFacts +
+		system = "你是公众号编辑。当前正文偏长。请压缩到不少于 word_target、不超过 word_target 的 130%，删掉重复和空话，保留事实、步骤和 sources，不要新增材料或网址。" +
+			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。不要短于 word_target。" +
+			sourcedFacts + readerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "标题":
 		system = "你是公众号标题编辑。请用输入里的语气，写 10 到 12 个彼此不同的标题。" +
+			"每个标题不超过 28 个字，不要写成叙述句，不要用逗号铺成一段话。" +
 			"每个标题都是完整的一句，不要为了凑字数截断，也不要在后面补套话。" +
 			"不要用「震惊」「不转不是」「稳赚不赔」。不要靠关键词堆砌。" +
 			"优先写具体场景或数字。每个标题都要自评分：hook、concrete、consistent、persona，都是 1 到 5 的整数。" +
-			"consistent 表示标题和 summary、正文是不是同一件事，对不上就低于 3。" +
+			"consistent 表示标题和 summary、正文是不是同一件事，对不上就低于 3。自评分只用于淘汰对不上的标题，不要靠高分把长句排到前面。" +
+			readerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "结构润色":
 		system = "你是公众号编辑。只改写输入里标记为需要改的部分：rewrite_hook、rewrite_headings、rewrite_closing 为 true 的才写。" +
@@ -89,7 +94,25 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" +
 			"开头如果要改，只写不超过 40 个字的一句，用来替换原来的第一段，不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
 			"小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
-			anecdoteRule + voiceRule(payload) +
+			anecdoteRule + voiceRule(payload) + readerRule +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "补引用":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。正文漏了引用序号。请对照 research_sources，在用到这些事实的句末补上 [1]、[2]，序号从 1 开始，对应来源顺序。" +
+			"不要编造来源里没有的事实，不要新增网址，不要改已经写对的数字。没有用到的来源不要写进 sources。" +
+			readerRule +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "开头比较":
+		system = "你是公众号编辑。比较原来的第一段和改写后的开头，留下更具体、更不像叙述句的那一个。" +
+			"choice 只能是 original 或 rewrite。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "标题比较":
+		system = "你是公众号标题编辑。从 candidates 里选出一个标题作为 winner，必须和某一条候选完全相同。" +
+			"优先 28 个字以内、有具体场景或数字、不是叙述句的标题。不要新写标题。" +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "意象改写":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。正文里同一句式或意象反复出现。请改写重复的说法，保留事实、数字和 [n] 引用，不要新增材料或网址。" +
+			readerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "事实核对":
 		schema = StageSchema("正文")
@@ -112,6 +135,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthRule + citationRule + anecdoteRule + voiceRule(payload)
 		}
+		system += readerRule
 		if stageLabel == "审核" {
 			system += "如果同一句式、意象或口头禅反复出现，在返回的正文里改写掉，并把 quality.motif 标为 true；没有反复就标 false。" +
 				"quality.hook 是开头 1 到 5 分，4 分及以上表示开头已经够具体，不必再改。quality.headings 和 quality.closing 表示小标题和结尾是否已经够用。"
@@ -140,7 +164,17 @@ func mockComplete(provider Provider, messages []map[string]string) (Completion, 
 	if stage == "" {
 		stage = "正文"
 	}
-	content, _ := json.Marshal(MockForStage(stage, payload))
+	data := MockForStage(stage, payload)
+	if stage == "开头比较" {
+		choice := "original"
+		if provider.ExtraParams != nil {
+			if picked, ok := provider.ExtraParams["_mock_hook_choice"].(string); ok && picked == "rewrite" {
+				choice = "rewrite"
+			}
+		}
+		data = map[string]any{"choice": choice}
+	}
+	content, _ := json.Marshal(data)
 	return Completion{
 		Content:          string(content),
 		PromptTokens:     120,
@@ -210,9 +244,81 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		return mockTitles(payload)
 	case "结构润色":
 		return mockPolish(payload)
+	case "补引用":
+		return mockAddCitations(payload)
+	case "开头比较":
+		return map[string]any{"choice": "original"}
+	case "标题比较":
+		return mockTitleChoice(payload)
+	case "意象改写":
+		return mockDraftCopy(payload)
 	default:
 		return draftFromPayload(payload)
 	}
+}
+
+func mockTitleChoice(payload map[string]any) map[string]any {
+	for _, item := range anySlice(payload["candidates"]) {
+		title := strings.TrimSpace(asString(item))
+		if title != "" && len([]rune(title)) <= 28 {
+			return map[string]any{"winner": title}
+		}
+	}
+	cands := anySlice(payload["candidates"])
+	if len(cands) > 0 {
+		return map[string]any{"winner": strings.TrimSpace(asString(cands[0]))}
+	}
+	return map[string]any{"winner": ""}
+}
+
+func mockAddCitations(payload map[string]any) map[string]any {
+	cloned := mockDraftCopy(payload)
+	if len(anySlice(payload["research_sources"])) == 0 {
+		return cloned
+	}
+	raw, _ := json.Marshal(cloned)
+	if strings.Contains(string(raw), "[") {
+		return cloned
+	}
+	sections, _ := cloned["sections"].([]any)
+	if len(sections) == 0 {
+		return cloned
+	}
+	section, _ := sections[0].(map[string]any)
+	if section == nil {
+		return cloned
+	}
+	paras, _ := section["paragraphs"].([]any)
+	if len(paras) == 0 {
+		section["paragraphs"] = []any{"见来源[1]。"}
+	} else if text, ok := paras[0].(string); ok {
+		paras[0] = text + "[1]"
+		section["paragraphs"] = paras
+	}
+	sections[0] = section
+	cloned["sections"] = sections
+	return cloned
+}
+
+func mockDraftCopy(payload map[string]any) map[string]any {
+	draft, _ := payload["draft"].(map[string]any)
+	if draft == nil {
+		return draftFromPayload(payload)
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		return draft
+	}
+	var cloned map[string]any
+	if json.Unmarshal(raw, &cloned) != nil || cloned == nil {
+		return draft
+	}
+	return cloned
+}
+
+func anySlice(raw any) []any {
+	list, _ := raw.([]any)
+	return list
 }
 
 func mockTitles(payload map[string]any) map[string]any {
@@ -272,32 +378,24 @@ func padDraft(draft map[string]any, target int) map[string]any {
 		cloned = draftFromPayload(map[string]any{})
 		sections, _ = cloned["sections"].([]any)
 	}
-	filler := "把这一步写得再具体一些：先看清眼前的材料，再做一个最小的动作，做完后用一句话记下结果，明天再决定要不要继续。"
-	for content.BodyRunes(cloned) < target && len(sections) > 0 {
-		last, _ := sections[len(sections)-1].(map[string]any)
-		if last == nil {
-			break
-		}
-		paras, _ := last["paragraphs"].([]any)
-		if len(paras) >= 4 {
-			if text, ok := paras[len(paras)-1].(string); ok {
-				paras[len(paras)-1] = text + filler
-			}
-		} else {
-			paras = append(paras, filler)
-		}
+	last, _ := sections[len(sections)-1].(map[string]any)
+	if last == nil {
+		return cloned
+	}
+	paras, _ := last["paragraphs"].([]any)
+	paras = append(paras, "")
+	for i := 0; content.BodyRunes(cloned) < target && i < 400; i++ {
+		text, _ := paras[len(paras)-1].(string)
+		paras[len(paras)-1] = text + padLine(i)
 		last["paragraphs"] = paras
 		sections[len(sections)-1] = last
 		cloned["sections"] = sections
-		if content.BodyRunes(cloned) > target+fillerLen(filler)*2 {
-			break
-		}
 	}
 	return cloned
 }
 
-func fillerLen(s string) int {
-	return len([]rune(s))
+func padLine(i int) string {
+	return strings.Repeat(string(rune(0x4E00+(i%400))), 8)
 }
 
 func draftFromPayload(payload map[string]any) map[string]any {
@@ -330,17 +428,37 @@ func draftFromPayload(payload map[string]any) map[string]any {
 	}
 	var sections []any
 	points, _ := outline["points"].([]any)
-	for _, raw := range points {
+	leads := []string{
+		"验收以前先把现场条件核对齐。",
+		"午饭后只改一处措辞就发出。",
+		"傍晚把没做完的那一条单独标出。",
+		"周末用十分钟整理刚记下的结果。",
+		"第二天早晨优先处理昨天标出的那条。",
+		"收工前把还没核对的项目圈出来。",
+	}
+	follows := []string{
+		"记录员把缺项写成清单交给负责人。",
+		"同事用回复确认收到不必再开会。",
+		"明天一早先处理这个标记再看其他。",
+		"写完就停不要把同一句话再说一遍。",
+		"做完这一步再决定要不要往下走。",
+		"核对的人签上名字日期就结束。",
+	}
+	for i, raw := range points {
 		point, _ := raw.(map[string]any)
 		heading := "一个小节"
 		if point != nil && asString(point["heading"]) != "" {
 			heading = asString(point["heading"])
 		}
+		lead := leads[i%len(leads)]
+		if i == 0 {
+			lead += "语气是" + style + "。"
+		}
 		section := map[string]any{
 			"heading": heading,
 			"paragraphs": []any{
-				"这篇文章用「" + style + "」的语气来写" + direction + "里的" + subtopic + "。",
-				"这一节顺着「" + angle + "」展开：把动作写小，读者才知道下一步做什么。",
+				lead,
+				follows[i%len(follows)],
 			},
 			"list": []any{"先做一个最小步骤", "做完后用一句话记下结果", "不追求一次到位"},
 		}
@@ -358,7 +476,7 @@ func draftFromPayload(payload map[string]any) map[string]any {
 	}
 	return map[string]any{
 		"title": title, "alt_titles": []any{subtopic + "可以先做的一件小事", "关于" + subtopic + "，少做一件事"},
-		"summary":  "一篇关于" + direction + "／" + subtopic + "的短文，供你阅读后自己判断是否采用。",
+		"summary":  "一篇关于" + direction + "／" + subtopic + "的短文，语气是" + style + "。",
 		"sections": sections, "closing": closing, "sources": []any{},
 	}
 }

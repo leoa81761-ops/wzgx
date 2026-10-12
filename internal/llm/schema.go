@@ -56,7 +56,7 @@ func StageSchema(stageLabel string) *Schema {
 					"items": objectSchema(
 						[]string{"title", "hook", "concrete", "consistent", "persona"},
 						map[string]any{
-							"title":      strField("完整标题，不要截断，不要用套话补长度"),
+							"title":      strField("完整标题，不超过 28 个字，不要写成叙述句，不要截断，不要用套话补长度"),
 							"hook":       scoreField("开头有没有具体场景或问题，1 到 5"),
 							"concrete":   scoreField("有没有具体场景或数字，1 到 5"),
 							"consistent": scoreField("和 summary、正文是不是同一件事，对不上就低于 3"),
@@ -68,6 +68,24 @@ func StageSchema(stageLabel string) *Schema {
 		)}
 	case "审核":
 		return &Schema{Name: "review", Body: reviewSchema()}
+	case "开头比较":
+		return &Schema{Name: "hook_choice", Body: objectSchema(
+			[]string{"choice"},
+			map[string]any{
+				"choice": map[string]any{
+					"type":        "string",
+					"enum":        []any{"original", "rewrite"},
+					"description": "original 保留原来的第一段，rewrite 采用改写后的开头",
+				},
+			},
+		)}
+	case "标题比较":
+		return &Schema{Name: "title_choice", Body: objectSchema(
+			[]string{"winner"},
+			map[string]any{
+				"winner": strField("从候选标题里选出的那一个，必须和某一条候选完全相同"),
+			},
+		)}
 	case "结构润色":
 		return &Schema{Name: "polish", Body: objectSchema(
 			[]string{"hook", "headings", "closing"},

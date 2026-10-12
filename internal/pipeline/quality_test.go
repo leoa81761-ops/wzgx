@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leoa81761-ops/wzgx/internal/columns"
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
@@ -134,13 +135,106 @@ func TestUncitedSourcesStayOutOfTheArticle(t *testing.T) {
 	st, deps := openDeps(t, "live", srv.Client())
 	ctx := context.Background()
 	user, account, plan := seedPaid(t, st, "uncited@example.com", srv.URL)
-	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 {
+	now := time.Now().UTC()
+	var taskID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "manual", now, nil)
+		if err != nil {
+			return err
+		}
+		taskID = task.ID
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(articles[0].BodyHTML, "参考来源") || strings.Contains(articles[0].BodyHTML, "gov.cn") || !strings.Contains(articles[0].DeliveryNote, "没有标注引用") {
-		t.Fatal(articles[0].BodyHTML, articles[0].DeliveryNote)
+	Execute(ctx, deps, taskID, false, now)
+	article, err := st.GetArticleByTask(ctx, nil, taskID)
+	if err != nil || article == nil {
+		t.Fatal(err)
+	}
+	if article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.BodyHTML, "延伸阅读") || !strings.Contains(article.BodyHTML, "www.gov.cn") || strings.Contains(article.BodyHTML, "参考来源") || !strings.Contains(article.DeliveryNote, "没有引用") {
+		t.Fatal(article.Status, article.DraftMediaID, article.DeliveryNote, article.BodyHTML)
+	}
+}
+
+func TestCleanupBelowTargetIsHeld(t *testing.T) {
+	para := strings.Repeat("合适的正文。", 84)
+	body := map[string]any{
+		"title": "短稿", "summary": "摘要",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{para, para}, "list": []any{}}},
+		"closing":  "结束", "sources": []any{},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "短稿", "angle": "今天就能做"})
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, body)
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "deduped-short@example.com")
+	plan.WordTarget = 800
+	now := time.Now().UTC()
+	var taskID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "manual", now, nil)
+		if err != nil {
+			return err
+		}
+		taskID = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := content.BodyRunes(body)
+	Execute(ctx, deps, taskID, false, now)
+	article, err := st.GetArticleByTask(ctx, nil, taskID)
+	if err != nil || article == nil {
+		t.Fatal(err)
+	}
+	if before < 800*85/100 || content.BodyRunes(article.BodyJSON) >= 800*85/100 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+		t.Fatalf("before %d after %d status %s note %s", before, content.BodyRunes(article.BodyJSON), article.Status, article.DeliveryNote)
+	}
+}
+
+func TestCondenseRejectsBelowTheTarget(t *testing.T) {
+	long := strings.Repeat("原文说明引用这里[1]。", 80)
+	original := map[string]any{
+		"title":    "验收记录",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}},
+		"closing":  "结束。",
+		"sources":  []any{map[string]any{"name": "官网", "url": "https://www.gov.cn/a"}},
+	}
+	short := map[string]any{
+		"title":    "验收记录",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"压短后的说明仍见[1]。"}, "list": []any{}}},
+		"closing":  "结束。",
+		"sources":  []any{},
+	}
+	if content.BodyRunes(short) >= 800 {
+		t.Fatal(content.BodyRunes(short))
+	}
+	kept, ok := keepCondensed(original, short, 800)
+	if ok || content.BodyRunes(kept) != content.BodyRunes(original) {
+		t.Fatal(ok, content.BodyRunes(kept))
+	}
+	kept, ok = keepCondensed(original, short, 0)
+	if !ok || !strings.Contains(bodyPlain(kept), "压短后的说明仍见[1]。") {
+		t.Fatal(ok, kept)
 	}
 }
 
@@ -162,6 +256,16 @@ func TestFamilyFooterIsNotTheMedicalLine(t *testing.T) {
 	next := topics.AssignColumn(topic, "现场笔记,验收清单", []topics.Coverage{{Column: "现场笔记"}})
 	if next.Column != "验收清单" {
 		t.Fatal(next)
+	}
+}
+
+func TestActiveColumnReplacesPackSubtopics(t *testing.T) {
+	at := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	choice, col, ok := ApplyColumnChoice(topics.Choice{Subtopic: "亲子阅读", Column: "避坑辟谣", Angle: "一个说法"}, at, []columns.Column{{
+		ID: 1, Name: "工程圈快报", Status: "active", Positioning: "行业消息",
+	}}, "weight", nil, "弱电智能化", "验收", nil)
+	if !ok || choice.Subtopic == "亲子阅读" || strings.Contains(choice.TopicTag, "亲子阅读") || strings.Contains(choice.TopicTag, "综合布线") || choice.Column != "工程圈快报" || col.Name != "工程圈快报" {
+		t.Fatal(choice, col, ok)
 	}
 }
 

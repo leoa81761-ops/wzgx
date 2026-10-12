@@ -3,7 +3,8 @@
     <div>
       <h1 style="font-size: 32px">会员</h1>
       <p>当前档位：{{ quota.tier_label }}（{{ quota.state_label }}）</p>
-      <p class="muted">今日剩余 {{ quota.daily_remaining ?? 0 }} 篇（已用 {{ quota.daily_used }} / {{ quota.daily_limit }}）· {{ quota.period_label }}剩余 {{ quota.period_remaining ?? 0 }} 篇（已用 {{ quota.period_used }} / {{ quota.period_limit }}）</p>
+      <p v-if="quota.unlimited" class="muted">测试账号不限额。已用 {{ quota.daily_used ?? 0 }} 篇。</p>
+      <p v-else class="muted">今日剩余 {{ quota.daily_remaining ?? 0 }} 篇（已用 {{ quota.daily_used }} / {{ quota.daily_limit }}）· {{ quota.period_label }}剩余 {{ quota.period_remaining ?? 0 }} 篇（已用 {{ quota.period_used }} / {{ quota.period_limit }}）</p>
       <p v-if="quota.pack_remaining" class="muted">加量包剩余 {{ quota.pack_remaining }} 篇。订阅额度用完后才扣加量包，每天篇数上限仍然有效，加量包 90 天内有效。</p>
       <p v-if="quota.expires_at" class="muted">到期时间：{{ formatTime(quota.expires_at) }}。到期前 7 天、3 天、1 天会在通知里提醒。到期后有 7 天宽限期，宽限期内不能新增公众号和方向。</p>
       <p v-if="quota.pending_tier" class="muted">到期后改为{{ quota.pending_label }}{{ quota.applies_at ? `（${formatTime(quota.applies_at)}）` : "" }}。</p>

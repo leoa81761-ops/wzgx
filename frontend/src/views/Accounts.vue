@@ -50,6 +50,32 @@
         <label>常设栏目<input v-model="account.persona_columns" maxlength="80" placeholder="例如：现场笔记,验收清单" /></label>
         <label>口头禅<input v-model="account.signatures" maxlength="80" placeholder="例如：先看现场，再谈方案" /></label>
         <label>不写的话题<input v-model="account.taboos" maxlength="80" placeholder="例如：保证中标" /></label>
+        <div class="stack">
+          <strong>栏目</strong>
+          <p class="muted">绑定后先确认建议栏目。选题只从已确认的栏目和这个号的方向里来。</p>
+          <article v-for="col in account.columns || []" :key="col.id" class="stack">
+            <p>{{ col.name }} · {{ structureLabel(col.structure) }} · {{ col.word_target }} 字 · {{ col.status === "active" ? "已确认" : "待确认" }}</p>
+            <p class="muted">{{ col.positioning }} · 配图：{{ col.image_style }}</p>
+            <div class="row">
+              <button v-if="col.status !== 'active'" class="btn" type="button" @click="confirmColumns(account, [col.id])">确认这个栏目</button>
+              <button class="btn-ghost" type="button" @click="removeColumn(account, col)">删除</button>
+            </div>
+          </article>
+          <button v-if="hasSuggested(account)" class="btn" type="button" @click="confirmColumns(account, [])">确认全部建议栏目</button>
+          <label>新栏目名<input v-model="account.draft_name" maxlength="20" placeholder="例如：工程圈快报" /></label>
+          <label>定位<input v-model="account.draft_positioning" maxlength="80" /></label>
+          <label>结构
+            <select v-model="account.draft_structure">
+              <option value="news">新闻快报</option>
+              <option value="steps">步骤拆解</option>
+              <option value="qa">问答</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label>篇幅<input v-model.number="account.draft_words" type="number" min="200" max="3000" /></label>
+          <label>配图风格<input v-model="account.draft_image" maxlength="40" placeholder="例如：现场照片" /></label>
+          <button class="btn-ghost" type="button" @click="addColumn(account)">添加栏目</button>
+        </div>
         <ul>
           <li v-for="check in account.permission_report.checks || []" :key="check.name">
             {{ check.ok ? "通过" : "未通过" }} · {{ check.detail }}
@@ -88,8 +114,64 @@ const form = reactive({
   consent: false,
 });
 
+function structureLabel(structure) {
+  return { news: "新闻快报", steps: "步骤拆解", qa: "问答", custom: "自定义" }[structure] || structure;
+}
+
+function hasSuggested(account) {
+  return (account.columns || []).some((col) => col.status !== "active");
+}
+
+async function loadColumns(account) {
+  account.columns = await api(`/api/accounts/${account.id}/columns`);
+  account.draft_structure = account.draft_structure || "custom";
+  account.draft_words = account.draft_words || 800;
+}
+
+async function confirmColumns(account, ids) {
+  error.value = "";
+  try {
+    account.columns = await api(`/api/accounts/${account.id}/columns/confirm`, { method: "POST", body: { ids } });
+    message.value = "已确认栏目";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function addColumn(account) {
+  error.value = "";
+  try {
+    await api(`/api/accounts/${account.id}/columns`, {
+      method: "POST",
+      body: {
+        name: account.draft_name || "",
+        positioning: account.draft_positioning || "",
+        structure: account.draft_structure || "custom",
+        word_target: Number(account.draft_words || 800),
+        image_style: account.draft_image || "",
+        weight: 1,
+      },
+    });
+    account.draft_name = "";
+    account.draft_positioning = "";
+    message.value = "已添加栏目";
+    await loadColumns(account);
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function removeColumn(account, col) {
+  if (!window.confirm(`删除栏目「${col.name}」？`)) return;
+  await api(`/api/accounts/${account.id}/columns/${col.id}`, { method: "DELETE" });
+  await loadColumns(account);
+}
+
 async function load() {
   accounts.value = await api("/api/accounts");
+  for (const account of accounts.value) {
+    await loadColumns(account);
+  }
   const meta = await api("/api/meta");
   mode.value = meta.wechat_mode;
   const options = await api("/api/auth/options");

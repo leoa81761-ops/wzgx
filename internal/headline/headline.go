@@ -50,11 +50,8 @@ func RankScored(candidates []Scored, summary, body string, redLines, recent []st
 		if score <= 0 {
 			continue
 		}
-		if row.HasScores {
-			if row.Consistent < 3 {
-				continue
-			}
-			score += clampScore(row.Hook) + clampScore(row.Concrete) + clampScore(row.Consistent) + clampScore(row.Persona)
+		if row.HasScores && row.Consistent < 3 {
+			continue
 		}
 		if digitMissing(row.Title, summary, body) {
 			continue
@@ -83,10 +80,11 @@ func RankScored(candidates []Scored, summary, body string, redLines, recent []st
 
 // Score ranks one title. Length outside 18–28 runes is a mild penalty.
 // A digit or other concrete number is preferred. Keyword and emotion lists are not rewarded.
-// Clickbait, red lines and duplicates score zero and are dropped.
+// Clickbait, red lines, duplicates, titles over 30 runes, and descriptive sentences score zero and are dropped.
+// Model self-scores are not added here.
 func Score(title string, redLines, recent []string, prefer string) int {
 	title = strings.TrimSpace(title)
-	if title == "" || banned(title, redLines) {
+	if title == "" || banned(title, redLines) || descriptiveSentence(title) {
 		return 0
 	}
 	for _, old := range recent {
@@ -111,14 +109,21 @@ func Score(title string, redLines, recent []string, prefer string) int {
 	return score
 }
 
-func clampScore(n int) int {
-	if n < 0 {
-		return 0
+// descriptiveSentence is a narrative line, not a title: over 30 runes, a sentence ending,
+// a long clause with a comma, or a scene that tells the reader to imagine or watch.
+func descriptiveSentence(title string) bool {
+	title = strings.TrimSpace(title)
+	n := utf8.RuneCountInString(title)
+	if n > 30 {
+		return true
 	}
-	if n > 5 {
-		return 5
+	if strings.HasSuffix(title, "。") || strings.HasSuffix(title, "！") || strings.HasSuffix(title, "？") {
+		return true
 	}
-	return n
+	if n > 22 && (strings.Contains(title, "，") || strings.Contains(title, ",")) {
+		return true
+	}
+	return strings.Contains(title, "想象") || strings.Contains(title, "看着")
 }
 
 func digitMissing(title, summary, body string) bool {
