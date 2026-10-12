@@ -117,8 +117,22 @@ func TestAttachResearchCitations(t *testing.T) {
 func TestResearchPromptAsksToSearch(t *testing.T) {
 	messages := StageMessages("资料检索", map[string]any{"topic_title": "远程协作"})
 	system := messages[0]["content"]
-	if !strings.Contains(system, "搜索") || strings.Contains(system, "空数组") || strings.Contains(system, "JSON Schema") {
+	if !strings.Contains(system, "搜索") || !strings.Contains(system, "中文") || strings.Contains(system, "空数组") || strings.Contains(system, "JSON Schema") {
 		t.Fatal(system)
+	}
+	elv := StageMessages("资料检索", map[string]any{"vertical_key": "elv", "vertical": "弱电智能化"})
+	elvSystem := elv[0]["content"]
+	if !strings.Contains(elvSystem, "mohurd.gov.cn") || !strings.Contains(elvSystem, "GB 50311") || !strings.Contains(elvSystem, "samr.gov.cn") {
+		t.Fatal(elvSystem)
+	}
+	short := StageMessages("资料检索", map[string]any{"query_mode": "short"})
+	if !strings.Contains(short[0]["content"], "补救检索") {
+		t.Fatal(short[0]["content"])
+	}
+	expand := StageMessages("扩写", map[string]any{"word_target": 800, "expand_goal": 840})
+	expandSystem := expand[0]["content"]
+	if strings.Contains(expandSystem, "85% 到 130%") || !strings.Contains(expandSystem, "105%") || !strings.Contains(expandSystem, "110%") {
+		t.Fatal(expandSystem)
 	}
 	draft := StageMessages("正文", map[string]any{"word_target": 1500})
 	if !strings.Contains(draft[0]["content"], "word_target") || !strings.Contains(draft[0]["content"], "JSON Schema") {

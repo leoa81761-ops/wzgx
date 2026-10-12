@@ -9,7 +9,7 @@
     </div>
     <p v-if="article.status === 'generating'" class="banner info">正在生成，完成后会自动刷新。模型较慢时可能要几分钟。</p>
     <p v-if="article.failure_reason" class="banner">{{ article.failure_reason }}</p>
-    <p v-if="article.delivery_note" class="banner info">{{ article.delivery_note }}</p>
+    <p v-if="article.delivery_note" class="banner" :class="{ info: !String(article.delivery_note).includes('无参考来源') }">{{ article.delivery_note }}</p>
     <p v-if="article.risk_level && article.risk_level !== 'low'" class="banner">{{ article.risk_label }}</p>
     <p v-if="article.draft_media_id" class="muted">草稿 media_id：{{ article.draft_media_id }}</p>
     <p v-if="article.article_url" class="muted">发布链接：{{ article.article_url }}</p>

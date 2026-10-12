@@ -18,17 +18,28 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	var system string
 	switch stageLabel {
 	case "资料检索":
-		system = "你是资料检索助手。请立刻联网搜索，为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。" +
+		system = "你是资料检索助手。请立刻联网搜索，先用中文搜索，优先中文网页。" +
+			"为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。" +
 			"每条都要有名称、标题、以 http:// 或 https:// 开头的真实网址、发布日期（知道再写）、类型（news、policy、standard、other 之一），以及一两句说明这条资料写了什么。" +
-			"优先政府网站（.gov.cn）、标准组织、机构原文和主流媒体，不要用转载站、聚合站或内容农场。输入里的 blocked_domains 一律不要引用。" +
+			"优先政府网站（.gov.cn）、标准组织、机构原文和主流媒体，不要用转载站、聚合站或内容农场。" +
+			"不要网店、帮助台、登录页和购物车页面。同一网站最多两条。" +
+			"输入里的 blocked_domains 一律不要引用。" +
 			"如果输入里有 allowed_domains，只引用这些域名及其子域名。" +
 			"只写你实际搜到的网址，不要编造链接。请直接给出来源。如果确实搜不到，写明「未检索到可靠来源」。" +
 			"可以用 JSON：{\"notes\":\"事实摘要\",\"sources\":[{\"name\":\"\",\"title\":\"\",\"published_on\":\"\",\"url\":\"\",\"source_type\":\"news\",\"note\":\"简要说明\"}]}。" +
 			"也可以用 Markdown：每条写成 [标题](https://网址)，同一行或下一行写简要说明。"
+		if asString(payload["vertical_key"]) == "elv" || strings.Contains(asString(payload["vertical"]), "弱电") {
+			system += "这是弱电智能化选题：优先 gov.cn、国家标准（例如 GB 50311）、mohurd.gov.cn、samr.gov.cn、openstd.samr.gov.cn，以及中国行业协会（例如中国工程建设标准化协会）。"
+		}
+		if asString(payload["query_mode"]) == "short" {
+			system += "这是补救检索。只写一条中文检索词，最多 3 条权威来源。"
+		}
 	case "扩写":
 		schema = StageSchema("正文")
-		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写，使正文字数落到 word_target 的 85% 到 130% 之间，不要写超。" +
-			lengthRule + sourcedFacts +
+		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写。" +
+			"目标大约是 word_target 的 105%（输入里的 expand_goal）。写到 100% 到 110% 就停，不要为了凑到 130% 而注水。" +
+			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
+			sourcedFacts +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
 		schema = StageSchema("正文")

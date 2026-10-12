@@ -93,7 +93,7 @@ var Templates = []Template{
 
 var VerticalSeeds = []VerticalSeed{
 	{Key: "general", Name: "通用", Keywords: "", Subtopics: "", RedLines: "不写诊断、剂量、偏方、处方、治疗方案和收益承诺。不确定的数字不要写死。", SourceAllow: "", ImageRules: "插画或示意图，不要文字、水印和品牌标识。", Disclaimer: ""},
-	{Key: "elv", Name: "弱电智能化", Keywords: "弱电,智能化,楼宇", Subtopics: "综合布线\n视频监控\n门禁对讲\n楼宇自控\n背景音乐\n机房与防雷", RedLines: "弱电指通信、安防、楼宇自控、火灾报警、音视频等电子系统，常见是安全特低电压或信号电平，不是低压配电的 1000V 门槛。没有来源就不要写标准编号、电压阈值和器件参数。", SourceAllow: "优先 .gov.cn、标准组织和技术白皮书。", ImageRules: "工程示意插画，机房、线槽、摄像机或控制室，不要真实人脸，不要文字。", Disclaimer: "本文是工程科普，不能代替设计图纸和验收规范。"},
+	{Key: "elv", Name: "弱电智能化", Keywords: "弱电,智能化,楼宇", Subtopics: "综合布线\n视频监控\n门禁对讲\n楼宇自控\n背景音乐\n机房与防雷", RedLines: "弱电指通信、安防、楼宇自控、火灾报警、音视频等电子系统，常见是安全特低电压或信号电平，不是低压配电的 1000V 门槛。没有来源就不要写标准编号、电压阈值和器件参数。", SourceAllow: "先用中文搜索。优先 gov.cn、国家标准（例如 GB 50311）、mohurd.gov.cn、samr.gov.cn 和中国行业协会，其次才是英文资料。", ImageRules: "工程示意插画，机房、线槽、摄像机或控制室，不要真实人脸，不要文字。", Disclaimer: "本文是工程科普，不能代替设计图纸和验收规范。"},
 	{Key: "family", Name: "家庭生活", Keywords: "家庭,母婴,生活,美食,亲子", Subtopics: "家庭日常\n亲子阅读\n家常备菜\n收纳整理\n作息节奏", RedLines: "不写药物剂量、疾病诊断、偏方和治疗方案。不声称替代母乳，不制造育儿焦虑。", SourceAllow: "健康、喂养、疫苗只引用卫生健康主管部门、疾控机构或专业学会。", ImageRules: "家庭场景插画或物品，不生成可识别的真实儿童人脸，不要文字。", Disclaimer: "本文仅供科普，不能替代医生诊疗意见。"},
 	{Key: "tech", Name: "科技", Keywords: "科技,数码,软件,工具", Subtopics: "手机使用\n笔记软件\n备份习惯\n密码管理\n文件整理", RedLines: "不编造跑分、价格和未发布的产品参数。不承诺收益。", SourceAllow: "优先厂商文档和主流科技媒体。", ImageRules: "干净的产品与界面插画，不要文字、水印和品牌标识。", Disclaimer: ""},
 }

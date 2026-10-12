@@ -2,6 +2,7 @@ package content
 
 import (
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -82,7 +83,8 @@ func (p SourcePolicy) Filter(sources []map[string]any) []map[string]any {
 		if source == nil {
 			continue
 		}
-		if !p.AllowsURL(asText(source["url"])) {
+		raw := asText(source["url"])
+		if !p.AllowsURL(raw) || junkPage(raw) {
 			continue
 		}
 		out = append(out, source)
@@ -128,10 +130,99 @@ func (p SourcePolicy) dropReason(raw string) string {
 	if domainMatch(host, p.Block) {
 		return "屏蔽域名"
 	}
+	if junkPage(raw) {
+		return "网店或登录页"
+	}
 	if len(p.Allow) > 0 && !domainMatch(host, p.Allow) {
 		return "不在允许名单"
 	}
 	return ""
+}
+
+// PreferSources 把中文和权威来源排到前面，同一主机最多保留两条。mode 为 elv 时再提高住建部、市监局和国家标准的优先级。
+func PreferSources(sources []map[string]any, mode string) []map[string]any {
+	if len(sources) == 0 {
+		return sources
+	}
+	type scored struct {
+		source map[string]any
+		score  int
+		index  int
+	}
+	rows := make([]scored, 0, len(sources))
+	for i, source := range sources {
+		if source == nil {
+			continue
+		}
+		rows = append(rows, scored{source: source, score: sourceScore(source, mode), index: i})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].score == rows[j].score {
+			return rows[i].index < rows[j].index
+		}
+		return rows[i].score > rows[j].score
+	})
+	out := make([]map[string]any, 0, len(rows))
+	perHost := map[string]int{}
+	for _, row := range rows {
+		host := sourceHost(asText(row.source["url"]))
+		if host != "" {
+			if perHost[host] >= 2 {
+				continue
+			}
+			perHost[host]++
+		}
+		out = append(out, row.source)
+	}
+	return out
+}
+
+func sourceScore(source map[string]any, mode string) int {
+	raw := asText(source["url"])
+	host := sourceHost(raw)
+	text := strings.ToUpper(asText(source["title"]) + " " + asText(source["name"]) + " " + raw)
+	score := 0
+	if host == "gov.cn" || strings.HasSuffix(host, ".gov.cn") {
+		score += 100
+	}
+	if host == "cn" || strings.HasSuffix(host, ".cn") {
+		score += 20
+	}
+	if mode == "elv" {
+		if host == "mohurd.gov.cn" || strings.HasSuffix(host, ".mohurd.gov.cn") {
+			score += 40
+		}
+		if host == "samr.gov.cn" || strings.HasSuffix(host, ".samr.gov.cn") {
+			score += 40
+		}
+		if strings.Contains(text, "GB/T") || strings.Contains(text, "GB 5") || strings.Contains(text, "GB5") || strings.Contains(text, "国家标准") {
+			score += 30
+		}
+	}
+	return score
+}
+
+func junkPage(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	host = strings.TrimPrefix(host, "www.")
+	if strings.Contains(host, "webstore") || strings.Contains(host, "helpdesk") || strings.HasPrefix(host, "shop.") {
+		return true
+	}
+	for _, seg := range strings.Split(strings.ToLower(parsed.Path), "/") {
+		switch seg {
+		case "store", "shop", "cart", "login", "signin", "checkout":
+			return true
+		}
+	}
+	return false
 }
 
 func sourceHost(raw string) string {
