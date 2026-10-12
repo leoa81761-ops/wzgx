@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/config"
+	"github.com/leoa81761-ops/wzgx/internal/db"
 )
 
 func TestPlansStayIndependentPerAccount(t *testing.T) {
@@ -151,6 +152,9 @@ func TestAccountPersonaIsInherited(t *testing.T) {
 	if before["tone"] != "" || before["audience"] != "" {
 		t.Fatal(before)
 	}
+	if _, err := app.DB.SQL.ExecContext(context.Background(), `DELETE FROM app_setting WHERE key = ?`, db.AccountVoiceMigrationKey); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.DB.MigrateAccountVoice(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +171,19 @@ func TestAccountPersonaIsInherited(t *testing.T) {
 	later := getJSON(t, ts.URL+"/api/plans/"+secondID, token)
 	if later.JSON["tone"] != "后写的语气" || later.JSON["effective_tone"] != "后写的语气" || later.JSON["account_tone"] != "先写的语气" {
 		t.Fatal(later.JSON)
+	}
+	cleared := putJSON(t, ts.URL+"/api/accounts/"+strconv.FormatInt(accountID, 10)+"/voice", token, map[string]any{
+		"audience": "现场读者", "tone": "", "persona_columns": "现场笔记", "signatures": "先看现场", "taboos": "包过验收",
+	})
+	if cleared.StatusCode != 200 || cleared.JSON["tone"] != "" {
+		t.Fatal(cleared.StatusCode, cleared.Body)
+	}
+	if err := app.DB.MigrateAccountVoice(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stayed := accountByID(t, getJSON(t, ts.URL+"/api/accounts", token).JSONList, accountID)
+	if stayed["tone"] != "" || stayed["audience"] != "现场读者" {
+		t.Fatal(stayed)
 	}
 	saved := putJSON(t, ts.URL+"/api/accounts/"+strconv.FormatInt(accountID, 10)+"/voice", token, map[string]any{
 		"audience": "现场负责人", "tone": "账号语气", "persona_columns": "验收清单", "signatures": "先看现场", "taboos": "包过",

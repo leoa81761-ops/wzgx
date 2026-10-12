@@ -146,7 +146,13 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 		}
 	}
 	if closing := strings.TrimSpace(asString(article["closing"])); closing != "" {
-		parts = append(parts, `<p style="`+theme["p"]+`">`+html.EscapeString(closing)+`</p>`)
+		for _, para := range strings.Split(closing, "\n\n") {
+			para = strings.TrimSpace(para)
+			if para == "" {
+				continue
+			}
+			parts = append(parts, `<p style="`+theme["p"]+`">`+html.EscapeString(para)+`</p>`)
+		}
 	}
 	sources := asList(article["sources"])
 	if len(sources) > 0 {

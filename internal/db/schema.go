@@ -2,7 +2,10 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
+	"time"
 )
 
 func (d *DB) migrate(ctx context.Context) error {
@@ -722,9 +725,21 @@ CREATE TABLE IF NOT EXISTS user_contract (
 	return d.MigrateAccountVoice(ctx)
 }
 
+// AccountVoiceMigrationKey marks the one-time copy of plan voice onto accounts.
+// A later startup does not fill a field the user has cleared.
+const AccountVoiceMigrationKey = "account_voice_migrated"
+
 // MigrateAccountVoice copies the earliest non-empty plan voice onto an account that does not have one yet.
-// A later plan that stored a different value stays as that plan's override.
+// It runs once. A later plan that stored a different value stays as that plan's override.
 func (d *DB) MigrateAccountVoice(ctx context.Context) error {
+	var done string
+	err := d.QueryRow(ctx, `SELECT value FROM app_setting WHERE key = ?`, AccountVoiceMigrationKey).Scan(&done)
+	if err == nil && strings.TrimSpace(done) == "1" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	for _, col := range []string{"audience", "tone", "persona_columns", "signatures", "taboos"} {
 		stmt := `UPDATE wx_account SET ` + col + ` = (
 			SELECT pe.` + col + ` FROM plan_extra pe
@@ -740,7 +755,26 @@ func (d *DB) MigrateAccountVoice(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	stamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	res, err := d.Exec(ctx, `UPDATE app_setting SET value = ?, updated_at = ? WHERE key = ?`, "1", stamp, AccountVoiceMigrationKey)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err = d.Exec(ctx, `INSERT INTO app_setting (key, value, updated_at) VALUES (?, ?, ?)`, AccountVoiceMigrationKey, "1", stamp)
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate") {
+			return nil
+		}
+	}
+	return err
 }
 
 func (d *DB) ensureColumn(ctx context.Context, table, column, decl string) error {

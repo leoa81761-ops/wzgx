@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/wechat"
 	"math/rand"
 	"net/http"
+	"regexp"
 )
 
 type Deps struct {
@@ -684,20 +686,31 @@ func ImagePlan(mode string, hasAsset, aiCover bool, inline int) (useModel bool, 
 	return true, aiCover, inline
 }
 
-func finishPiece(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft map[string]any, w Input, fallbackTitle string, base map[string]any) (map[string]any, int, []map[string]any) {
+func finishPiece(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft map[string]any, w Input, fallbackTitle string, base map[string]any, sensitive []string) (map[string]any, int, []map[string]any) {
 	if draft == nil {
 		return draft, 0, nil
 	}
-	rewritten, tokens, trace := rewriteWeak(ctx, gateway, providers, draft, base)
-	draft = rewritten
+	var tokens int
+	var trace []map[string]any
+	if strings.TrimSpace(w.CostNote) == "" {
+		rewritten, rewriteTokens, rewriteTrace := rewriteWeak(ctx, gateway, providers, draft, base)
+		draft = rewritten
+		tokens += rewriteTokens
+		trace = append(trace, rewriteTrace...)
+	}
 	if w.WordTarget > 0 && content.BodyRunes(draft) > w.WordTarget*130/100 {
 		shortened, condenseTokens, condenseTrace := condenseOnce(ctx, gateway, providers, draft, base)
 		draft = shortened
 		tokens += condenseTokens
 		trace = append(trace, condenseTrace...)
 	}
-	ranked, titleTokens, titleTrace := rankTitles(ctx, gateway, providers, draft, w, fallbackTitle, base)
-	return ranked, tokens + titleTokens, append(trace, titleTrace...)
+	if strings.TrimSpace(w.CostNote) == "" {
+		ranked, titleTokens, titleTrace := rankTitles(ctx, gateway, providers, draft, w, fallbackTitle, base, sensitive)
+		draft = ranked
+		tokens += titleTokens
+		trace = append(trace, titleTrace...)
+	}
+	return draft, tokens, trace
 }
 
 func rewriteWeak(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
@@ -737,13 +750,163 @@ func condenseOnce(ctx context.Context, gateway *llm.Gateway, providers map[strin
 	if err != nil || condensed == nil {
 		return draft, tokensOf(completion), trace
 	}
-	if next := content.BodyRunes(condensed); next == 0 || next >= before {
+	kept, ok := keepCondensed(draft, condensed)
+	if !ok {
 		return draft, tokensOf(completion), trace
 	}
-	return condensed, tokensOf(completion), trace
+	return kept, tokensOf(completion), trace
 }
 
-func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft map[string]any, w Input, fallbackTitle string, base map[string]any) (map[string]any, int, []map[string]any) {
+var (
+	citationMarks = regexp.MustCompile(`\[\d+\]`)
+	claimNumbers  = regexp.MustCompile(`\d+`)
+)
+
+// keepCondensed accepts a shorter draft only when it does not add numbers or change which citations appear.
+// Sources stay as they were on the pre-condense draft. Dropping a repeated marker is fine; a new marker, a missing marker, or a new number is rejected.
+func keepCondensed(original, condensed map[string]any) (map[string]any, bool) {
+	if original == nil || condensed == nil {
+		return original, false
+	}
+	before := content.BodyRunes(original)
+	next := content.BodyRunes(condensed)
+	if next == 0 || next >= before {
+		return original, false
+	}
+	if citationsChanged(original, condensed) || claimsAdded(original, condensed) {
+		return original, false
+	}
+	copySources(condensed, original)
+	return condensed, true
+}
+
+func citationsChanged(original, condensed map[string]any) bool {
+	before := map[string]bool{}
+	for _, mark := range citationMarks.FindAllString(bodyPlain(original), -1) {
+		before[mark] = true
+	}
+	after := map[string]bool{}
+	for _, mark := range citationMarks.FindAllString(bodyPlain(condensed), -1) {
+		after[mark] = true
+	}
+	if len(before) != len(after) {
+		return true
+	}
+	for mark := range before {
+		if !after[mark] {
+			return true
+		}
+	}
+	return false
+}
+
+func claimsAdded(original, condensed map[string]any) bool {
+	seen := map[string]int{}
+	for _, token := range claimNumbers.FindAllString(bodyPlain(original), -1) {
+		seen[token]++
+	}
+	for _, token := range claimNumbers.FindAllString(bodyPlain(condensed), -1) {
+		if seen[token] == 0 {
+			return true
+		}
+		seen[token]--
+	}
+	return false
+}
+
+func bodyPlain(draft map[string]any) string {
+	var b strings.Builder
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		b.WriteString(str(section["heading"]))
+		b.WriteByte('\n')
+		for _, item := range asList(section["paragraphs"]) {
+			b.WriteString(str(item))
+			b.WriteByte('\n')
+		}
+		for _, item := range asList(section["list"]) {
+			b.WriteString(str(item))
+			b.WriteByte('\n')
+		}
+		if table, _ := section["table"].(map[string]any); table != nil {
+			for _, item := range asList(table["headers"]) {
+				b.WriteString(str(item))
+				b.WriteByte('\n')
+			}
+			for _, row := range asList(table["rows"]) {
+				cells, _ := row.([]any)
+				for _, cell := range cells {
+					b.WriteString(str(cell))
+					b.WriteByte('\n')
+				}
+			}
+		}
+	}
+	b.WriteString(str(draft["closing"]))
+	return b.String()
+}
+
+func copySources(dst, src map[string]any) {
+	raw, err := json.Marshal(asList(src["sources"]))
+	if err != nil {
+		return
+	}
+	var list []any
+	if json.Unmarshal(raw, &list) != nil || list == nil {
+		list = []any{}
+	}
+	dst["sources"] = list
+}
+
+// reviewSensitive repeats the sensitive-word rewrite on text produced after the main review.
+// One rewrite is requested. A remaining hit fails the article the same way the main path does.
+func reviewSensitive(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, draft, reviewPayload map[string]any, sensitive []string) (map[string]any, int, []map[string]any, error) {
+	hits := sensitiveHits(draft, sensitive)
+	if len(hits) == 0 {
+		return draft, 0, nil, nil
+	}
+	payload := cloneMap(reviewPayload)
+	payload["draft"] = draft
+	payload["issues"] = hits
+	reviewed, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("审核", payload), llm.StageSchema("审核"), validateDraft)
+	trace := appendStage(nil, "review", completion, err)
+	if err != nil {
+		return draft, tokensOf(completion), trace, err
+	}
+	cleaned, _ := content.StripCliches(reviewed).(map[string]any)
+	if cleaned == nil {
+		cleaned = draft
+	}
+	hits = sensitiveHits(cleaned, sensitive)
+	if len(hits) > 0 {
+		message := "审核未通过，命中敏感词：" + strings.Join(hits, "、")
+		trace = append(trace, map[string]any{"stage": "audit", "ok": false, "error": clip(message, 300)})
+		return cleaned, tokensOf(completion), trace, &llm.Error{Message: message}
+	}
+	return cleaned, tokensOf(completion), trace, nil
+}
+
+func sensitiveHits(draft map[string]any, words []string) []string {
+	seen := map[string]bool{}
+	var hits []string
+	add := func(list []string) {
+		for _, word := range list {
+			if word == "" || seen[word] {
+				continue
+			}
+			seen[word] = true
+			hits = append(hits, word)
+		}
+	}
+	add(content.FindSensitive(draft, words))
+	add(content.FindSensitive(map[string]any{"title": str(draft["title"])}, words))
+	return hits
+}
+
+func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft map[string]any, w Input, fallbackTitle string, base map[string]any, sensitive []string) (map[string]any, int, []map[string]any) {
 	payload := cloneMap(base)
 	payload["draft_title"] = strings.TrimSpace(str(draft["title"]))
 	payload["alt_titles"] = asList(draft["alt_titles"])
@@ -757,7 +920,7 @@ func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string]
 		candidates = append(candidates, title)
 	}
 	candidates = append(candidates, stringList(asList(draft["alt_titles"]))...)
-	best, alts := headline.Rank(candidates, splitWords(w.Pack.RedLines, w.BannedWords, w.Taboos), w.RecentTitles, w.TitlePrefer)
+	best, alts := headline.Rank(candidates, append(splitWords(w.Pack.RedLines, w.BannedWords, w.Taboos), sensitive...), w.RecentTitles, w.TitlePrefer)
 	title, altAny := chosenTitle(best, alts, w.SpecifiedTitle, str(draft["title"]), fallbackTitle)
 	draft["title"] = title
 	draft["alt_titles"] = altAny
@@ -1031,10 +1194,17 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft["sources"] = []any{}
 	}
 	missingSources := w.Tier != "free" && len(providers["research"]) > 0 && !listedHaveURL(asList(draft["sources"]))
-	finished, pieceTokens, pieceTrace := finishPiece(ctx, gateway, providers, draft, w, topicTitle, base)
+	finished, pieceTokens, pieceTrace := finishPiece(ctx, gateway, providers, draft, w, topicTitle, base, sensitive)
 	draft = finished
 	tokens += pieceTokens
 	trace = append(trace, pieceTrace...)
+	audited, auditTokens, auditTrace, err := reviewSensitive(ctx, gateway, providers["review"], draft, reviewPayload, sensitive)
+	trace = append(trace, auditTrace...)
+	tokens += auditTokens
+	if err != nil {
+		return Built{Trace: trace}, err
+	}
+	draft = audited
 	footnotes := []any{"请发布前审阅。"}
 	if w.Pack.Disclaimer != "" {
 		footnotes = append(footnotes, w.Pack.Disclaimer)
@@ -1913,8 +2083,8 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 		trace = appendStage(trace, "condense", completion, err)
 		if err == nil && condensed != nil {
 			tokens += completion.PromptTokens + completion.CompletionTokens
-			if next := content.BodyRunes(condensed); next > 0 && next < before {
-				draft = condensed
+			if kept, ok := keepCondensed(draft, condensed); ok {
+				draft = kept
 			}
 		}
 	}

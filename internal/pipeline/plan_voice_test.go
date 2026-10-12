@@ -85,7 +85,7 @@ func TestMockRewriteKeepsParagraphsAndLeavesTitlesWhole(t *testing.T) {
 	out, _, _ := finishPiece(context.Background(), gateway, providers, draft, Input{
 		Direction: "弱电智能化", WordTarget: 800, SpecifiedTitle: pinned, Tone: "务实，少形容词",
 		Pack: store.VerticalPack{Key: "elv", RedLines: "包过验收"},
-	}, "验收", map[string]any{"subtopic": "验收", "tone": "务实，少形容词"})
+	}, "验收", map[string]any{"subtopic": "验收", "tone": "务实，少形容词"}, nil)
 	if out["title"] != pinned {
 		t.Fatal(out["title"])
 	}
@@ -112,6 +112,37 @@ func TestMockRewriteKeepsParagraphsAndLeavesTitlesWhole(t *testing.T) {
 	}
 }
 
+func TestTitleCandidatesDropSensitiveWords(t *testing.T) {
+	draft := map[string]any{
+		"title":    "模型原来的标题",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"验收时核对线槽，是否盖好。"}}},
+		"closing":  "可以先记住这一步。欢迎留言说说你的做法。",
+	}
+	gateway := llm.NewGateway(true, nil)
+	providers := map[string][]llm.Provider{
+		"review": {{Name: "mock", Protocol: "openai", Model: "mock"}},
+	}
+	out, _, trace := finishPiece(context.Background(), gateway, providers, draft, Input{
+		Direction: "弱电智能化", WordTarget: 800,
+	}, "验收", map[string]any{"subtopic": "内部消息"}, []string{"内部消息"})
+	if out["title"] != "模型原来的标题" {
+		t.Fatal(out["title"])
+	}
+	raw, _ := json.Marshal(out["alt_titles"])
+	if strings.Contains(string(raw), "内部消息") || strings.Contains(str(out["title"]), "内部消息") {
+		t.Fatal(out["title"], out["alt_titles"])
+	}
+	sawTitles := false
+	for _, row := range trace {
+		if row["stage"] == "titles" {
+			sawTitles = true
+		}
+	}
+	if !sawTitles {
+		t.Fatal(trace)
+	}
+}
+
 func TestFailedRewriteKeepsTheDraft(t *testing.T) {
 	first := "验收时核对线槽，是否盖好。"
 	draft := map[string]any{
@@ -126,7 +157,7 @@ func TestFailedRewriteKeepsTheDraft(t *testing.T) {
 	}
 	out, _, _ := finishPiece(context.Background(), gateway, providers, draft, Input{
 		Direction: "弱电智能化", WordTarget: 800,
-	}, "验收", map[string]any{"subtopic": "验收"})
+	}, "验收", map[string]any{"subtopic": "验收"}, nil)
 	raw, _ := json.Marshal(out)
 	text := string(raw)
 	if !strings.Contains(text, first) || !strings.Contains(text, "结束。") || !strings.Contains(text, "https://www.gov.cn/a") {

@@ -105,7 +105,7 @@ func Splice(original, model map[string]any, need Needs) map[string]any {
 			case strings.Contains(closing, old):
 				cloned["closing"] = closing
 			default:
-				cloned["closing"] = old + closing
+				cloned["closing"] = old + "\n\n" + closing
 			}
 		}
 	}

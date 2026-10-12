@@ -35,6 +35,9 @@ func TestRewriteKeepsEveryParagraph(t *testing.T) {
 	if !strings.Contains(raw, "为什么现场总卡在这一步？") || !strings.Contains(raw, "结束。") {
 		t.Fatal(raw)
 	}
+	if strings.Contains(raw, "结束。可以先记住") || !strings.Contains(raw, "结束。\\n\\n可以先记住") {
+		t.Fatal(raw)
+	}
 	if Score(out) <= Score(draft) {
 		t.Fatal(Score(out), Score(draft))
 	}
