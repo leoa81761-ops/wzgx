@@ -62,21 +62,70 @@
           <option v-for="item in windows" :key="item.key" :value="item.key">{{ item.label }}</option>
         </select>
       </label>
+      <details class="stack">
+        <summary>这个号单独的设置</summary>
+        <p class="muted">这些内容只写进当前选中的公众号，不会套到其他号上。</p>
+        <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房,弱电" /></label>
+        <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
+        <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔，这篇里不要出现" /></label>
+        <label>垂类资料包
+          <select v-model="form.vertical_key">
+            <option value="">按方向自动匹配</option>
+            <option v-for="item in verticals" :key="item.key" :value="item.key">{{ item.name }}</option>
+          </select>
+        </label>
+        <label>选题方式
+          <select v-model="form.topic_mode">
+            <option value="auto">自动</option>
+            <option value="rotate">只按方向轮换</option>
+            <option value="hot">优先热点</option>
+            <option value="confirm" :disabled="quota.tier !== 'premium' && quota.tier !== 'lifetime'">先确认选题</option>
+          </select>
+        </label>
+        <label>配图
+          <select v-model="form.image_mode">
+            <option value="auto">自动</option>
+            <option value="none">不用 AI 配图</option>
+            <option value="cover">只要封面</option>
+            <option value="asset">优先我的素材</option>
+          </select>
+        </label>
+      </details>
       <button class="btn" :disabled="loading">{{ loading ? "保存中…" : "保存计划" }}</button>
     </form>
     <div class="stack">
-      <article v-for="plan in plans" :key="plan.id" class="card stack">
+      <section v-for="group in groups" :key="group.account ? group.account.id : 'loose'" class="stack">
         <div class="split">
-          <strong>{{ plan.direction }}</strong>
+          <h2 class="account-head">{{ group.account ? group.account.name : "未显示在公众号列表里的计划" }}</h2>
+          <button v-if="group.account" class="btn-ghost" type="button" @click="focusAccount(group.account.id)">给这个号新建计划</button>
+        </div>
+        <p v-if="group.account && !group.plans.length" class="muted">这个号还没有写作计划。新建时会使用左边选中的公众号，设置和其他号分开保存。</p>
+      <article v-for="plan in group.plans" :key="plan.id" class="card stack">
+        <div class="split">
+          <strong>{{ plan.account_name || "公众号" }} · {{ plan.direction }}</strong>
           <span class="pill" :class="plan.status === 'active' ? 'ok' : 'warn'">{{ plan.status === "active" ? "运行中" : "已暂停" }}</span>
         </div>
+        <div class="row">
+          <button v-if="plan.status !== 'active'" class="btn" type="button" @click="toggle(plan)">启动</button>
+          <button v-else class="btn-ghost" type="button" @click="toggle(plan)">暂停</button>
+          <button class="btn" type="button" :disabled="busyId === plan.id" @click="generate(plan)">
+            {{ busyId === plan.id ? "正在生成…" : "立即生成一篇" }}
+          </button>
+          <router-link class="btn-ghost" :to="'/app/plans/' + plan.id">编辑</router-link>
+          <button class="btn-ghost" type="button" @click="remove(plan)">删除</button>
+        </div>
+        <p v-if="plan.status !== 'active'" class="muted">已暂停，不会按点自动写。立即生成一篇只写这一次，不会把计划改成运行中。{{ plan.pause_reason ? "原因：" + plan.pause_reason : "" }}</p>
         <p>{{ plan.style_name }} · {{ plan.template_name }} · {{ plan.schedule_label }} · {{ plan.window_label }} · 每天 {{ plan.daily_count || 1 }} 篇</p>
+        <p v-if="plan.audience || plan.keywords || plan.vertical_key" class="muted">
+          <span v-if="plan.audience">读者 {{ plan.audience }}</span>
+          <span v-if="plan.keywords"> · 关键词 {{ plan.keywords }}</span>
+          <span v-if="plan.vertical_key"> · 垂类 {{ plan.vertical_key }}</span>
+        </p>
         <label>每天篇数
           <input v-model.number="dailyCounts[plan.id]" type="number" min="1" :max="quota.daily_limit || 1" />
         </label>
         <button class="btn-ghost" type="button" @click="saveDaily(plan)">保存篇数</button>
-        <p class="muted" v-if="plan.pause_reason">原因：{{ plan.pause_reason }}</p>
-        <p class="muted">下次生成：{{ formatTime(plan.next_run_at) }}</p>
+        <p class="muted">{{ plan.status === "active" ? "下次生成：" + formatTime(plan.next_run_at) : "启动后才会按点生成。已排定的时间：" + formatTime(plan.next_run_at) }}</p>
         <label v-if="quota.tier === 'premium' || quota.tier === 'lifetime' || plan.confirm_mode" class="check">
           <input :checked="plan.confirm_mode" type="checkbox" @change="setConfirm(plan, $event.target.checked)" />
           <span>选题确认：提前推送下一篇选题，24 小时内可以采用或换一个，超时按这个选题写。</span>
@@ -123,30 +172,27 @@
           <p v-if="plan.auto_publish" class="muted">已开启，审阅窗口 {{ plan.delay_minutes }} 分钟。</p>
         </div>
         <p v-else class="muted">这个公众号只写入草稿箱。自动发布只对企业认证号开放，并且默认关闭。</p>
-        <div class="row">
-          <button class="btn" type="button" :disabled="busyId === plan.id" @click="generate(plan)">
-            {{ busyId === plan.id ? "正在生成…" : "立即生成" }}
-          </button>
-          <button class="btn-ghost" type="button" @click="toggle(plan)">{{ plan.status === "active" ? "暂停" : "恢复" }}</button>
-          <button class="btn-ghost" type="button" @click="remove(plan)">删除</button>
-        </div>
       </article>
+      </section>
+      <p v-if="!accounts.length" class="muted">先绑定公众号，再为每个号单独建计划。</p>
     </div>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { WEEKDAYS, api, formatTime } from "../api";
 
 const router = useRouter();
+const route = useRoute();
 const accounts = ref([]);
 const plans = ref([]);
 const styles = ref([]);
 const templates = ref([]);
 const windows = ref([]);
 const directions = ref([]);
+const verticals = ref([]);
 const quota = ref({});
 const error = ref("");
 const loading = ref(false);
@@ -171,7 +217,30 @@ const form = reactive({
   ending: "",
   column_name: "",
   column_style: "",
+  keywords: "",
+  audience: "",
+  banned_words: "",
+  vertical_key: "",
+  topic_mode: "auto",
+  image_mode: "auto",
 });
+
+const groups = computed(() => {
+  const byID = new Map(accounts.value.map((account) => [account.id, { account, plans: [] }]));
+  const loose = [];
+  for (const plan of plans.value) {
+    const group = byID.get(plan.wx_account_id);
+    if (group) group.plans.push(plan);
+    else loose.push(plan);
+  }
+  const out = [...byID.values()];
+  if (loose.length) out.push({ account: null, plans: loose });
+  return out;
+});
+
+function focusAccount(id) {
+  form.wx_account_id = id;
+}
 
 const wordOptions = computed(() => {
   const max = quota.value.max_words || 1000;
@@ -196,6 +265,7 @@ async function load() {
   templates.value = meta.templates;
   windows.value = meta.windows;
   directions.value = meta.directions;
+  verticals.value = meta.verticals || [];
   quota.value = quotaData;
   accounts.value = accountData;
   plans.value = planData;
@@ -205,6 +275,7 @@ async function load() {
     if (publishDelay[plan.id] === undefined) publishDelay[plan.id] = plan.delay_minutes ?? 30;
   }
   if (!form.wx_account_id && accountData[0]) form.wx_account_id = accountData[0].id;
+  if (route.query.account) form.wx_account_id = Number(route.query.account);
   if (quotaData.tier === "free") form.time_window = "night";
   const allowedStyles = styleChoices.value;
   if (allowedStyles.length && !allowedStyles.some((item) => item.key === form.style_key)) form.style_key = allowedStyles[0].key;

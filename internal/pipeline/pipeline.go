@@ -82,6 +82,11 @@ type work struct {
 	AssetNote         string
 	PromptExtra       string
 	VariantID         int64
+	Audience          string
+	Keywords          string
+	BannedWords       string
+	TopicMode         string
+	ImageMode         string
 }
 
 type Built struct {
@@ -196,7 +201,11 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		if err != nil {
 			return err
 		}
-		pack := vertical.Match(plan.Direction, packs)
+		extra, err := deps.Store.GetPlanExtra(ctx, tx, plan.ID)
+		if err != nil {
+			return err
+		}
+		pack := vertical.Resolve(plan.Direction, extra, packs)
 		styleRows, err := deps.Store.ListStyles(ctx, tx)
 		if err != nil {
 			return err
@@ -309,6 +318,9 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
 			History: history, RecentTitles: titles, Vetoed: vetoed, SpecifiedTitle: pinned, Pack: pack,
 			StyleName: styleName, StyleHint: styleHint, Weights: weights,
+			Audience: strings.TrimSpace(extra.Audience), Keywords: strings.TrimSpace(extra.Keywords),
+			BannedWords: strings.TrimSpace(extra.BannedWords), TopicMode: strings.TrimSpace(extra.TopicMode),
+			ImageMode: strings.TrimSpace(extra.ImageMode),
 		}
 		ok = true
 		return nil
@@ -338,6 +350,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		if err != nil {
 			return err
 		}
+		sensitive = mergeBanned(sensitive, w.BannedWords)
 		wx, err = deps.Cache.WeChat(ctx, tx)
 		if err != nil {
 			return err
@@ -355,6 +368,9 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		if len(images) > 0 {
 			provider := runtime.ToProvider(images[0], deps.Settings.MasterKey)
 			image = &provider
+		}
+		if use, _, _ := ImagePlan(w.ImageMode, len(w.AssetCover) > 0, true, 1); !use {
+			image = nil
 		}
 		policy, err = loadSourcePolicy(ctx, deps.Store, tx)
 		return err
@@ -471,10 +487,22 @@ type Input struct {
 	ColumnStyle    string
 	AssetNote      string
 	PromptExtra    string
+	Audience       string
+	Keywords       string
+	BannedWords    string
+	TopicMode      string
+	ImageMode      string
+}
+
+func hotAllowed(in *Input) bool {
+	if in == nil || in.Locked != nil || in.SpecifiedTitle != "" || in.Tier == "free" {
+		return false
+	}
+	return strings.TrimSpace(in.TopicMode) != "rotate"
 }
 
 func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
-	if in == nil || in.Locked != nil || in.SpecifiedTitle != "" || in.Tier == "free" {
+	if !hotAllowed(in) {
 		return nil
 	}
 	rows, err := deps.Store.ListHotItems(ctx, nil)
@@ -511,7 +539,56 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode}
+}
+
+func voiceFields(in Input) map[string]any {
+	out := map[string]any{}
+	if text := strings.TrimSpace(in.Audience); text != "" {
+		out["audience"] = text
+	}
+	if text := strings.TrimSpace(in.Keywords); text != "" {
+		out["keywords"] = text
+	}
+	if text := strings.TrimSpace(in.BannedWords); text != "" {
+		out["banned_words"] = text
+	}
+	if mode := strings.TrimSpace(in.TopicMode); mode != "" && mode != "auto" {
+		out["topic_mode"] = mode
+	}
+	return out
+}
+
+func mergeBanned(base []string, extra string) []string {
+	out := append([]string{}, base...)
+	seen := map[string]bool{}
+	for _, word := range out {
+		seen[word] = true
+	}
+	for _, word := range vertical.Words(extra) {
+		if word == "" || seen[word] {
+			continue
+		}
+		seen[word] = true
+		out = append(out, word)
+	}
+	return out
+}
+
+// ImagePlan decides whether this plan may call an image model, draw an AI cover, and add inline images.
+// auto keeps the tier allowance. none skips AI images. cover skips inline images. asset skips AI when the user supplied a cover.
+func ImagePlan(mode string, hasAsset, aiCover bool, inline int) (useModel bool, cover bool, inlineOut int) {
+	switch strings.TrimSpace(mode) {
+	case "none":
+		return false, false, 0
+	case "cover":
+		return true, aiCover, 0
+	case "asset":
+		if hasAsset {
+			return false, false, 0
+		}
+	}
+	return true, aiCover, inline
 }
 
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
@@ -564,6 +641,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	if w.Pack.ImageRules != "" {
 		base["image_rules"] = w.Pack.ImageRules
+	}
+	for key, value := range voiceFields(w) {
+		base[key] = value
 	}
 	var trace []map[string]any
 	tokens := 0
@@ -750,11 +830,19 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	html := article.HTML
 	outHTML := html
 	aiCover, inlineN := catalog.ImageAllowance(w.Tier)
+	asset := w.AssetCover
+	useModel, aiCover, inlineN := ImagePlan(w.ImageMode, len(asset) > 0, aiCover, inlineN)
+	if strings.TrimSpace(w.ImageMode) == "none" {
+		asset = nil
+	}
+	if !useModel {
+		image = nil
+	}
 	var png []byte
 	var filename string
 	var coverTrace map[string]any
-	if len(w.AssetCover) > 0 {
-		if body, name, _, err := cover.PrepareCover(w.AssetCover); err == nil && len(body) > 0 {
+	if len(asset) > 0 {
+		if body, name, _, err := cover.PrepareCover(asset); err == nil && len(body) > 0 {
 			png, filename = body, name
 			coverTrace = map[string]any{"stage": "cover", "ok": true, "source": "library"}
 		}

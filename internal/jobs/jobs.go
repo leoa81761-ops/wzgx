@@ -21,7 +21,7 @@ func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan
 	if account.BindStatus != "active" {
 		return nil, &quota.Error{Message: "公众号当前不可用，请重新检测或重新绑定"}
 	}
-	if plan.Status != "active" {
+	if plan.Status != "active" && trigger != "manual" && trigger != "regenerate" {
 		reason := plan.PauseReason
 		if reason == "" {
 			reason = "写作计划已暂停"
