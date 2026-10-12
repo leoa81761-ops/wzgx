@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"net/url"
 	"regexp"
 	"strings"
@@ -21,20 +22,181 @@ func InterpretResearch(text string) (string, []map[string]any) {
 	if data, err := ParseJSONContent(text); err == nil {
 		notes := clipRunes(strings.TrimSpace(asString(data["notes"])), 1500)
 		sources := sourcesFromList(data["sources"])
+		sources = appendSources(sources, sourcesFromList(data["citations"]))
+		sources = appendSources(sources, sourcesFromList(data["search_results"]))
 		if notes == "" && len(sources) == 0 {
 			if summary := strings.TrimSpace(asString(data["summary"])); summary != "" {
 				notes = clipRunes(summary, 1500)
 			}
 		}
-		if !sourcesHaveURL(sources) {
-			sources = appendSources(sources, sourcesFromMarkdown(text))
-			if notes != "" {
-				sources = appendSources(sources, sourcesFromMarkdown(notes))
-			}
+		sources = appendSources(sources, sourcesFromMarkdown(text))
+		if notes != "" {
+			sources = appendSources(sources, sourcesFromMarkdown(notes))
 		}
 		return notes, sources
 	}
 	return clipRunes(text, 1500), sourcesFromMarkdown(text)
+}
+
+// AttachResearchCitations 把联网响应里正文以外的网址补进文本。
+// grok-chat-fast 常把网址放在 citations、search_results 或 annotations，message.content 本身没有链接。
+func AttachResearchCitations(text string, raw []byte) string {
+	rows := citationRows(raw)
+	if len(rows) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString(text)
+	added := 0
+	for _, row := range rows {
+		rawURL := row["url"]
+		if rawURL == "" || strings.Contains(text, rawURL) {
+			continue
+		}
+		title := strings.TrimSpace(row["title"])
+		if title == "" {
+			title = "来源"
+		}
+		title = strings.NewReplacer("[", "", "]", "", "\n", " ", "\r", " ").Replace(title)
+		title = clipRunes(title, 80)
+		b.WriteString("\n[")
+		b.WriteString(title)
+		b.WriteString("](")
+		b.WriteString(rawURL)
+		b.WriteString(")")
+		added++
+		if added >= 8 {
+			break
+		}
+	}
+	if added == 0 {
+		return text
+	}
+	return b.String()
+}
+
+func citationRows(raw []byte) []map[string]string {
+	if !isJSON(raw) {
+		return nil
+	}
+	var data map[string]any
+	if json.Unmarshal(raw, &data) != nil {
+		return nil
+	}
+	var out []map[string]string
+	collectCitationNodes(data, &out, 0)
+	return out
+}
+
+func collectCitationNodes(v any, out *[]map[string]string, depth int) {
+	if depth > 8 || len(*out) >= 16 {
+		return
+	}
+	switch node := v.(type) {
+	case map[string]any:
+		for _, key := range []string{"citations", "search_results", "searchResults", "annotations", "references", "web_search_results"} {
+			if child, ok := node[key]; ok {
+				appendCitationList(child, out)
+			}
+		}
+		for _, key := range []string{"choices", "message", "output", "response", "content", "delta"} {
+			if child, ok := node[key]; ok {
+				collectCitationNodes(child, out, depth+1)
+			}
+		}
+	case []any:
+		for _, item := range node {
+			if len(*out) >= 16 {
+				return
+			}
+			collectCitationNodes(item, out, depth+1)
+		}
+	}
+}
+
+func appendCitationList(raw any, out *[]map[string]string) {
+	switch list := raw.(type) {
+	case []any:
+		for _, item := range list {
+			appendCitationItem(item, out)
+			if len(*out) >= 16 {
+				return
+			}
+		}
+	default:
+		appendCitationItem(list, out)
+	}
+}
+
+func appendCitationItem(item any, out *[]map[string]string) {
+	switch v := item.(type) {
+	case string:
+		if rawURL := firstHTTP(v); rawURL != "" {
+			*out = append(*out, map[string]string{"url": rawURL})
+		}
+	case map[string]any:
+		rawURL, title := citationURL(v)
+		if rawURL == "" {
+			return
+		}
+		*out = append(*out, map[string]string{"url": rawURL, "title": title})
+	}
+}
+
+func citationURL(source map[string]any) (string, string) {
+	if rawURL := firstStringURL(source); rawURL != "" {
+		return rawURL, firstNonEmpty(source, "title", "name")
+	}
+	for _, key := range []string{"url_citation", "citation", "web"} {
+		nested, _ := source[key].(map[string]any)
+		if nested == nil {
+			continue
+		}
+		if rawURL := firstStringURL(nested); rawURL != "" {
+			title := firstNonEmpty(nested, "title", "name")
+			if title == "" {
+				title = firstNonEmpty(source, "title", "name")
+			}
+			return rawURL, title
+		}
+	}
+	return "", ""
+}
+
+func firstStringURL(source map[string]any) string {
+	for _, key := range []string{"url", "link", "href", "uri"} {
+		text, _ := source[key].(string)
+		if rawURL := firstHTTP(text); rawURL != "" {
+			return rawURL
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(source map[string]any, keys ...string) string {
+	for _, key := range keys {
+		text, _ := source[key].(string)
+		text = strings.TrimSpace(text)
+		if text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func firstHTTP(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if !(strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")) {
+		if urls := bareURL.FindAllString(s, 1); len(urls) > 0 {
+			s = urls[0]
+		} else {
+			return ""
+		}
+	}
+	return strings.TrimRight(s, ".,;，。；)>\"'")
 }
 
 func sourcesHaveURL(sources []map[string]any) bool {
@@ -60,11 +222,13 @@ func sourcesFromList(raw any) []map[string]any {
 			}
 			row = normalizeSource("", "", "", rawURL, "other", "")
 		case map[string]any:
-			rawURL := asString(source["url"])
-			if rawURL == "" {
-				rawURL = asString(source["link"])
+			rawURL, nestedTitle := citationURL(source)
+			name := asString(source["name"])
+			title := asString(source["title"])
+			if title == "" {
+				title = nestedTitle
 			}
-			row = normalizeSource(asString(source["name"]), asString(source["title"]), asString(source["published_on"]), rawURL, asString(source["source_type"]), asString(source["note"]))
+			row = normalizeSource(name, title, asString(source["published_on"]), rawURL, asString(source["source_type"]), asString(source["note"]))
 		}
 		if row == nil {
 			continue

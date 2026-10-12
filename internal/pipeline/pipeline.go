@@ -499,11 +499,16 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if len(researchSources) > 0 {
 			merged = mergeSources(merged, researchSources)
 		}
-		draft["sources"] = filterListed(merged, policy)
+		filtered := filterListed(merged, policy)
+		if !listedHaveURL(filtered) {
+			filtered = filterListed(merged, policy.Relaxed())
+		}
+		draft["sources"] = filtered
 	}
 	if w.Tier == "free" {
 		draft["sources"] = []any{}
 	}
+	// 事实核对和审核都可能把已经压过长度的正文重新写长。裁剪是最后一次改正文。
 	if high := w.WordTarget * 130 / 100; w.WordTarget > 0 && content.BodyRunes(draft) > high {
 		draft = content.TrimToMax(draft, high)
 	}
@@ -953,10 +958,12 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	first, err1 := gateway.CompleteResearch(ctx, providers, messages)
 	notes := ""
 	var sources []map[string]any
+	var dropped []map[string]any
+	relaxed := false
 	if err1 == nil {
-		notes, sources = llm.InterpretResearch(first.Content)
-		sources = policy.Filter(sources)
+		notes, sources, dropped, relaxed = takeSources(first.Content, policy)
 		if sourcesHaveURL(sources) {
+			stampSourceTrace(&first, sources, dropped, relaxed)
 			return notes, anySources(sources), first, nil
 		}
 	}
@@ -967,8 +974,8 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		CompletionTokens: first.CompletionTokens + second.CompletionTokens,
 	}
 	if err2 == nil {
-		notes2, sources2 := llm.InterpretResearch(second.Content)
-		sources2 = policy.Filter(sources2)
+		notes2, sources2, dropped2, relaxed2 := takeSources(second.Content, policy)
+		dropped = append(dropped, dropped2...)
 		merged.ProviderID = second.ProviderID
 		merged.ProviderName = second.ProviderName
 		merged.Protocol = second.Protocol
@@ -979,9 +986,14 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 				notes = notes2
 			}
 			sources = sources2
-		} else if notes == "" {
-			notes = notes2
+			relaxed = relaxed2
+		} else {
+			if notes == "" {
+				notes = notes2
+			}
+			relaxed = relaxed || relaxed2
 		}
+		stampSourceTrace(&merged, sources, dropped, relaxed)
 		return notes, anySources(sources), merged, nil
 	}
 	if err1 != nil {
@@ -992,7 +1004,57 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	merged.Protocol = first.Protocol
 	merged.Model = first.Model
 	merged.Content = first.Content
+	stampSourceTrace(&merged, sources, dropped, relaxed)
 	return notes, anySources(sources), merged, nil
+}
+
+func takeSources(content string, policy content.SourcePolicy) (string, []map[string]any, []map[string]any, bool) {
+	notes, raw := llm.InterpretResearch(content)
+	kept, dropped := policy.Split(raw)
+	if len(raw) == 0 {
+		dropped = append(dropped, map[string]any{"reason": "没有解析到来源"})
+	}
+	if sourcesHaveURL(kept) {
+		return notes, kept, dropped, false
+	}
+	softKept, _ := policy.Relaxed().Split(raw)
+	if sourcesHaveURL(softKept) {
+		for _, row := range dropped {
+			if row["reason"] == "不在允许名单" {
+				row["kept_relaxed"] = true
+			}
+		}
+		return notes, softKept, dropped, true
+	}
+	return notes, nil, dropped, false
+}
+
+func stampSourceTrace(completion *llm.Completion, sources []map[string]any, dropped []map[string]any, relaxed bool) {
+	if completion == nil {
+		return
+	}
+	if len(completion.Attempts) == 0 {
+		completion.Attempts = []map[string]any{{
+			"provider_id": completion.ProviderID, "provider_name": completion.ProviderName,
+			"protocol": completion.Protocol, "model": completion.Model, "ok": true,
+		}}
+	}
+	last := completion.Attempts[len(completion.Attempts)-1]
+	last["kept"] = len(sources)
+	last["relaxed"] = relaxed
+	if len(dropped) > 0 {
+		last["dropped"] = dropped
+	}
+}
+
+func listedHaveURL(sources []any) bool {
+	for _, raw := range sources {
+		source, _ := raw.(map[string]any)
+		if source != nil && str(source["url"]) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func sourcesHaveURL(sources []map[string]any) bool {

@@ -87,6 +87,31 @@ func TestInterpretResearchMarkdown(t *testing.T) {
 	if len(sources) != 1 || sources[0]["url"] != "https://news.example/item" {
 		t.Fatalf("%#v", sources)
 	}
+	_, sources = InterpretResearch(`{"notes":"正文没有链接","sources":[],"citations":["https://www.gov.cn/zhengce"]}`)
+	if len(sources) != 1 || sources[0]["url"] != "https://www.gov.cn/zhengce" {
+		t.Fatalf("%#v", sources)
+	}
+}
+
+func TestAttachResearchCitations(t *testing.T) {
+	chat := []byte(`{"choices":[{"message":{"content":"弱电是电子信息系统。"}}],"citations":["https://www.gov.cn/zhengce/2024/elv",{"url":"https://openstd.samr.gov.cn/std/1","title":"标准"}]}`)
+	text := AttachResearchCitations("弱电是电子信息系统。", chat)
+	_, sources := InterpretResearch(text)
+	if len(sources) != 2 || sources[0]["url"] != "https://www.gov.cn/zhengce/2024/elv" || sources[1]["title"] != "标准" {
+		t.Fatalf("%#v", sources)
+	}
+	responses := []byte(`{"output_text":"说明一下。","output":[{"type":"message","content":[{"type":"output_text","text":"说明一下。","annotations":[{"type":"url_citation","url_citation":{"url":"https://www.miit.gov.cn/a","title":"工信部"}}]}]}]}`)
+	text = AttachResearchCitations("说明一下。", responses)
+	_, sources = InterpretResearch(text)
+	if len(sources) != 1 || sources[0]["url"] != "https://www.miit.gov.cn/a" || sources[0]["title"] != "工信部" {
+		t.Fatalf("%#v", sources)
+	}
+	search := []byte(`{"choices":[{"message":{"content":"只有说明","annotations":[{"type":"url_citation","url":"https://www.mem.gov.cn/gk/1","title":"应急管理部"}]}}],"search_results":[{"title":"重复","url":"https://www.mem.gov.cn/gk/1"}]}`)
+	text = AttachResearchCitations("只有说明", search)
+	_, sources = InterpretResearch(text)
+	if len(sources) != 1 || sources[0]["url"] != "https://www.mem.gov.cn/gk/1" {
+		t.Fatalf("%#v", sources)
+	}
 }
 
 func TestResearchPromptAsksToSearch(t *testing.T) {

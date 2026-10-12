@@ -90,6 +90,50 @@ func (p SourcePolicy) Filter(sources []map[string]any) []map[string]any {
 	return out
 }
 
+// Relaxed 去掉允许名单，屏蔽名单仍然生效。允许名单把可用网址全部丢掉时用这一档再滤一次。
+func (p SourcePolicy) Relaxed() SourcePolicy {
+	return SourcePolicy{Block: append([]string{}, p.Block...)}
+}
+
+// Split 分开保留和丢弃的来源。丢弃项带 url 和 reason，供 model_trace 记录。
+func (p SourcePolicy) Split(sources []map[string]any) (kept []map[string]any, dropped []map[string]any) {
+	for _, source := range sources {
+		if source == nil {
+			continue
+		}
+		raw := asText(source["url"])
+		reason := p.dropReason(raw)
+		if reason == "" {
+			kept = append(kept, source)
+			continue
+		}
+		row := map[string]any{"url": raw, "reason": reason}
+		if title := asText(source["title"]); title != "" {
+			row["title"] = title
+		}
+		dropped = append(dropped, row)
+	}
+	return kept, dropped
+}
+
+func (p SourcePolicy) dropReason(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "没有网址"
+	}
+	host := sourceHost(raw)
+	if host == "" {
+		return "无法解析网址"
+	}
+	if domainMatch(host, p.Block) {
+		return "屏蔽域名"
+	}
+	if len(p.Allow) > 0 && !domainMatch(host, p.Allow) {
+		return "不在允许名单"
+	}
+	return ""
+}
+
 func sourceHost(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
