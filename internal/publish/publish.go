@@ -233,7 +233,7 @@ func TryArticle(ctx context.Context, deps Deps, articleID int64) {
 		cancelDraft(ctx, deps, article, row, reason)
 		return
 	}
-	client, err := clientFor(deps, account)
+	client, err := clientFor(ctx, deps, account)
 	if err != nil {
 		keepWaiting(ctx, deps, article, row, "暂时读不到公众号凭证，这篇仍留在草稿箱，稍后会再试")
 		return
@@ -287,7 +287,7 @@ func poll(ctx context.Context, deps Deps, article *model.Article, row store.Arti
 	if err != nil || account == nil {
 		return
 	}
-	client, err := clientFor(deps, account)
+	client, err := clientFor(ctx, deps, account)
 	if err != nil {
 		return
 	}
@@ -378,17 +378,38 @@ func keepWaiting(ctx context.Context, deps Deps, article *model.Article, row sto
 	_ = deps.Store.UpdateArticle(ctx, nil, article)
 }
 
-func clientFor(deps Deps, account *model.WxAccount) (wechat.Client, error) {
+func clientFor(ctx context.Context, deps Deps, account *model.WxAccount) (wechat.Client, error) {
 	if account == nil {
 		return nil, errString("找不到公众号")
 	}
-	secret, err := security.DecryptSecret(deps.Settings.MasterKey, account.SecretEncrypted)
-	if err != nil {
-		return nil, err
+	secret := ""
+	var err error
+	if account.SecretEncrypted != "" {
+		secret, err = security.DecryptSecret(deps.Settings.MasterKey, account.SecretEncrypted)
+		if err != nil {
+			return nil, err
+		}
+	}
+	refresh := ""
+	if secret == "" && deps.Store != nil {
+		enc, err := deps.Store.AuthorizerRefresh(ctx, nil, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		if enc != "" {
+			refresh, err = security.DecryptSecret(deps.Settings.MasterKey, enc)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	mode := "live"
 	if deps.Settings.WeChatMode == "mock" || strings.HasPrefix(account.AppID, "wx_mock") {
 		mode = "mock"
+	}
+	if refresh != "" && deps.Settings.WeChatComponentEnabled() && mode != "mock" {
+		ticket, _ := deps.Store.GetSetting(ctx, nil, "wechat_component_ticket")
+		return wechat.NewAuthorizer(account.AppID, refresh, deps.Settings.WeChatComponentAppID, deps.Settings.WeChatComponentSecret, ticket, deps.Settings.WeChatAPIBase, deps.HTTP, deps.Tokens), nil
 	}
 	return wechat.Build(account.AppID, secret, mode, deps.Settings.WeChatAPIBase, deps.HTTP, deps.Tokens), nil
 }

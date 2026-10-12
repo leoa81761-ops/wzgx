@@ -364,13 +364,17 @@ func (c *TokenCache) Delete(key string) {
 }
 
 type LiveClient struct {
-	AppID   string
-	Secret  string
-	BaseURL string
-	HTTP    *http.Client
-	Timeout time.Duration
-	Cache   *TokenCache
-	key     string
+	AppID           string
+	Secret          string
+	BaseURL         string
+	HTTP            *http.Client
+	Timeout         time.Duration
+	Cache           *TokenCache
+	RefreshToken    string
+	ComponentAppID  string
+	ComponentSecret string
+	ComponentTicket string
+	key             string
 }
 
 func NewLive(appID, secret, base string, client *http.Client, cache *TokenCache) *LiveClient {
@@ -392,6 +396,55 @@ func (c *LiveClient) GetToken(ctx context.Context) (string, error) {
 	return c.token(ctx, false)
 }
 
+func (c *LiveClient) authorizerToken(ctx context.Context) (string, error) {
+	compKey := "component|" + c.ComponentAppID
+	componentToken, ok := c.Cache.Get(compKey)
+	if !ok {
+		data, err := c.do(ctx, http.MethodPost, "/cgi-bin/component/api_component_token", nil, map[string]any{
+			"component_appid": c.ComponentAppID, "component_appsecret": c.ComponentSecret, "component_verify_ticket": c.ComponentTicket,
+		})
+		if err != nil {
+			return "", err
+		}
+		componentToken, _ = data["component_access_token"].(string)
+		if componentToken == "" {
+			return "", &Error{Message: "没有拿到第三方平台调用凭证"}
+		}
+		expires := intOf(data["expires_in"])
+		if expires < 120 {
+			expires = 7200
+		}
+		c.Cache.Set(compKey, componentToken, time.Now().Add(time.Duration(expires-300)*time.Second))
+	}
+	data, err := c.do(ctx, http.MethodPost, "/cgi-bin/component/api_authorizer_token", map[string]string{"component_access_token": componentToken}, map[string]any{
+		"component_appid": c.ComponentAppID, "authorizer_appid": c.AppID, "authorizer_refresh_token": c.RefreshToken,
+	})
+	if err != nil {
+		return "", err
+	}
+	token, _ := data["authorizer_access_token"].(string)
+	if token == "" {
+		return "", &Error{Message: "没有拿到授权方调用凭证"}
+	}
+	expires := intOf(data["expires_in"])
+	if expires < 120 {
+		expires = 7200
+	}
+	c.Cache.Set(c.key, token, time.Now().Add(time.Duration(expires-300)*time.Second))
+	return token, nil
+}
+
+func NewAuthorizer(appID, refresh, componentAppID, componentSecret, ticket, base string, client *http.Client, cache *TokenCache) *LiveClient {
+	c := NewLive(appID, refresh, base, client, cache)
+	c.Secret = ""
+	c.RefreshToken = refresh
+	c.ComponentAppID = componentAppID
+	c.ComponentSecret = componentSecret
+	c.ComponentTicket = ticket
+	c.key = appID + "|authorizer|" + c.BaseURL
+	return c
+}
+
 func (c *LiveClient) token(ctx context.Context, force bool) (string, error) {
 	if !force {
 		if token, ok := c.Cache.Get(c.key); ok {
@@ -399,6 +452,9 @@ func (c *LiveClient) token(ctx context.Context, force bool) (string, error) {
 		}
 	} else {
 		c.Cache.Delete(c.key)
+	}
+	if c.RefreshToken != "" {
+		return c.authorizerToken(ctx)
 	}
 	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/stable_token", map[string]any{
 		"grant_type": "client_credential", "appid": c.AppID, "secret": c.Secret, "force_refresh": force,

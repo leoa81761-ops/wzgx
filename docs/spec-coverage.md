@@ -27,8 +27,8 @@
 
 | 要求 | 状态 |
 | --- | --- |
-| 手机号 / 微信扫码登录 | 手机号或邮箱 + 密码 done；短信验证码与微信扫码 未做（下一支登录） |
-| 公众号绑定、主体与认证、权限检测 | done |
+| 手机号 / 微信扫码登录 | 手机号或邮箱 + 密码 done；短信验证码与微信扫码 needs-external-credentials，没配环境变量就关闭 |
+| 公众号绑定、主体与认证、权限检测 | AppID / AppSecret done；开放平台授权 needs-external-credentials，没配时仍用 AppSecret |
 | 全托管：只选方向 | done |
 | 精细设置：关键词、读者、风格、模板、篇幅、禁用词、固定开头结尾 | done。禁用词走全局敏感词。写作方向可以填写固定开头和结尾 |
 | 推送周期：每日 / 每周、时段、每号每日一批、按账号类型推荐 | 每日 / 每周和时段 done；同日多篇分别进草稿，合并多图文由用户在公众号助手完成 |
@@ -78,7 +78,7 @@
 | --- | --- |
 | P2 个人风格学习、事实核查加强、原创度 | done。事实核对仍在。高级版和买断版可提交 3 到 5 篇范文，只保存句长、问句和第一人称等特征。正文若整段重复来源，任务失败 |
 | P2 多账号 | 高级档可绑多个号 done |
-| P2 第三方平台授权 | 未做（登录分支，needs-external-credentials） |
+| P2 第三方平台授权 | needs-external-credentials。没配 `WECHAT_COMPONENT_*` 时关闭，AppID / AppSecret 仍可用 |
 | P2 数据图表、授权引用图片 | 数据图表 未做。授权图片走用户素材库：上传 PNG 或 JPEG 并填写授权说明，写作计划可以指定为封面。自动抓图保持禁止 |
 
 ## 3.5 页面与法律
@@ -156,7 +156,7 @@
 | 绑定检测与唯一性、解绑 30 天 | done |
 | 草稿失败改为复制 HTML | done |
 | 手动发布提醒里的群发次数说明 | 帮助页说明 done；每条通知逐条附次数 未做 |
-| 开放平台第三方扫码授权 | 未做，needs-external-credentials |
+| 开放平台第三方扫码授权 | needs-external-credentials。票据到达后才能发起授权；刷新令牌加密保存 |
 | 读他人草稿标题须同意 | done。`POST /api/me/consents/draft-titles` 同意后，生成前读取最多 20 条草稿标题 |
 | token 失效暂停、草稿箱满、限频重试、内容检查重写 | 授权失效会标失败并通知 done；草稿箱开关与满员的专门探测 未做 |
 | 服务号模板消息 | 未做，needs-external-credentials |
@@ -213,7 +213,7 @@
 | 第 10 节风险对策里已有对应功能的 | 见上面各行 |
 | 标识开关与日志 | added |
 | 第 11 节排期 | 过程文档，不单独立项 |
-| 第 12 节验收 | 邀请防刷、选题确认等待、热点缓存有测试；其余主路径沿用原测试 |
+| 第 12 节验收 | 邀请防刷、选题确认等待、热点缓存、短信登录和微信授权有测试；其余主路径沿用原测试 |
 | 第 13 节待确认 | 保持开发书原文，不在代码里替运营方做主体和法务决定 |
 | 附录竞品 | 调研记录，不实现 |
 
@@ -226,7 +226,8 @@
 | 邮件 | `SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASSWORD`、`SMTP_FROM` |
 | 失败转发 | `NOTIFY_WEBHOOK_URL` |
 | 真实模型 / 微信 | 配置中心或 `LLM_*`、`WX_APP_ID`、`WX_APP_SECRET` |
-| 短信登录 | 未做，下一支会列 `SMS_*` |
-| 微信扫码登录 / 开放平台授权 | 未做，下一支会列 `WECHAT_OPEN_*` |
+| 短信登录 | `SMS_PROVIDER`（`aliyun` 或 `tencent`）、`SMS_ACCESS_KEY`、`SMS_ACCESS_SECRET`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`；腾讯云再加 `SMS_SDK_APP_ID`。可选 `SMS_REGION`、`SMS_API_BASE` |
+| 微信扫码登录 | `WECHAT_OPEN_APP_ID`、`WECHAT_OPEN_APP_SECRET`、`WECHAT_OPEN_REDIRECT_URL`。接口基址用 `WECHAT_API_BASE` |
+| 微信开放平台授权 | `WECHAT_COMPONENT_APP_ID`、`WECHAT_COMPONENT_APP_SECRET`、`WECHAT_COMPONENT_TOKEN`、`WECHAT_COMPONENT_AES_KEY`、`WECHAT_COMPONENT_REDIRECT_URL` |
 
 没配这些变量时，对应按钮保持关闭或只走站内通知，进程照常启动。
