@@ -167,8 +167,22 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 			parts = append(parts, `<p style="`+theme["foot"]+`">`+html.EscapeString(asString(note))+`</p>`)
 		}
 	}
+	if aiLabelOn(article["ai_label"]) {
+		parts = append(parts, `<p style="`+theme["foot"]+`">本文由人工智能辅助生成</p>`)
+	}
 	parts = append(parts, "</section>")
 	return strings.Join(parts, "")
+}
+
+func aiLabelOn(v any) bool {
+	switch n := v.(type) {
+	case bool:
+		return n
+	case string:
+		return n == "1" || n == "true"
+	default:
+		return false
+	}
 }
 
 func RenderWithinLimit(article map[string]any, templateKey string, dark bool) (string, error) {

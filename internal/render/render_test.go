@@ -60,4 +60,8 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 	if DisplayURL("a.b.c") != "a点b点c" {
 		t.Fatal(DisplayURL("a.b.c"))
 	}
+	labeled := RenderHTML(map[string]any{"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"乙"}}}, "ai_label": true}, "simple", false, false)
+	if !strings.Contains(labeled, "本文由人工智能辅助生成") {
+		t.Fatal(labeled)
+	}
 }

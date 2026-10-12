@@ -138,6 +138,10 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 	publish.Drain(ctx, publish.Deps{
 		Store: r.Deps.Store, Settings: r.Deps.Settings, HTTP: r.Deps.HTTP, Tokens: r.Deps.Tokens, Notifier: r.Deps.Notifier,
 	}, now)
+	cutoff := schedule.Format(now.Add(-30 * 24 * time.Hour))
+	if _, err := r.Deps.Store.PurgeArticleBodies(ctx, cutoff); err != nil {
+		log.Printf("清理 30 天前的正文失败: %v", err)
+	}
 	return claimed, nil
 }
 

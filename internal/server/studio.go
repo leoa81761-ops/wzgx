@@ -69,16 +69,28 @@ func (a *App) legalList(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) legalDetail(w http.ResponseWriter, r *http.Request) error {
-	row, err := a.Store.GetLegal(r.Context(), r.PathValue("doc_type"))
+	docType := r.PathValue("doc_type")
+	var row *model.LegalDoc
+	var err error
+	if version := strings.TrimSpace(r.URL.Query().Get("version")); version != "" {
+		row, err = a.Store.GetLegalVersion(r.Context(), docType, version)
+	} else {
+		row, err = a.Store.GetLegal(r.Context(), docType)
+	}
 	if err != nil {
 		return err
 	}
 	if row == nil {
 		return &AppError{Status: 404, Message: "没有这份文档"}
 	}
+	history, err := a.Store.ListLegalVersions(r.Context(), docType)
+	if err != nil {
+		return err
+	}
 	writeJSON(w, 200, map[string]any{
 		"doc_type": row.DocType, "title": row.Title, "version": row.Version,
-		"content": row.Content, "effective_date": row.EffectiveDate,
+		"content": row.Content, "effective_date": row.EffectiveDate, "status": row.Status,
+		"versions": legalRows(history, false),
 	})
 	return nil
 }
