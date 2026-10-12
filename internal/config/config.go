@@ -73,6 +73,11 @@ type Settings struct {
 	WeChatComponentToken    string
 	WeChatComponentAESKey   string
 	WeChatComponentRedirect string
+	TplAppID                string
+	TplSecret               string
+	TplID                   string
+	TplAPIBase              string
+	TplFields               string
 }
 
 func Load() Settings {
@@ -165,6 +170,11 @@ func Load() Settings {
 		WeChatComponentToken:    os.Getenv("WECHAT_COMPONENT_TOKEN"),
 		WeChatComponentAESKey:   strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_AES_KEY")),
 		WeChatComponentRedirect: strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_REDIRECT_URL")),
+		TplAppID:                strings.TrimSpace(os.Getenv("WECHAT_TPL_APP_ID")),
+		TplSecret:               os.Getenv("WECHAT_TPL_APP_SECRET"),
+		TplID:                   strings.TrimSpace(os.Getenv("WECHAT_TPL_ID")),
+		TplAPIBase:              getenv("WECHAT_TPL_API_BASE", "https://api.weixin.qq.com"),
+		TplFields:               getenv("WECHAT_TPL_FIELDS", "thing1,thing2"),
 	}
 }
 
@@ -185,6 +195,11 @@ func (s Settings) WeChatScanEnabled() bool {
 
 func (s Settings) WeChatComponentEnabled() bool {
 	return s.WeChatComponentAppID != "" && s.WeChatComponentSecret != "" && s.WeChatComponentToken != "" && len(s.WeChatComponentAESKey) == 43 && s.WeChatComponentRedirect != ""
+}
+
+// TemplateEnabled 在服务号模板消息三项都配齐时才为真。缺任意一项就不发。
+func (s Settings) TemplateEnabled() bool {
+	return strings.TrimSpace(s.TplAppID) != "" && strings.TrimSpace(s.TplSecret) != "" && strings.TrimSpace(s.TplID) != ""
 }
 
 func researchTimeout() time.Duration {

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
+	"github.com/leoa81761-ops/wzgx/internal/chart"
 	"github.com/leoa81761-ops/wzgx/internal/config"
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/cover"
@@ -72,6 +73,7 @@ type work struct {
 	Pack              store.VerticalPack
 	StyleName         string
 	StyleHint         string
+	Weights           map[string]int
 	Opening           string
 	Ending            string
 	ColumnName        string
@@ -294,6 +296,10 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		for _, row := range historyRows {
 			history = append(history, topics.Coverage{Subtopic: row.Subtopic, Column: row.ColumnType, Angle: row.Angle, CreatedAt: row.CreatedAt})
 		}
+		weights, err := deps.Store.ListTopicWeights(ctx, tx, plan.ID)
+		if err != nil {
+			return err
+		}
 		w = &work{
 			TaskID: task.ID, UserID: user.ID, Tier: tier, PlanID: plan.ID, Direction: plan.Direction,
 			StyleKey: plan.StyleKey, TemplateKey: plan.TemplateKey, WordTarget: plan.WordTarget,
@@ -302,7 +308,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			Trigger: task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
 			History: history, RecentTitles: titles, Vetoed: vetoed, SpecifiedTitle: pinned, Pack: pack,
-			StyleName: styleName, StyleHint: styleHint,
+			StyleName: styleName, StyleHint: styleHint, Weights: weights,
 		}
 		ok = true
 		return nil
@@ -318,6 +324,9 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 }
 
 func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[string]any, error) {
+	if msg := draftWaitMessage(ctx, deps, w); msg != "" {
+		return nil, errors.New(msg)
+	}
 	var sensitive []string
 	var wx runtime.WeChat
 	var image *llm.Provider
@@ -453,6 +462,7 @@ type Input struct {
 	Pack           store.VerticalPack
 	StyleName      string
 	StyleHint      string
+	Weights        map[string]int
 	AILabel        bool
 	CostNote       string
 	Opening        string
@@ -501,11 +511,11 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra}
 }
 
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
-	topic := topics.PickTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.History, now, w.Vetoed...)
+	topic := topics.PickTree(topics.ExpandTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.Weights), w.Direction, w.Tier, w.History, now, w.Vetoed...)
 	if w.Locked != nil {
 		topic = *w.Locked
 	}
@@ -779,6 +789,14 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		html = render.InjectImage(html, imageURL)
 		outHTML = html
 	}
+	if chart.Attach(article.Draft, func(png []byte) (string, error) {
+		return client.UploadContentImage(ctx, png, "chart.png")
+	}) > 0 {
+		if rendered, err := render.RenderWithinLimit(article.Draft, w.TemplateKey, false); err == nil {
+			html = rendered
+			outHTML = rendered
+		}
+	}
 	draft := wechat.DraftArticle{Title: str(article.Draft["title"]), Digest: str(article.Draft["summary"]), Content: html, Author: "公号智写", ThumbMediaID: thumb}
 	mediaID, thumb, err := placeDraft(ctx, client, w.ExistingMediaID, draft, png, filename)
 	if err != nil {
@@ -787,7 +805,7 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		}
 		return pushed{Status: "exported", ThumbID: thumb, HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level, ImageCalls: imageCalls}, nil
 	}
-	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, CoverTrace: coverTrace, RiskLevel: level, ImageCalls: imageCalls}, nil
+	return pushed{Status: "in_draft", MediaID: mediaID, ThumbID: thumb, HTML: outHTML, DeliveryNote: wechat.MassSendNote, CoverTrace: coverTrace, RiskLevel: level, ImageCalls: imageCalls}, nil
 }
 
 // placeDraft 先尝试更新仍在草稿箱里的稿件。media_id 或封面失效时重新上传封面，再新建一篇草稿。
@@ -1020,6 +1038,13 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	if strings.Contains(str(result["delivery_note"]), "无参考来源") {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "无参考来源", "这篇稿已经在草稿箱，但没有可用的参考来源。发布前请自行核对事实。")
 	}
+	if str(result["status"]) == "in_draft" {
+		body := str(result["delivery_note"])
+		if !strings.Contains(body, "不调用群发") {
+			body = wechat.MassSendNote
+		}
+		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "draft", "有一篇稿已在草稿箱", body)
+	}
 }
 
 func recordCost(ctx context.Context, deps Deps, tx *db.Tx, userID, taskID int64, month string, tokens, chatCents, searchCents, imageCalls, imageCents int, now time.Time) error {
@@ -1052,6 +1077,7 @@ func taskUserID(ctx context.Context, deps Deps, taskID int64) int64 {
 
 func finishFailure(ctx context.Context, deps Deps, taskID int64, message string, now time.Time, auth bool, trace []map[string]any) {
 	final := false
+	waitNote := false
 	var userID int64
 	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		task, err := deps.Store.GetTask(ctx, tx, taskID)
@@ -1062,6 +1088,37 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 		var article *model.Article
 		if task.ArticleID != nil {
 			article, _ = deps.Store.GetArticle(ctx, tx, *task.ArticleID)
+		}
+		if strings.HasPrefix(message, "草稿箱等待：") && !auth {
+			task.RetryCount++
+			task.FailureReason = message
+			if task.RetryCount <= 48 {
+				task.Status = "pending"
+				task.RunAt = now.Add(20 * time.Minute)
+				if article != nil {
+					article.Status = "generating"
+					article.FailureReason = message
+					if err := deps.Store.UpdateArticle(ctx, tx, article); err != nil {
+						return err
+					}
+				}
+				if err := deps.Store.UpdateTask(ctx, tx, task); err != nil {
+					return err
+				}
+				if task.RetryCount == 1 {
+					waitNote = true
+					userID = task.UserID
+				}
+				return nil
+			}
+			if plan != nil && plan.Status == "active" {
+				plan.Status = "paused"
+				plan.PauseReason = "草稿箱暂时不能写入"
+				if err := deps.Store.UpdatePlan(ctx, tx, plan); err != nil {
+					return err
+				}
+			}
+			message = strings.TrimPrefix(message, "草稿箱等待：") + "多次等待后仍不可用，计划已暂停。处理好后请恢复写作计划。"
 		}
 		retry := false
 		if plan != nil && task.ScheduleDate != "" && !auth {
@@ -1119,6 +1176,9 @@ func finishFailure(ctx context.Context, deps Deps, taskID int64, message string,
 	if final && userID > 0 {
 		emitNotice(ctx, deps, userID, "failure", "生成失败", message)
 	}
+	if waitNote && userID > 0 {
+		emitNotice(ctx, deps, userID, "draft", "草稿箱暂时不能写入", message)
+	}
 }
 
 func publishDeps(deps Deps) publish.Deps {
@@ -1156,6 +1216,12 @@ func emitNotice(ctx context.Context, deps Deps, userID int64, kind, title, body 
 		}
 	}
 	_ = deps.Notifier.Send(ctx, notify.Message{UserID: userID, Kind: kind, Title: title, Body: note.Body, Account: account})
+	if deps.Settings.TemplateEnabled() {
+		openid, err := deps.Store.TemplateOpenID(ctx, userID)
+		if err == nil && openid != "" {
+			_ = notify.SendTemplate(ctx, deps.HTTP, deps.Settings.TplAPIBase, deps.Settings.TplAppID, deps.Settings.TplSecret, deps.Settings.TplID, deps.Settings.TplFields, openid, title, note.Body)
+		}
+	}
 }
 
 func generatedCover(ctx context.Context, deps Deps, image *llm.Provider, title, direction string) ([]byte, error) {

@@ -40,6 +40,7 @@
           <span class="pill" :class="account.delivery_mode === 'draft' ? 'ok' : 'warn'">{{ account.delivery_label }}</span>
         </div>
         <p class="muted">{{ account.app_id }} · {{ account.type_label }}</p>
+        <p><router-link :to="'/app/stats/' + account.id">阅读数据与周报</router-link></p>
         <ul>
           <li v-for="check in account.permission_report.checks || []" :key="check.name">
             {{ check.ok ? "通过" : "未通过" }} · {{ check.detail }}

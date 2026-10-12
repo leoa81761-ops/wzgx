@@ -46,6 +46,45 @@ func Pick(direction, tier string, history []Coverage, now time.Time, vetoed ...s
 	return PickTree(nil, direction, tier, history, now, vetoed...)
 }
 
+// ExpandTree 按权重重复或跳过子方向。没有权重时原样返回，轮换顺序不变。
+// 权重 0 少用该子方向，2 或 3 多用。缺省按 1。
+func ExpandTree(tree []string, direction, tier string, weights map[string]int) []string {
+	if len(weights) == 0 {
+		return tree
+	}
+	base := tree
+	if len(base) == 0 {
+		base = SubtopicTree(direction, tier)
+	}
+	changed := false
+	var out []string
+	for _, sub := range base {
+		weight, ok := weights[sub]
+		if !ok {
+			weight = 1
+		}
+		if weight < 0 {
+			weight = 0
+		}
+		if weight > 3 {
+			weight = 3
+		}
+		if weight != 1 {
+			changed = true
+		}
+		for i := 0; i < weight; i++ {
+			out = append(out, sub)
+		}
+	}
+	if !changed {
+		return tree
+	}
+	if len(out) == 0 {
+		return base
+	}
+	return out
+}
+
 func PickTree(tree []string, direction, tier string, history []Coverage, now time.Time, vetoed ...string) Choice {
 	blocked := map[string]bool{}
 	for _, tag := range vetoed {

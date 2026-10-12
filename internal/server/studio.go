@@ -137,6 +137,7 @@ func (a *App) meta(w http.ResponseWriter, r *http.Request) error {
 		"styles": styles, "templates": templates, "directions": catalog.Directions,
 		"windows": catalog.Windows, "word_choices": catalog.WordChoices, "columns": catalog.Columns,
 		"wechat_mode": wx.Mode, "public_egress_ip": wx.IP, "plans": planOut, "pay": a.payMeta(),
+		"template_enabled": a.Cfg.TemplateEnabled(),
 	})
 	return nil
 }

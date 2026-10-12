@@ -463,6 +463,58 @@ CREATE TABLE IF NOT EXISTS hot_item (
 );
 CREATE INDEX IF NOT EXISTS idx_hot_fetched ON hot_item(source_name, fetched_at);
 
+CREATE TABLE IF NOT EXISTS mp_stats (
+  id {{PK}},
+  account_id INTEGER NOT NULL,
+  stat_date TEXT NOT NULL,
+  article_key TEXT NOT NULL DEFAULT '',
+  reads INTEGER NOT NULL DEFAULT 0,
+  shares INTEGER NOT NULL DEFAULT 0,
+  favors INTEGER NOT NULL DEFAULT 0,
+  follows INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(account_id, stat_date, article_key, source)
+);
+CREATE INDEX IF NOT EXISTS idx_mp_stats_account ON mp_stats(account_id, stat_date);
+
+CREATE TABLE IF NOT EXISTS ops_report (
+  id {{PK}},
+  account_id INTEGER NOT NULL,
+  period TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  advice TEXT NOT NULL DEFAULT '',
+  adjustment TEXT NOT NULL DEFAULT '',
+  adopted TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ops_report_account ON ops_report(account_id, id);
+
+CREATE TABLE IF NOT EXISTS topic_weight (
+  plan_id INTEGER NOT NULL,
+  subtopic TEXT NOT NULL,
+  weight INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (plan_id, subtopic)
+);
+
+CREATE TABLE IF NOT EXISTS layout_check (
+  id {{PK}},
+  layout_key TEXT NOT NULL,
+  device TEXT NOT NULL,
+  theme TEXT NOT NULL,
+  result TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_layout_check_key ON layout_check(layout_key, id);
+
+CREATE TABLE IF NOT EXISTS tpl_bind (
+  user_id INTEGER PRIMARY KEY,
+  openid TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS plan_extra (
   plan_id INTEGER PRIMARY KEY,
   opening TEXT NOT NULL DEFAULT '',
