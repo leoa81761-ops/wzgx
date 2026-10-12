@@ -1,6 +1,7 @@
 package content
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -159,5 +160,49 @@ func TestSourceQuality(t *testing.T) {
 	}
 	if !strings.Contains(asText(out[0]["url"]), "mohurd.gov.cn") {
 		t.Fatalf("first %#v", out[0])
+	}
+	for _, domain := range []string{"bzko.com", "yuanlin8.com", "bbs.co188.com", "ireader.com", "abook.qq.com", "gcs66.com", "bzfyw.com", "baijiantest.com"} {
+		if policy.AllowsURL("https://" + domain + "/a") {
+			t.Fatalf("default blocklist should drop %s", domain)
+		}
+	}
+	cleared := PolicyFromParams(map[string]any{"block": []any{}, "allow": []any{}}, true)
+	if !cleared.AllowsURL("https://bzko.com/a") {
+		t.Fatal("saved empty blocklist stays editable")
+	}
+	var many []map[string]any
+	for i := 0; i < 10; i++ {
+		many = append(many, map[string]any{"url": fmt.Sprintf("https://bzko.com/%d", i), "title": "镜像"})
+	}
+	many = append(many,
+		map[string]any{"url": "https://www.example.com/shop/1", "title": "网店"},
+		map[string]any{"url": "https://www.mohurd.gov.cn/gongkai/gb", "title": "GB 50311 综合布线"},
+		map[string]any{"url": "https://openstd.samr.gov.cn/bzgk/std", "title": "国家标准"},
+		map[string]any{"url": "https://www.people.com.cn/n", "title": "人民日报"},
+	)
+	kept, dropped := policy.Split(many)
+	if len(dropped) < 10 {
+		t.Fatalf("dropped %#v", dropped)
+	}
+	ranked := PreferSources(kept, "zh")
+	if len(ranked) == 0 || !strings.Contains(asText(ranked[0]["url"]), "mohurd.gov.cn") {
+		t.Fatalf("ranked %#v", ranked)
+	}
+	for _, source := range ranked {
+		if strings.Contains(asText(source["url"]), "bzko.com") || strings.Contains(asText(source["url"]), "/shop/") {
+			t.Fatalf("junk survived %#v", ranked)
+		}
+	}
+	if len(ranked) > 8 {
+		t.Fatalf("capped %d", len(ranked))
+	}
+	var crowded []map[string]any
+	for i := 0; i < 10; i++ {
+		crowded = append(crowded, map[string]any{"url": fmt.Sprintf("https://site%d.example.com/a", i), "title": "普通"})
+	}
+	crowded = append(crowded, map[string]any{"url": "https://std.samr.gov.cn/gb", "title": "国家标准"})
+	rankedAll := PreferSources(crowded, "zh")
+	if len(rankedAll) != 8 || !strings.Contains(asText(rankedAll[0]["url"]), "std.samr.gov.cn") {
+		t.Fatalf("rank every citation then keep 8: %#v", rankedAll)
 	}
 }

@@ -438,6 +438,51 @@ func TestResearchNonStreamingCapsAt110Seconds(t *testing.T) {
 	}
 }
 
+func TestResearchRetriesQuickGatewayErrors(t *testing.T) {
+	if !quickResearchError(502, &Error{Message: "HTTP 502：bad gateway"}, 32*time.Second) {
+		t.Fatal("fast 502")
+	}
+	if !quickResearchError(503, &Error{Message: "HTTP 503：unavailable"}, time.Second) {
+		t.Fatal("503")
+	}
+	if quickResearchError(502, &Error{Message: "HTTP 502：bad gateway"}, 40*time.Second) {
+		t.Fatal("slow 502 should not retry")
+	}
+	if quickResearchError(500, &Error{Message: "HTTP 500：upstream"}, time.Second) {
+		t.Fatal("500")
+	}
+	if !quickResearchError(0, &Error{Message: "网络错误：connection reset by peer"}, time.Second) {
+		t.Fatal("connection")
+	}
+	if quickResearchError(0, &Error{Message: "网络错误：context deadline exceeded"}, 150*time.Millisecond) {
+		t.Fatal("timeout")
+	}
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= 2 {
+			w.WriteHeader(502)
+			_, _ = w.Write([]byte("bad gateway"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索完成"}}],"citations":["https://www.gov.cn/zhengce"]}`))
+	}))
+	defer srv.Close()
+	gw := NewGateway(false, srv.Client())
+	gw.Backoff = time.Millisecond
+	gw.MaxAttempts = 1
+	started := time.Now()
+	result, err := gw.CompleteResearch(context.Background(), []Provider{{
+		Name: "检索", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
+	}}, StageMessages("资料检索", map[string]any{"topic_title": "弱电"}))
+	if err != nil || calls != 3 || len(result.ResearchSources) != 1 {
+		t.Fatalf("calls %d elapsed %s err %v sources %#v", calls, time.Since(started), err, result.ResearchSources)
+	}
+	if len(result.Attempts) < 2 || result.Attempts[0]["ok"] != false {
+		t.Fatalf("%#v", result.Attempts)
+	}
+}
+
 func TestResearchResponsesDoesNotAddWebSearch(t *testing.T) {
 	var seen map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

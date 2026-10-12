@@ -29,9 +29,10 @@ func InterpretResearch(text string) (string, []map[string]any) {
 	return clipRunes(text, 1500), nil
 }
 
-// StructuredResearchSources 只采用接口返回的引用。
+// StructuredResearchSources 只采用接口返回的引用，并且全部返回。
 // 接受 citations、search_results、annotations；Responses 还要 num_sources_used > 0 才采信 url 注释。
 // 流式响应里的引用出现在最后一块时同样算数。模型正文里的链接不算。
+// 屏蔽、去重和排序在后面做，这里不提前截成 8 条。
 func StructuredResearchSources(raw []byte) []map[string]any {
 	rows := trustedCitationRows(raw)
 	var out []map[string]any
@@ -47,9 +48,6 @@ func StructuredResearchSources(raw []byte) []map[string]any {
 			continue
 		}
 		out = append(out, item)
-		if len(out) >= 8 {
-			break
-		}
 	}
 	return out
 }
@@ -83,7 +81,7 @@ func trustedCitationRows(raw []byte) []map[string]string {
 }
 
 func collectTrustedCitations(v any, out *[]map[string]string, depth int) {
-	if depth > 8 || len(*out) >= 16 {
+	if depth > 8 {
 		return
 	}
 	switch node := v.(type) {
@@ -103,9 +101,6 @@ func collectTrustedCitations(v any, out *[]map[string]string, depth int) {
 		}
 	case []any:
 		for _, item := range node {
-			if len(*out) >= 16 {
-				return
-			}
 			collectTrustedCitations(item, out, depth+1)
 		}
 	}
@@ -149,9 +144,6 @@ func appendCitationList(raw any, out *[]map[string]string) {
 	case []any:
 		for _, item := range list {
 			appendCitationItem(item, out)
-			if len(*out) >= 16 {
-				return
-			}
 		}
 	default:
 		appendCitationItem(list, out)

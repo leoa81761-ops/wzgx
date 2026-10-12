@@ -1301,9 +1301,6 @@ func mergeSources(existing, extra []any) []any {
 				continue
 			}
 		}
-		if len(existing) >= 8 {
-			break
-		}
 		existing = append(existing, source)
 		if url != "" {
 			index[url] = len(existing) - 1

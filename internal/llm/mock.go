@@ -20,7 +20,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "资料检索":
 		system = "你是资料检索助手。请立刻联网搜索，先用中文搜索，优先中文网页。" +
 			"为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。" +
-			"优先政府网站（.gov.cn）、标准组织、机构原文和主流媒体，不要用转载站、聚合站或内容农场。" +
+			"优先 gov.cn、samr.gov.cn、std.samr.gov.cn、openstd.samr.gov.cn、mohurd.gov.cn、国家标准、中国行业协会和主流媒体，不要用转载站、聚合站、文库镜像或内容农场。" +
 			"不要网店、帮助台、登录页和购物车页面。同一网站最多两条。" +
 			"输入里的 blocked_domains 一律不要引用。" +
 			"如果输入里有 allowed_domains，只引用这些域名及其子域名。" +

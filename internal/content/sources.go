@@ -6,8 +6,12 @@ import (
 	"strings"
 )
 
-// DefaultBlockedDomains 是没单独配置时屏蔽的聚合站和转载站。
-var DefaultBlockedDomains = []string{"xilu.com", "fyun.com", "huanancj.com"}
+// DefaultBlockedDomains 是没单独配置时屏蔽的聚合站、转载站和低质量镜像。管理员保存过名单后以保存的为准。
+var DefaultBlockedDomains = []string{
+	"xilu.com", "fyun.com", "huanancj.com",
+	"bzko.com", "yuanlin8.com", "bbs.co188.com", "ireader.com",
+	"abook.qq.com", "gcs66.com", "bzfyw.com", "baijiantest.com",
+}
 
 type SourcePolicy struct {
 	Block []string
@@ -139,7 +143,8 @@ func (p SourcePolicy) dropReason(raw string) string {
 	return ""
 }
 
-// PreferSources 把中文和权威来源排到前面，同一主机最多保留两条。mode 为 elv 时再提高住建部、市监局和国家标准的优先级。
+// PreferSources 先给全部来源打分，再按同一主机最多两条截到前 8 条。
+// gov.cn、标准站和主流媒体靠前；中文选题再优先 .cn。弱电选题里含国家标准的条目再加分。
 func PreferSources(sources []map[string]any, mode string) []map[string]any {
 	if len(sources) == 0 {
 		return sources
@@ -173,6 +178,9 @@ func PreferSources(sources []map[string]any, mode string) []map[string]any {
 			perHost[host]++
 		}
 		out = append(out, row.source)
+		if len(out) >= 8 {
+			break
+		}
 	}
 	return out
 }
@@ -185,21 +193,39 @@ func sourceScore(source map[string]any, mode string) int {
 	if host == "gov.cn" || strings.HasSuffix(host, ".gov.cn") {
 		score += 100
 	}
-	if host == "cn" || strings.HasSuffix(host, ".cn") {
-		score += 20
+	if standardsHost(host) {
+		score += 40
 	}
-	if mode == "elv" {
-		if host == "mohurd.gov.cn" || strings.HasSuffix(host, ".mohurd.gov.cn") {
-			score += 40
+	if majorMedia(host) {
+		score += 30
+	}
+	if mode == "zh" || mode == "elv" {
+		if host == "cn" || strings.HasSuffix(host, ".cn") {
+			score += 20
 		}
-		if host == "samr.gov.cn" || strings.HasSuffix(host, ".samr.gov.cn") {
-			score += 40
-		}
-		if strings.Contains(text, "GB/T") || strings.Contains(text, "GB 5") || strings.Contains(text, "GB5") || strings.Contains(text, "国家标准") {
-			score += 30
-		}
+	}
+	if mode == "elv" && (strings.Contains(text, "GB/T") || strings.Contains(text, "GB 5") || strings.Contains(text, "GB5") || strings.Contains(text, "国家标准")) {
+		score += 30
 	}
 	return score
+}
+
+func standardsHost(host string) bool {
+	for _, domain := range []string{"mohurd.gov.cn", "samr.gov.cn", "std.samr.gov.cn", "openstd.samr.gov.cn"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func majorMedia(host string) bool {
+	for _, domain := range []string{"people.com.cn", "xinhuanet.com", "news.cn", "thepaper.cn", "caixin.com", "gmw.cn", "ce.cn", "stdaily.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
 }
 
 func junkPage(raw string) bool {
