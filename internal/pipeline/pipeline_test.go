@@ -407,6 +407,197 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 	}
 }
 
+func TestResearchReadsChatCitations(t *testing.T) {
+	var researchCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "弱电入门", "angle": "先分清概念"})
+		case "资料检索":
+			researchCalls++
+			if researchCalls == 1 {
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte("upstream"))
+				return
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到公开资料，正文不写网址。"}}],"citations":["https://www.gov.cn/zhengce/2024/elv",{"url":"https://openstd.samr.gov.cn/std/1","title":"综合布线标准"}]}`))
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	user, account, plan := seedPaid(t, st, "citations@example.com", srv.URL)
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if researchCalls != 2 {
+		t.Fatalf("research calls %d", researchCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	html := articles[0].BodyHTML
+	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "gov点cn") || !strings.Contains(html, "openstd点samr点gov点cn") {
+		t.Fatal(html)
+	}
+}
+
+func TestResearchRelaxesAllowlist(t *testing.T) {
+	var researchCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "允许名单外的来源", "angle": "今天就能做"})
+		case "资料检索":
+			researchCalls++
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [媒体](https://news.example.com/a)。"}}]}`))
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "允许名单外的来源", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	user, account, plan := seedPaid(t, st, "relax@example.com", srv.URL)
+	saveSourceDomains(t, st, []any{"xilu.com", "fyun.com", "huanancj.com"}, []any{"gov.cn"})
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if researchCalls != 1 {
+		t.Fatalf("research calls %d", researchCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	if !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "example点com") {
+		t.Fatal(articles[0].BodyHTML)
+	}
+	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
+	if err != nil || task == nil || !traceHasDrop(task.ModelTrace, "不在允许名单") || !traceRelaxed(task.ModelTrace) {
+		t.Fatalf("%#v %v", task, err)
+	}
+}
+
+func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
+	var researchCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "屏蔽后再放宽", "angle": "今天就能做"})
+		case "资料检索":
+			researchCalls++
+			if researchCalls == 1 {
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [西陆](https://www.xilu.com/news/1)。"}}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [媒体](https://news.example.com/a)。"}}]}`))
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "屏蔽后再放宽", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	user, account, plan := seedPaid(t, st, "relax-retry@example.com", srv.URL)
+	saveSourceDomains(t, st, []any{"xilu.com", "fyun.com", "huanancj.com"}, []any{"gov.cn"})
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if researchCalls != 2 {
+		t.Fatalf("research calls %d", researchCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	html := articles[0].BodyHTML
+	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "example点com") || strings.Contains(html, "xilu") {
+		t.Fatal(html)
+	}
+	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
+	if err != nil || task == nil || !traceHasDrop(task.ModelTrace, "屏蔽域名") || !traceHasDrop(task.ModelTrace, "不在允许名单") || !traceRelaxed(task.ModelTrace) {
+		t.Fatalf("%#v %v", task, err)
+	}
+}
+
+func TestFactCheckExpansionIsTrimmed(t *testing.T) {
+	inBand := strings.Repeat("合适的正文。", 120)
+	cell := strings.Repeat("表", 40)
+	var rows []any
+	for i := 0; i < 8; i++ {
+		rows = append(rows, []any{cell, cell})
+	}
+	longDraft := map[string]any{
+		"title": "核对后变长", "summary": "摘要",
+		"sections": []any{map[string]any{
+			"heading": "甲", "paragraphs": []any{inBand}, "list": []any{},
+			"table": map[string]any{"headers": []any{"项目", "说明"}, "rows": rows},
+		}},
+		"closing": "结束", "sources": []any{},
+	}
+	var sawFact bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "核对后变长", "angle": "今天就能做"})
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		case "扩写", "缩写":
+			t.Errorf("length fit should not call the model for an in-band draft, got %s", stageOf(req))
+			writeChoice(w, longDraft)
+		case "事实核对":
+			sawFact = true
+			writeChoice(w, longDraft)
+		case "审核":
+			writeChoice(w, longDraft)
+		default:
+			writeChoice(w, map[string]any{"title": "核对后变长", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{inBand}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "refit@example.com")
+	plan.WordTarget = 800
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if !sawFact {
+		t.Fatal("fact check was not called")
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	high := 800 * 130 / 100
+	if n := content.BodyRunes(articles[0].BodyJSON); n > high || n < 800*85/100 {
+		t.Fatalf("body runes %d", n)
+	}
+	if strings.Count(articles[0].BodyHTML, cell) >= 16 {
+		t.Fatal("table cells were not trimmed")
+	}
+}
+
 func TestDraftCondensesWhenLong(t *testing.T) {
 	var expandCalls, condenseCalls int
 	long := strings.Repeat("这是一段很长的说明文字。", 200)
@@ -1104,6 +1295,50 @@ func TestHighRiskStaysInAppAndNotifies(t *testing.T) {
 
 func base64Encode(raw []byte) string {
 	return base64.StdEncoding.EncodeToString(raw)
+}
+
+func saveSourceDomains(t *testing.T, st *store.Store, block, allow []any) {
+	t.Helper()
+	if err := st.InsertService(context.Background(), nil, &model.ServiceConfig{
+		ConfigType: "audit", Name: "source_domains", Protocol: "local", Enabled: true,
+		UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{},
+		ExtraParams: map[string]any{"block": block, "allow": allow},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func traceHasDrop(rows []map[string]any, reason string) bool {
+	for _, row := range rows {
+		if row["stage"] != "research" {
+			continue
+		}
+		switch dropped := row["dropped"].(type) {
+		case []any:
+			for _, item := range dropped {
+				entry, _ := item.(map[string]any)
+				if entry["reason"] == reason {
+					return true
+				}
+			}
+		case []map[string]any:
+			for _, entry := range dropped {
+				if entry["reason"] == reason {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func traceRelaxed(rows []map[string]any) bool {
+	for _, row := range rows {
+		if row["stage"] == "research" && row["relaxed"] == true {
+			return true
+		}
+	}
+	return false
 }
 
 func traceStage(rows []map[string]any, stage string) map[string]any {

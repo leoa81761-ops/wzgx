@@ -422,6 +422,13 @@ func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []
 		return Completion{}, status, err
 	}
 	text, prompt, completion, err := readOpenAI(raw)
+	if stageFromMessages(messages) == "资料检索" {
+		cited := AttachResearchCitations(text, raw)
+		if strings.TrimSpace(cited) != "" && cited != text {
+			text = cited
+			err = nil
+		}
+	}
 	if err != nil {
 		return Completion{}, status, err
 	}
@@ -500,6 +507,13 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 		return Completion{}, status, err
 	}
 	text, prompt, completion, err := readResponses(raw)
+	if stageFromMessages(messages) == "资料检索" {
+		cited := AttachResearchCitations(text, raw)
+		if strings.TrimSpace(cited) != "" && cited != text {
+			text = cited
+			err = nil
+		}
+	}
 	if err != nil {
 		return Completion{}, status, err
 	}

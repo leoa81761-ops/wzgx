@@ -25,7 +25,8 @@ func EffectiveWords(extra []string) []string {
 	return words
 }
 
-// BodyRunes 统计正文汉字：各小节段落、列表和结尾，不含标题与摘要。
+// BodyRunes 统计推送正文里的字：各小节小标题、段落、列表、表格单元格和结尾。
+// 不含文章标题、摘要、参考来源和脚注。表格和标题会进微信正文，所以和段落一起计数。
 func BodyRunes(draft map[string]any) int {
 	if draft == nil {
 		return 0
@@ -37,10 +38,26 @@ func BodyRunes(draft map[string]any) int {
 		if section == nil {
 			continue
 		}
+		n += utf8.RuneCountInString(asText(section["heading"]))
 		n += runesOf(section["paragraphs"])
 		n += runesOf(section["list"])
+		if table, _ := section["table"].(map[string]any); table != nil {
+			n += tableRunes(table)
+		}
 	}
 	n += utf8.RuneCountInString(asText(draft["closing"]))
+	return n
+}
+
+func tableRunes(table map[string]any) int {
+	n := runesOf(table["headers"])
+	rows, _ := table["rows"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.([]any)
+		for _, cell := range row {
+			n += utf8.RuneCountInString(asText(cell))
+		}
+	}
 	return n
 }
 
@@ -58,7 +75,7 @@ func asText(v any) string {
 	return s
 }
 
-// TrimToMax 把正文压到最多 max 个字。从结尾往前删，标题和摘要不动。
+// TrimToMax 把正文压到最多 max 个字。从结尾往前删，文章标题和摘要不动。
 func TrimToMax(draft map[string]any, max int) map[string]any {
 	if draft == nil || max <= 0 || BodyRunes(draft) <= max {
 		return draft
@@ -100,7 +117,7 @@ func shortenTail(draft map[string]any, overflow int) bool {
 		if section == nil {
 			continue
 		}
-		if cutList(section, "list", overflow) || cutList(section, "paragraphs", overflow) {
+		if cutTable(section, overflow) || cutList(section, "list", overflow) || cutList(section, "paragraphs", overflow) || cutText(section, "heading", overflow) {
 			return true
 		}
 	}
@@ -119,6 +136,38 @@ func cutText(holder map[string]any, key string, overflow int) bool {
 	}
 	holder[key] = string([]rune(text)[:n-overflow])
 	return true
+}
+
+func cutTable(section map[string]any, overflow int) bool {
+	table, _ := section["table"].(map[string]any)
+	if table == nil || overflow < 1 {
+		return false
+	}
+	rows, _ := table["rows"].([]any)
+	for i := len(rows) - 1; i >= 0; i-- {
+		row, _ := rows[i].([]any)
+		for j := len(row) - 1; j >= 0; j-- {
+			text := asText(row[j])
+			if text == "" {
+				continue
+			}
+			n := utf8.RuneCountInString(text)
+			if n <= overflow {
+				row[j] = ""
+			} else {
+				row[j] = string([]rune(text)[:n-overflow])
+			}
+			rows[i] = row
+			table["rows"] = rows
+			section["table"] = table
+			return true
+		}
+	}
+	if cutList(table, "headers", overflow) {
+		section["table"] = table
+		return true
+	}
+	return false
 }
 
 func cutList(section map[string]any, key string, overflow int) bool {
