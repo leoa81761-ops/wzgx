@@ -7,6 +7,12 @@
       <p v-if="quota.expires_at" class="muted">到期时间：{{ formatTime(quota.expires_at) }}。到期后有 7 天宽限期，宽限期内不能新增公众号和方向。</p>
       <p v-if="quota.pending_tier" class="muted">到期后改为{{ quota.pending_label }}{{ quota.applies_at ? `（${formatTime(quota.applies_at)}）` : "" }}。</p>
     </div>
+    <section class="card stack">
+      <h2>邀请奖励</h2>
+      <p v-if="referral.code">你的邀请链接：{{ inviteLink }}</p>
+      <p class="muted">免费用户每有 1 个有效邀请，当月多 {{ referral.reward_per || 2 }} 篇，最多加 {{ referral.reward_cap || 20 }} 篇，免费额度不超过 {{ referral.month_max || 30 }} 篇。付费期间不加，降回免费后恢复。有效邀请需要新用户、非虚拟号、公众号此前没被绑定过、写出 {{ referral.drafts_need || 3 }} 篇，并观察 {{ referral.observe_days || 7 }} 天。同设备或同一 IP 段集中注册不计入。每天最多 {{ referral.daily_cap || 3 }} 个有效邀请。</p>
+      <p class="muted">已生效 {{ referral.valid_count || 0 }}，观察中 {{ referral.pending_count || 0 }}，待审核 {{ referral.frozen_count || 0 }}，已撤销 {{ referral.revoked_count || 0 }}。当前加篇 {{ referral.bonus || 0 }}。</p>
+    </section>
     <section class="card">
       <h2>开通方式</h2>
       <p>当前版本没有在线支付。付款后请联系管理员，由管理员在配置中心手工开通，并登记备注。</p>
@@ -40,14 +46,19 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, formatTime } from "../api";
 import { logout } from "../session";
 
 const router = useRouter();
 const quota = ref({});
+const referral = ref({});
 const consents = ref([]);
+const inviteLink = computed(() => {
+  if (!referral.value.path) return "";
+  return window.location.origin + referral.value.path;
+});
 const password = ref("");
 const message = ref("");
 const error = ref("");
@@ -79,6 +90,7 @@ async function removeAccount() {
 
 onMounted(async () => {
   quota.value = await api("/api/me/quota");
+  referral.value = await api("/api/me/referral");
   consents.value = await api("/api/me/consents");
 });
 </script>

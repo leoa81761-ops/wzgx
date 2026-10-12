@@ -239,6 +239,7 @@ func planDict(plan *model.WritingPlan) map[string]any {
 		"word_target": plan.WordTarget, "daily_count": plan.ArticlesPerDay(), "schedule_type": plan.ScheduleType, "schedule_label": label,
 		"weekdays": days, "time_window": plan.TimeWindow, "window_label": catalog.WindowLabel(plan.TimeWindow),
 		"status": plan.Status, "pause_reason": plan.PauseReason, "next_run_at": jtime(plan.NextRunAt),
+		"confirm_mode": plan.ConfirmMode,
 	}
 }
 
@@ -325,6 +326,9 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 	}
 	view["specified_title"] = title
 	view["vetoes"] = tags
+	if err := a.attachProposal(ctx, view, plan.ID); err != nil {
+		return nil, err
+	}
 	pub, err := a.Store.GetPlanPublish(ctx, nil, plan.ID)
 	if err != nil {
 		return nil, err
@@ -451,6 +455,10 @@ func (a *App) bindAccount(w http.ResponseWriter, r *http.Request, user *model.Us
 	}
 	var created *model.WxAccount
 	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		prior, err := a.Store.ListAccountsByAppID(r.Context(), tx, appID)
+		if err != nil {
+			return err
+		}
 		if err := a.assertCanBind(r.Context(), tx, user.ID, appID, now); err != nil {
 			return err
 		}
@@ -468,10 +476,13 @@ func (a *App) bindAccount(w http.ResponseWriter, r *http.Request, user *model.Us
 			}
 			return err
 		}
-		return a.Store.InsertConsent(r.Context(), tx, &model.Consent{
+		if err := a.Store.InsertConsent(r.Context(), tx, &model.Consent{
 			UserID: user.ID, DocType: "wx_credentials", Version: catalog.LegalVersion, ConsentItem: "wx_credentials",
 			IP: clientIP(r), UserAgent: userAgent(r), CreatedAt: now,
-		})
+		}); err != nil {
+			return err
+		}
+		return a.notePriorAppID(r.Context(), tx, user.ID, len(prior) > 0)
 	})
 	if err != nil {
 		return err
@@ -658,7 +669,7 @@ func (a *App) unbindAccount(w http.ResponseWriter, r *http.Request, user *model.
 				return err
 			}
 		}
-		return nil
+		return a.Store.RevokeInvitee(r.Context(), tx, user.ID, "公众号已解绑")
 	})
 	if err != nil {
 		return err

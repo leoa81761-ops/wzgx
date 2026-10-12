@@ -123,14 +123,17 @@ func (s *Store) PurgeArticleBodies(ctx context.Context, before string) (int64, e
 }
 
 type Metrics struct {
-	UsersTotal    int
-	Users7d       int
-	Users30d      int
-	PaidUsers     int
-	OrdersPaid30d int
-	Renewals30d   int
-	Articles30d   int
-	CostCents30d  int
+	UsersTotal      int
+	Users7d         int
+	Users30d        int
+	PaidUsers       int
+	OrdersPaid30d   int
+	Renewals30d     int
+	Articles30d     int
+	CostCents30d    int
+	Referrals       int
+	ReferralsValid  int
+	ReferralsFrozen int
 }
 
 func (s *Store) Metrics(ctx context.Context, since7, since30 string) (Metrics, error) {
@@ -161,5 +164,14 @@ func (s *Store) Metrics(ctx context.Context, since7, since30 string) (Metrics, e
 		return m, err
 	}
 	m.CostCents30d = int(cents.Int64)
+	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM referral`).Scan(&m.Referrals); err != nil {
+		return m, err
+	}
+	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM referral WHERE status = 'valid'`).Scan(&m.ReferralsValid); err != nil {
+		return m, err
+	}
+	if err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM referral WHERE status = 'frozen'`).Scan(&m.ReferralsFrozen); err != nil {
+		return m, err
+	}
 	return m, nil
 }

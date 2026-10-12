@@ -73,6 +73,17 @@
         <button class="btn-ghost" type="button" @click="saveDaily(plan)">保存篇数</button>
         <p class="muted" v-if="plan.pause_reason">原因：{{ plan.pause_reason }}</p>
         <p class="muted">下次生成：{{ formatTime(plan.next_run_at) }}</p>
+        <label v-if="quota.tier === 'premium' || quota.tier === 'lifetime' || plan.confirm_mode" class="check">
+          <input :checked="plan.confirm_mode" type="checkbox" @change="setConfirm(plan, $event.target.checked)" />
+          <span>选题确认：提前推送下一篇选题，24 小时内可以采用或换一个，超时按这个选题写。</span>
+        </label>
+        <div v-if="plan.proposal" class="stack">
+          <p>选题：{{ plan.proposal.title }}（{{ plan.proposal.status === "approved" ? "已采用，到点后写" : "待处理" }}，请在 {{ formatTime(plan.proposal.deadline) }} 前决定）</p>
+          <div v-if="plan.proposal.status === 'pending'" class="row">
+            <button class="btn-ghost" type="button" @click="acceptProposal(plan)">采用</button>
+            <button class="btn-ghost" type="button" @click="rejectProposal(plan)">换一个</button>
+          </div>
+        </div>
         <p v-if="plan.specified_title" class="muted">下一篇指定题目：{{ plan.specified_title }}。成功生成后会自动清掉。</p>
         <label>指定下一篇题目
           <input v-model="pins[plan.id]" maxlength="64" placeholder="不填则继续自动选题" />
@@ -204,6 +215,37 @@ async function submit() {
     error.value = err.message;
   } finally {
     loading.value = false;
+  }
+}
+
+async function setConfirm(plan, enabled) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/confirm`, { method: "PUT", body: { enabled } });
+    await load();
+  } catch (err) {
+    error.value = err.message;
+    await load();
+  }
+}
+
+async function acceptProposal(plan) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/proposal/accept`, { method: "POST", body: {} });
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function rejectProposal(plan) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}/proposal/reject`, { method: "POST", body: {} });
+    await load();
+  } catch (err) {
+    error.value = err.message;
   }
 }
 

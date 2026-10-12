@@ -217,7 +217,14 @@ func (s *Store) ListVetoTags(ctx context.Context, q db.Q, planID int64) ([]strin
 }
 
 func (s *Store) AddVeto(ctx context.Context, planID int64, tag string, at time.Time) error {
-	_, err := s.DB.Exec(ctx, `INSERT INTO topic_veto (plan_id, topic_tag, created_at) VALUES (?, ?, ?)`, planID, tag, timeReq(at))
+	return s.InsertVeto(ctx, nil, planID, tag, at)
+}
+
+func (s *Store) InsertVeto(ctx context.Context, q db.Q, planID int64, tag string, at time.Time) error {
+	if q == nil {
+		q = s.DB
+	}
+	_, err := q.Exec(ctx, `INSERT INTO topic_veto (plan_id, topic_tag, created_at) VALUES (?, ?, ?)`, planID, tag, timeReq(at))
 	if db.IsUnique(err) {
 		return nil
 	}

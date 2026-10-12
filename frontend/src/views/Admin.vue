@@ -289,6 +289,7 @@
         <h2>数据看板</h2>
         <p>注册 {{ metrics.users_total }}（7 天 {{ metrics.users_7d }}，30 天 {{ metrics.users_30d }}）。付费用户 {{ metrics.paid_users }}，转化率 {{ Math.round((metrics.conversion || 0) * 1000) / 10 }}%。</p>
         <p>近 30 天支付成功 {{ metrics.orders_paid_30d }} 笔，其中续费 {{ metrics.renewals_30d }} 笔。成功稿件 {{ metrics.articles_30d }} 篇，成本 {{ metrics.cost_cents_30d }} 分，单篇约 {{ metrics.cost_per_article_cents }} 分。</p>
+        <p>邀请 {{ metrics.referrals || 0 }} 条，已生效 {{ metrics.referrals_valid || 0 }}，待审核 {{ metrics.referrals_frozen || 0 }}。</p>
         <p class="muted">成本按后台单价和实际 token、检索次数、生图张数估算。单价为 0 或还没有用量时，单篇成本是 0。</p>
       </article>
       <article class="card stack" style="max-width: 640px">
@@ -378,6 +379,76 @@
         </table>
       </article>
     </section>
+
+    <section v-if="tab === 'invite'" class="stack">
+      <article class="card stack" style="max-width: 720px">
+        <h2>邀请规则</h2>
+        <p class="muted">免费用户才加篇。付费期间关系保留，降回免费后恢复。虚拟号、同设备、同一 IP 段集中注册不会变成有效邀请。</p>
+        <label>每个有效邀请加篇 <input v-model.number="inviteRules.reward_per" type="number" min="0" /></label>
+        <label>加篇上限 <input v-model.number="inviteRules.reward_cap" type="number" min="0" /></label>
+        <label>免费月额度上限 <input v-model.number="inviteRules.month_max" type="number" min="1" /></label>
+        <label>每人每天有效邀请上限 <input v-model.number="inviteRules.daily_cap" type="number" min="1" /></label>
+        <label>观察天数 <input v-model.number="inviteRules.observe_days" type="number" min="0" /></label>
+        <label>成功草稿篇数 <input v-model.number="inviteRules.drafts_need" type="number" min="1" /></label>
+        <button class="btn" type="button" @click="saveInviteRules">保存规则</button>
+      </article>
+      <article class="card stack">
+        <h2>审核队列</h2>
+        <table>
+          <thead><tr><th>邀请人</th><th>被邀请人</th><th>状态</th><th>原因</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="row in referrals" :key="row.id">
+              <td>{{ row.inviter }}</td>
+              <td>{{ row.invitee }}</td>
+              <td>{{ row.status }}</td>
+              <td>{{ row.reason }}</td>
+              <td>
+                <button class="text-btn" type="button" @click="reviewReferral(row, 'approve')">通过</button>
+                <button class="text-btn" type="button" @click="reviewReferral(row, 'revoke')">撤销</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+
+    <section v-if="tab === 'hot'" class="stack">
+      <article class="card stack" style="max-width: 720px">
+        <h2>热点源</h2>
+        <p class="muted">支持 HTTP JSON 和远程 MCP。没添加启用的来源时，写作仍用常青选题。用户任务只读缓存。</p>
+        <label>名称 <input v-model="hotForm.name" /></label>
+        <label>协议
+          <select v-model="hotForm.protocol">
+            <option value="http">HTTP JSON</option>
+            <option value="mcp">MCP tools/call</option>
+          </select>
+        </label>
+        <label>地址 <input v-model="hotForm.base_url" placeholder="https://example.com/hot" /></label>
+        <label>密钥（留空表示不修改） <input v-model="hotForm.api_key" type="password" /></label>
+        <label>垂类标识（可空，空表示各方向都能用） <input v-model="hotForm.vertical" /></label>
+        <label>缓存小时 <input v-model.number="hotForm.cache_hours" type="number" min="1" /></label>
+        <label class="check"><input v-model="hotForm.enabled" type="checkbox" /> 启用</label>
+        <button class="btn" type="button" @click="saveHot">保存热点源</button>
+      </article>
+      <article class="card stack">
+        <table>
+          <thead><tr><th>名称</th><th>协议</th><th>地址</th><th>状态</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="row in hotSources" :key="row.id">
+              <td>{{ row.name }}</td>
+              <td>{{ row.protocol }}</td>
+              <td>{{ row.base_url }}</td>
+              <td>{{ row.enabled ? "启用" : "停用" }}</td>
+              <td>
+                <button class="text-btn" type="button" @click="testHot(row)">测试</button>
+                <button class="text-btn" type="button" @click="removeHot(row)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="hotPreview" class="muted">{{ hotPreview }}</p>
+      </article>
+    </section>
   </div>
 </template>
 
@@ -398,6 +469,8 @@ const tabs = [
   { key: "board", label: "看板" },
   { key: "audit", label: "审计" },
   { key: "legal", label: "协议" },
+  { key: "invite", label: "邀请" },
+  { key: "hot", label: "热点" },
 ];
 const tab = ref("models");
 const error = ref("");
@@ -429,6 +502,11 @@ const replies = reactive({});
 const metrics = ref(null);
 const auditLogs = ref([]);
 const legalDocs = ref([]);
+const referrals = ref([]);
+const inviteRules = reactive({ reward_per: 2, reward_cap: 20, month_max: 30, daily_cap: 3, observe_days: 7, drafts_need: 3 });
+const hotSources = ref([]);
+const hotPreview = ref("");
+const hotForm = reactive({ name: "", protocol: "http", base_url: "", api_key: "", vertical: "", cache_hours: 12, enabled: true });
 const consentUserID = ref("");
 const consentRows = ref([]);
 const legalForm = reactive({
@@ -596,6 +674,75 @@ async function load() {
   if (metrics.value?.cost) Object.assign(costForm, metrics.value.cost);
   auditLogs.value = await api("/api/admin/audit-logs");
   legalDocs.value = await api("/api/admin/legal");
+  referrals.value = await api("/api/admin/referrals");
+  Object.assign(inviteRules, await api("/api/admin/invite-rules"));
+  hotSources.value = await api("/api/admin/hot-sources");
+}
+
+async function saveInviteRules() {
+  error.value = "";
+  message.value = "";
+  try {
+    Object.assign(inviteRules, await api("/api/admin/invite-rules", { method: "PUT", body: inviteRules }));
+    message.value = "邀请规则已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function reviewReferral(row, action) {
+  error.value = "";
+  try {
+    await api(`/api/admin/referrals/${row.id}/${action}`, { method: "POST", body: {} });
+    referrals.value = await api("/api/admin/referrals");
+    message.value = action === "approve" ? "已通过" : "已撤销";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function saveHot() {
+  error.value = "";
+  message.value = "";
+  try {
+    await api("/api/admin/hot-sources", {
+      method: "POST",
+      body: {
+        name: hotForm.name,
+        protocol: hotForm.protocol,
+        base_url: hotForm.base_url,
+        api_key: hotForm.api_key,
+        enabled: hotForm.enabled,
+        extra_params: { vertical: hotForm.vertical, cache_hours: Number(hotForm.cache_hours || 12) },
+      },
+    });
+    hotForm.api_key = "";
+    hotSources.value = await api("/api/admin/hot-sources");
+    message.value = "热点源已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function testHot(row) {
+  error.value = "";
+  hotPreview.value = "";
+  try {
+    const data = await api(`/api/admin/hot-sources/${row.id}/test`, { method: "POST", body: {} });
+    hotPreview.value = `返回 ${data.count} 条`;
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function removeHot(row) {
+  error.value = "";
+  try {
+    await api(`/api/admin/hot-sources/${row.id}`, { method: "DELETE" });
+    hotSources.value = await api("/api/admin/hot-sources");
+  } catch (err) {
+    error.value = err.message;
+  }
 }
 
 async function savePlanConfig(item) {

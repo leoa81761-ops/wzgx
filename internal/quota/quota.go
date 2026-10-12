@@ -7,6 +7,7 @@ import (
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
 	"github.com/leoa81761-ops/wzgx/internal/db"
+	"github.com/leoa81761-ops/wzgx/internal/growth"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 	"github.com/leoa81761-ops/wzgx/internal/store"
@@ -125,10 +126,14 @@ func BlockReason(ctx context.Context, st *store.Store, q db.Q, user *model.User,
 	if err != nil {
 		return "", err
 	}
+	periodLimit, _, err := periodQuota(ctx, st, q, user, tier, limits.PeriodQuota)
+	if err != nil {
+		return "", err
+	}
 	if daily >= limits.DailyQuota {
 		return "今日额度已用完", nil
 	}
-	if monthly >= limits.PeriodQuota {
+	if monthly >= periodLimit {
 		unit := "本月"
 		if limits.PeriodUnit == "year" {
 			unit = "本周年"
@@ -242,6 +247,10 @@ func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, no
 	if err != nil {
 		return nil, err
 	}
+	periodLimit, bonus, err := periodQuota(ctx, st, q, user, tier, limits.PeriodQuota)
+	if err != nil {
+		return nil, err
+	}
 	stateLabel := map[string]string{"active": "有效", "grace": "宽限期", "expired": "已降为免费"}[state]
 	if stateLabel == "" {
 		stateLabel = state
@@ -261,7 +270,7 @@ func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, no
 	out := map[string]any{
 		"tier": tier, "tier_label": label, "stored_tier": user.Tier, "state": state, "state_label": stateLabel,
 		"expires_at": expires, "daily_used": daily, "daily_limit": limits.DailyQuota, "daily_remaining": remaining(limits.DailyQuota, daily),
-		"period_used": used, "period_limit": limits.PeriodQuota, "period_remaining": remaining(limits.PeriodQuota, used),
+		"period_used": used, "period_limit": periodLimit, "period_remaining": remaining(periodLimit, used), "invite_bonus": bonus,
 		"period_unit": limits.PeriodUnit, "period_label": periodLabel, "max_words": limits.MaxWords, "max_accounts": limits.MaxAccounts,
 		"max_plans": limits.MaxPlans, "summary": limits.Summary,
 	}
@@ -279,6 +288,24 @@ func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, no
 		}
 	}
 	return out, nil
+}
+
+func periodQuota(ctx context.Context, st *store.Store, q db.Q, user *model.User, tier string, base int) (int, int, error) {
+	if user == nil || tier != "free" {
+		return base, 0, nil
+	}
+	valid, err := st.CountReferrals(ctx, q, user.ID, growth.StatusValid)
+	if err != nil {
+		return 0, 0, err
+	}
+	rules, err := growth.RulesFromSettings(func(key string) (string, error) {
+		return st.GetSetting(ctx, q, key)
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	bonus := growth.Bonus(valid, base, tier, rules)
+	return base + bonus, bonus, nil
 }
 
 func EnforceFreeLimits(ctx context.Context, st *store.Store, q db.Q, user *model.User, now time.Time) error {
