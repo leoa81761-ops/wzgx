@@ -7,7 +7,7 @@
         <router-link :to="`/app/articles/${article.id}`"><strong>{{ article.title || "未命名" }}</strong></router-link>
         <p class="muted">{{ article.subtopic }} · {{ formatTime(article.created_at) }}</p>
         <p v-if="article.failure_reason" class="banner">{{ article.failure_reason }}</p>
-        <p v-if="article.delivery_note" class="banner info">{{ article.delivery_note }}</p>
+        <p v-if="article.delivery_note" class="banner" :class="{ info: !String(article.delivery_note).includes('无参考来源') }">{{ article.delivery_note }}</p>
       </div>
       <span class="pill" :class="pillClass(article.status)">{{ article.status_label }}</span>
     </article>

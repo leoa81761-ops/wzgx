@@ -9,52 +9,54 @@ import (
 
 // Settings 从环境变量读取。不要在代码里写真实密钥。
 type Settings struct {
-	DatabaseURL        string
-	MasterKey          string
-	JWTSecret          string
-	AdminEmail         string
-	AdminPassword      string
-	WeChatMode         string
-	WeChatAPIBase      string
-	LLMMode            string
-	PublicEgressIP     string
-	SchedulerEnabled   bool
-	SchedulerInterval  time.Duration
-	MaxConcurrency     int
-	StaleTaskSeconds   int
-	DBMaxOpen          int
-	DBMaxIdle          int
-	HTTPAddr           string
-	StaticDir          string
-	HTTPIdleConns      int
-	HTTPIdlePerHost    int
-	NotifyWebhookURL   string
-	SMTPHost           string
-	SMTPPort           int
-	SMTPUser           string
-	SMTPPassword       string
-	SMTPFrom           string
-	PaySandbox         bool
-	PublishDailyCap    int
-	WxPayMchID         string
-	WxPayAppID         string
-	WxPayMchSerial     string
-	WxPayAPIv3Key      string
-	WxPayPrivateKey    string
-	WxPayPlatformCert  string
-	WxPayNotifyURL     string
-	WxPayAPIBase       string
-	AlipayAppID        string
-	AlipayPrivateKey   string
-	AlipayPublicKey    string
-	AlipayNotifyURL    string
-	AlipayReturnURL    string
-	AlipayGateway      string
-	PriceStandardMonth int
-	PriceStandardYear  int
-	PricePremiumMonth  int
-	PricePremiumYear   int
-	PriceLifetime      int
+	DatabaseURL         string
+	MasterKey           string
+	JWTSecret           string
+	AdminEmail          string
+	AdminPassword       string
+	WeChatMode          string
+	WeChatAPIBase       string
+	LLMMode             string
+	PublicEgressIP      string
+	SchedulerEnabled    bool
+	SchedulerInterval   time.Duration
+	MaxConcurrency      int
+	StaleTaskSeconds    int
+	DBMaxOpen           int
+	DBMaxIdle           int
+	HTTPAddr            string
+	StaticDir           string
+	HTTPIdleConns       int
+	HTTPIdlePerHost     int
+	NotifyWebhookURL    string
+	SMTPHost            string
+	SMTPPort            int
+	SMTPUser            string
+	SMTPPassword        string
+	SMTPFrom            string
+	PaySandbox          bool
+	PublishDailyCap     int
+	WxPayMchID          string
+	WxPayAppID          string
+	WxPayMchSerial      string
+	WxPayAPIv3Key       string
+	WxPayPrivateKey     string
+	WxPayPlatformCert   string
+	WxPayNotifyURL      string
+	WxPayAPIBase        string
+	AlipayAppID         string
+	AlipayPrivateKey    string
+	AlipayPublicKey     string
+	AlipayNotifyURL     string
+	AlipayReturnURL     string
+	AlipayGateway       string
+	PriceStandardMonth  int
+	PriceStandardYear   int
+	PricePremiumMonth   int
+	PricePremiumYear    int
+	PriceLifetime       int
+	ResearchTimeout     time.Duration
+	ResearchBackupModel string
 }
 
 func Load() Settings {
@@ -83,53 +85,66 @@ func Load() Settings {
 		}
 	}
 	return Settings{
-		DatabaseURL:        getenv("DATABASE_URL", "sqlite:///./data/dev.db"),
-		MasterKey:          getenv("MASTER_KEY", "dev-master-key-change-me"),
-		JWTSecret:          getenv("JWT_SECRET", "dev-jwt-secret-change-me"),
-		AdminEmail:         strings.ToLower(getenv("ADMIN_EMAIL", "admin@example.com")),
-		AdminPassword:      getenv("ADMIN_PASSWORD", "admin123456"),
-		WeChatMode:         getenv("WECHAT_MODE", "mock"),
-		WeChatAPIBase:      getenv("WECHAT_API_BASE", "https://api.weixin.qq.com"),
-		LLMMode:            getenv("LLM_MODE", "mock"),
-		PublicEgressIP:     os.Getenv("PUBLIC_EGRESS_IP"),
-		SchedulerEnabled:   envBool("SCHEDULER_ENABLED", true),
-		SchedulerInterval:  time.Duration(interval) * time.Second,
-		MaxConcurrency:     maxConc,
-		StaleTaskSeconds:   stale,
-		DBMaxOpen:          envInt("DB_MAX_OPEN_CONNS", 0),
-		DBMaxIdle:          envInt("DB_MAX_IDLE_CONNS", 0),
-		HTTPAddr:           addr,
-		StaticDir:          os.Getenv("STATIC_DIR"),
-		HTTPIdleConns:      envInt("HTTP_CLIENT_MAX_IDLE_CONNS", 256),
-		HTTPIdlePerHost:    envInt("HTTP_CLIENT_MAX_IDLE_PER_HOST", 64),
-		NotifyWebhookURL:   strings.TrimSpace(os.Getenv("NOTIFY_WEBHOOK_URL")),
-		SMTPHost:           strings.TrimSpace(os.Getenv("SMTP_HOST")),
-		SMTPPort:           envInt("SMTP_PORT", 587),
-		SMTPUser:           strings.TrimSpace(os.Getenv("SMTP_USER")),
-		SMTPPassword:       os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:           strings.TrimSpace(os.Getenv("SMTP_FROM")),
-		PaySandbox:         envBool("PAY_SANDBOX", false),
-		PublishDailyCap:    publishCap(),
-		WxPayMchID:         strings.TrimSpace(os.Getenv("WXPAY_MCH_ID")),
-		WxPayAppID:         strings.TrimSpace(os.Getenv("WXPAY_APP_ID")),
-		WxPayMchSerial:     strings.TrimSpace(os.Getenv("WXPAY_MCH_SERIAL")),
-		WxPayAPIv3Key:      strings.TrimSpace(os.Getenv("WXPAY_API_V3_KEY")),
-		WxPayPrivateKey:    loadPEM("WXPAY_PRIVATE_KEY", "WXPAY_PRIVATE_KEY_FILE"),
-		WxPayPlatformCert:  loadPEM("WXPAY_PLATFORM_CERT", "WXPAY_PLATFORM_CERT_FILE"),
-		WxPayNotifyURL:     strings.TrimSpace(os.Getenv("WXPAY_NOTIFY_URL")),
-		WxPayAPIBase:       getenv("WXPAY_API_BASE", "https://api.mch.weixin.qq.com"),
-		AlipayAppID:        strings.TrimSpace(os.Getenv("ALIPAY_APP_ID")),
-		AlipayPrivateKey:   loadPEM("ALIPAY_PRIVATE_KEY", "ALIPAY_PRIVATE_KEY_FILE"),
-		AlipayPublicKey:    loadPEM("ALIPAY_PUBLIC_KEY", "ALIPAY_PUBLIC_KEY_FILE"),
-		AlipayNotifyURL:    strings.TrimSpace(os.Getenv("ALIPAY_NOTIFY_URL")),
-		AlipayReturnURL:    strings.TrimSpace(os.Getenv("ALIPAY_RETURN_URL")),
-		AlipayGateway:      getenv("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do"),
-		PriceStandardMonth: positiveOr("PAY_PRICE_STANDARD_MONTH", 3000),
-		PriceStandardYear:  positiveOr("PAY_PRICE_STANDARD_YEAR", 29900),
-		PricePremiumMonth:  positiveOr("PAY_PRICE_PREMIUM_MONTH", 9900),
-		PricePremiumYear:   positiveOr("PAY_PRICE_PREMIUM_YEAR", 99000),
-		PriceLifetime:      positiveOr("PAY_PRICE_LIFETIME", 300000),
+		DatabaseURL:         getenv("DATABASE_URL", "sqlite:///./data/dev.db"),
+		MasterKey:           getenv("MASTER_KEY", "dev-master-key-change-me"),
+		JWTSecret:           getenv("JWT_SECRET", "dev-jwt-secret-change-me"),
+		AdminEmail:          strings.ToLower(getenv("ADMIN_EMAIL", "admin@example.com")),
+		AdminPassword:       getenv("ADMIN_PASSWORD", "admin123456"),
+		WeChatMode:          getenv("WECHAT_MODE", "mock"),
+		WeChatAPIBase:       getenv("WECHAT_API_BASE", "https://api.weixin.qq.com"),
+		LLMMode:             getenv("LLM_MODE", "mock"),
+		PublicEgressIP:      os.Getenv("PUBLIC_EGRESS_IP"),
+		SchedulerEnabled:    envBool("SCHEDULER_ENABLED", true),
+		SchedulerInterval:   time.Duration(interval) * time.Second,
+		MaxConcurrency:      maxConc,
+		StaleTaskSeconds:    stale,
+		DBMaxOpen:           envInt("DB_MAX_OPEN_CONNS", 0),
+		DBMaxIdle:           envInt("DB_MAX_IDLE_CONNS", 0),
+		HTTPAddr:            addr,
+		StaticDir:           os.Getenv("STATIC_DIR"),
+		HTTPIdleConns:       envInt("HTTP_CLIENT_MAX_IDLE_CONNS", 256),
+		HTTPIdlePerHost:     envInt("HTTP_CLIENT_MAX_IDLE_PER_HOST", 64),
+		NotifyWebhookURL:    strings.TrimSpace(os.Getenv("NOTIFY_WEBHOOK_URL")),
+		SMTPHost:            strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:            envInt("SMTP_PORT", 587),
+		SMTPUser:            strings.TrimSpace(os.Getenv("SMTP_USER")),
+		SMTPPassword:        os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:            strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		PaySandbox:          envBool("PAY_SANDBOX", false),
+		PublishDailyCap:     publishCap(),
+		WxPayMchID:          strings.TrimSpace(os.Getenv("WXPAY_MCH_ID")),
+		WxPayAppID:          strings.TrimSpace(os.Getenv("WXPAY_APP_ID")),
+		WxPayMchSerial:      strings.TrimSpace(os.Getenv("WXPAY_MCH_SERIAL")),
+		WxPayAPIv3Key:       strings.TrimSpace(os.Getenv("WXPAY_API_V3_KEY")),
+		WxPayPrivateKey:     loadPEM("WXPAY_PRIVATE_KEY", "WXPAY_PRIVATE_KEY_FILE"),
+		WxPayPlatformCert:   loadPEM("WXPAY_PLATFORM_CERT", "WXPAY_PLATFORM_CERT_FILE"),
+		WxPayNotifyURL:      strings.TrimSpace(os.Getenv("WXPAY_NOTIFY_URL")),
+		WxPayAPIBase:        getenv("WXPAY_API_BASE", "https://api.mch.weixin.qq.com"),
+		AlipayAppID:         strings.TrimSpace(os.Getenv("ALIPAY_APP_ID")),
+		AlipayPrivateKey:    loadPEM("ALIPAY_PRIVATE_KEY", "ALIPAY_PRIVATE_KEY_FILE"),
+		AlipayPublicKey:     loadPEM("ALIPAY_PUBLIC_KEY", "ALIPAY_PUBLIC_KEY_FILE"),
+		AlipayNotifyURL:     strings.TrimSpace(os.Getenv("ALIPAY_NOTIFY_URL")),
+		AlipayReturnURL:     strings.TrimSpace(os.Getenv("ALIPAY_RETURN_URL")),
+		AlipayGateway:       getenv("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do"),
+		PriceStandardMonth:  positiveOr("PAY_PRICE_STANDARD_MONTH", 3000),
+		PriceStandardYear:   positiveOr("PAY_PRICE_STANDARD_YEAR", 29900),
+		PricePremiumMonth:   positiveOr("PAY_PRICE_PREMIUM_MONTH", 9900),
+		PricePremiumYear:    positiveOr("PAY_PRICE_PREMIUM_YEAR", 99000),
+		PriceLifetime:       positiveOr("PAY_PRICE_LIFETIME", 300000),
+		ResearchTimeout:     researchTimeout(),
+		ResearchBackupModel: getenv("RESEARCH_BACKUP_MODEL", "grok-4.7"),
 	}
+}
+
+func researchTimeout() time.Duration {
+	n := envInt("RESEARCH_TIMEOUT_SECONDS", 150)
+	if n < 30 {
+		n = 30
+	}
+	if n > 300 {
+		n = 300
+	}
+	return time.Duration(n) * time.Second
 }
 
 func publishCap() int {

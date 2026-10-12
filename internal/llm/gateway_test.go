@@ -370,3 +370,67 @@ func TestCompleteResearchDoesNotRetryInsideGateway(t *testing.T) {
 		t.Fatalf("calls %d err %v", calls, err)
 	}
 }
+
+func TestCompleteResearchUsesConfiguredTimeout(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		time.Sleep(400 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 3, Backoff: time.Second, ResearchTimeout: 150 * time.Millisecond}
+	started := time.Now()
+	_, err := gw.CompleteResearch(context.Background(), []Provider{{
+		Name: "检索", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 30 * time.Second,
+	}}, []map[string]string{{"role": "user", "content": `{"环节":"资料检索"}`}})
+	elapsed := time.Since(started)
+	if err == nil || calls != 1 || elapsed > time.Second {
+		t.Fatalf("calls %d elapsed %s err %v", calls, elapsed, err)
+	}
+}
+
+func TestResearchResponsesUsesWebSearch(t *testing.T) {
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/responses") {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &seen)
+		_, _ = w.Write([]byte(`{"output_text":"参见 https://www.gov.cn/zhengce"}`))
+	}))
+	defer srv.Close()
+	gw := NewGateway(false, srv.Client())
+	result, err := gw.CompleteResearch(context.Background(), []Provider{{
+		Name: "补救", Protocol: "responses", BaseURL: srv.URL + "/v1", Model: "grok-4.7", Timeout: 5 * time.Second,
+	}}, StageMessages("资料检索", map[string]any{"topic_title": "弱电"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen["model"] != "grok-4.7" || seen["stream"] != false {
+		t.Fatalf("%#v", seen)
+	}
+	tools, _ := seen["tools"].([]any)
+	tool, _ := tools[0].(map[string]any)
+	if len(tools) != 1 || tool["type"] != "web_search" {
+		t.Fatalf("tools %#v", seen["tools"])
+	}
+	if !strings.Contains(result.Content, "gov.cn") {
+		t.Fatal(result.Content)
+	}
+	seen = nil
+	gw = NewGateway(false, srv.Client())
+	_, err = gw.CompleteResearch(context.Background(), []Provider{{
+		Name: "已有工具", Protocol: "responses", BaseURL: srv.URL + "/v1", Model: "grok-4.7", Timeout: 5 * time.Second,
+		ExtraParams: map[string]any{"tools": []any{map[string]any{"type": "file_search"}}},
+	}}, StageMessages("资料检索", map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, _ = seen["tools"].([]any)
+	tool, _ = tools[0].(map[string]any)
+	if len(tools) != 1 || tool["type"] != "file_search" {
+		t.Fatalf("existing tools overwritten: %#v", seen["tools"])
+	}
+}

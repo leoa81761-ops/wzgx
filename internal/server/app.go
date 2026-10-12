@@ -58,9 +58,12 @@ func Open(cfg config.Settings) (*App, error) {
 		transport.MaxIdleConnsPerHost = 64
 	}
 	client := &http.Client{Transport: transport}
+	gateway := llm.NewGateway(cfg.LLMMode == "mock", client)
+	gateway.ResearchTimeout = cfg.ResearchTimeout
+	gateway.ResearchBackupModel = cfg.ResearchBackupModel
 	app := &App{
 		Cfg: cfg, DB: database, Store: st, HTTP: client, Tokens: wechat.NewTokenCache(),
-		Cache: runtime.New(st, cfg), Gateway: llm.NewGateway(cfg.LLMMode == "mock", client),
+		Cache: runtime.New(st, cfg), Gateway: gateway,
 		Pool: scheduler.NewPool(cfg.MaxConcurrency), complaints: newIPWindow(5, time.Hour),
 	}
 	app.Runner = &scheduler.Runner{Deps: app.deps(), Pool: app.Pool}

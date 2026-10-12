@@ -109,3 +109,55 @@ func TestSourcePolicy(t *testing.T) {
 		t.Fatalf("relaxed %#v %#v", softKept, softDropped)
 	}
 }
+
+func TestSourceQuality(t *testing.T) {
+	policy := DefaultSourcePolicy()
+	junk := []string{
+		"https://webstore.example.com/a",
+		"https://helpdesk-a.example.com/ticket",
+		"https://shop.example.com/item",
+		"https://example.com/store/sku",
+		"https://example.com/shop/1",
+		"https://example.com/cart",
+		"https://example.com/login",
+		"https://example.com/signin",
+		"https://example.com/checkout",
+	}
+	for _, raw := range junk {
+		kept, dropped := policy.Split([]map[string]any{{"url": raw, "title": "店"}})
+		if len(kept) != 0 || len(dropped) != 1 || dropped[0]["reason"] != "网店或登录页" {
+			t.Fatalf("%s kept %#v dropped %#v", raw, kept, dropped)
+		}
+	}
+	if reason := policy.dropReason("https://example.com/storage/manual"); reason != "" {
+		t.Fatalf("storage page dropped: %s", reason)
+	}
+	filtered := policy.Filter([]map[string]any{
+		{"title": "无网址"},
+		{"url": "https://webstore.example.com/a", "title": "店"},
+		{"url": "https://www.gov.cn/zhengce", "title": "原文"},
+	})
+	if len(filtered) != 2 || filtered[0]["title"] != "无网址" || filtered[1]["title"] != "原文" {
+		t.Fatalf("%#v", filtered)
+	}
+	sources := []map[string]any{
+		{"url": "https://news.example.com/1", "title": "一"},
+		{"url": "https://news.example.com/2", "title": "二"},
+		{"url": "https://www.news.example.com/3", "title": "三"},
+		{"url": "https://english.example.org/d", "title": "en"},
+		{"url": "https://www.gov.cn/a", "title": "国务院"},
+		{"url": "https://www.mohurd.gov.cn/b", "title": "GB 50311 综合布线"},
+		{"url": "https://openstd.samr.gov.cn/c", "title": "国家标准"},
+	}
+	out := PreferSources(sources, "elv")
+	hosts := map[string]int{}
+	for _, source := range out {
+		hosts[sourceHost(asText(source["url"]))]++
+	}
+	if hosts["news.example.com"] != 2 || hosts["gov.cn"] != 1 || hosts["mohurd.gov.cn"] != 1 || hosts["openstd.samr.gov.cn"] != 1 {
+		t.Fatalf("hosts %#v out %#v", hosts, out)
+	}
+	if !strings.Contains(asText(out[0]["url"]), "mohurd.gov.cn") {
+		t.Fatalf("first %#v", out[0])
+	}
+}

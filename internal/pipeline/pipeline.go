@@ -72,11 +72,12 @@ type work struct {
 }
 
 type Built struct {
-	Draft  map[string]any
-	HTML   string
-	Topic  topics.Choice
-	Tokens int
-	Trace  []map[string]any
+	Draft          map[string]any
+	HTML           string
+	Topic          topics.Choice
+	Tokens         int
+	Trace          []map[string]any
+	MissingSources bool
 }
 
 type pushed struct {
@@ -338,7 +339,11 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if level == "" {
 		level = "low"
 	}
-	return map[string]any{"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace, "status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID, "delivery_note": push.DeliveryNote, "risk_level": level}, nil
+	note := push.DeliveryNote
+	if built.MissingSources {
+		note = joinNote(note, "无参考来源")
+	}
+	return map[string]any{"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace, "status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID, "delivery_note": note, "risk_level": level}, nil
 }
 
 // Input 是一次写作需要的业务参数，连通测试和正式任务共用。
@@ -388,6 +393,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	if w.SpecifiedTitle != "" {
 		base["specified_title"] = w.SpecifiedTitle
+	}
+	if w.Pack.Key != "" {
+		base["vertical_key"] = w.Pack.Key
 	}
 	if w.Pack.Name != "" {
 		base["vertical"] = w.Pack.Name
@@ -503,11 +511,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if !listedHaveURL(filtered) {
 			filtered = filterListed(merged, policy.Relaxed())
 		}
-		draft["sources"] = filtered
+		draft["sources"] = preferListed(filtered, sourcePreferMode(base))
 	}
 	if w.Tier == "free" {
 		draft["sources"] = []any{}
 	}
+	missingSources := w.Tier != "free" && len(providers["research"]) > 0 && !listedHaveURL(asList(draft["sources"]))
 	// 事实核对和审核都可能把已经压过长度的正文重新写长。裁剪是最后一次改正文。
 	if high := w.WordTarget * 130 / 100; w.WordTarget > 0 && content.BodyRunes(draft) > high {
 		draft = content.TrimToMax(draft, high)
@@ -534,7 +543,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if err != nil {
 		return Built{Trace: trace}, err
 	}
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources}, nil
 }
 
 func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
@@ -750,6 +759,9 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	}
 	if str(result["status"]) == "held" {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "risk", "有一篇稿没有写入草稿", str(result["delivery_note"]))
+	}
+	if strings.Contains(str(result["delivery_note"]), "无参考来源") {
+		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "无参考来源", "这篇稿已经在草稿箱，但没有可用的参考来源。发布前请自行核对事实。")
 	}
 }
 
@@ -967,11 +979,18 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	if err1 == nil {
 		notes, sources, dropped, relaxed = takeSources(first.Content, policy)
 		if sourcesHaveURL(sources) {
+			sources = preferMaps(sources, payload)
 			stampSourceTrace(&first, sources, dropped, relaxed)
 			return notes, anySources(sources), first, nil
 		}
 	}
-	second, err2 := gateway.CompleteResearch(ctx, providers, messages)
+	short := cloneMap(payload)
+	short["query_mode"] = "short"
+	backupModel := ""
+	if gateway != nil {
+		backupModel = gateway.ResearchBackupModel
+	}
+	second, err2 := gateway.CompleteResearch(ctx, backupResearchProviders(providers, backupModel), llm.StageMessages("资料检索", short))
 	merged := llm.Completion{
 		Attempts:         append(append([]map[string]any{}, first.Attempts...), second.Attempts...),
 		PromptTokens:     first.PromptTokens + second.PromptTokens,
@@ -997,6 +1016,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			}
 			relaxed = relaxed || relaxed2
 		}
+		sources = preferMaps(sources, payload)
 		stampSourceTrace(&merged, sources, dropped, relaxed)
 		return notes, anySources(sources), merged, nil
 	}
@@ -1008,8 +1028,74 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	merged.Protocol = first.Protocol
 	merged.Model = first.Model
 	merged.Content = first.Content
+	sources = preferMaps(sources, payload)
 	stampSourceTrace(&merged, sources, dropped, relaxed)
 	return notes, anySources(sources), merged, nil
+}
+
+func backupResearchProviders(providers []llm.Provider, backupModel string) []llm.Provider {
+	if len(providers) == 0 {
+		return nil
+	}
+	var fast, rest []llm.Provider
+	hasBackup := false
+	for _, provider := range providers {
+		name := strings.ToLower(provider.Model)
+		if strings.Contains(name, "grok-4") || strings.EqualFold(provider.Protocol, "responses") {
+			hasBackup = true
+		}
+		if strings.Contains(name, "chat-fast") {
+			fast = append(fast, provider)
+			continue
+		}
+		rest = append(rest, provider)
+	}
+	if !hasBackup {
+		base := providers[0]
+		if len(fast) > 0 {
+			base = fast[0]
+		}
+		model := strings.TrimSpace(backupModel)
+		if model == "" {
+			model = "grok-4.7"
+		}
+		clone := base
+		clone.Protocol = "responses"
+		clone.Model = model
+		clone.Name = strings.TrimSpace(base.Name + " 补救")
+		rest = append([]llm.Provider{clone}, rest...)
+	}
+	return append(rest, fast...)
+}
+
+func preferMaps(sources []map[string]any, payload map[string]any) []map[string]any {
+	if len(sources) == 0 {
+		return sources
+	}
+	return content.PreferSources(sources, sourcePreferMode(payload))
+}
+
+func sourcePreferMode(payload map[string]any) string {
+	if str(payload["vertical_key"]) == "elv" || strings.Contains(str(payload["vertical"]), "弱电") {
+		return "elv"
+	}
+	return "zh"
+}
+
+func preferListed(sources []any, mode string) []any {
+	maps := make([]map[string]any, 0, len(sources))
+	for _, raw := range sources {
+		source, _ := raw.(map[string]any)
+		if source != nil {
+			maps = append(maps, source)
+		}
+	}
+	preferred := content.PreferSources(maps, mode)
+	out := make([]any, len(preferred))
+	for i := range preferred {
+		out[i] = preferred[i]
+	}
+	return out
 }
 
 func takeSources(content string, policy content.SourcePolicy) (string, []map[string]any, []map[string]any, bool) {
@@ -1098,17 +1184,23 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 	}
 	low := target * 85 / 100
 	high := target * 130 / 100
+	goal := target * 105 / 100
+	ceiling := target * 110 / 100
 	var trace []map[string]any
 	tokens := 0
 	if content.BodyRunes(draft) < low {
 		expandPayload := cloneMap(payload)
 		expandPayload["draft"] = draft
 		expandPayload["current_chars"] = content.BodyRunes(draft)
+		expandPayload["expand_goal"] = goal
 		expanded, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("扩写", expandPayload), llm.StageSchema("正文"), validateDraft)
 		trace = appendStage(trace, "expand", completion, err)
 		if err == nil {
 			draft = expanded
 			tokens += completion.PromptTokens + completion.CompletionTokens
+			if content.BodyRunes(draft) > ceiling {
+				draft = content.TrimToMax(draft, goal)
+			}
 		}
 	}
 	if content.BodyRunes(draft) > high {

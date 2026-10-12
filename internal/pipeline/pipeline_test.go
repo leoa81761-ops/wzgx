@@ -353,6 +353,141 @@ func TestResearchStopsAfterOneRetry(t *testing.T) {
 	if err != nil || task == nil || traceStage(task.ModelTrace, "research")["ok"] != false {
 		t.Fatalf("%#v %v", task, err)
 	}
+	if articles[0].Status != "in_draft" || !strings.Contains(articles[0].DeliveryNote, "无参考来源") {
+		t.Fatalf("%s %s", articles[0].Status, articles[0].DeliveryNote)
+	}
+	notes, _, err := st.ListNotifications(ctx, user.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flagged bool
+	for _, note := range notes {
+		if note.Title == "无参考来源" && strings.Contains(note.Body, "草稿箱") {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Fatalf("%#v", notes)
+	}
+}
+
+func TestBackupResearchCallsGrokResponses(t *testing.T) {
+	var chatCalls, responseCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		if strings.Contains(r.URL.Path, "/responses") {
+			responseCalls++
+			if req["model"] != "grok-4.7" {
+				t.Errorf("model %#v", req["model"])
+			}
+			tools, _ := req["tools"].([]any)
+			tool, _ := tools[0].(map[string]any)
+			if len(tools) != 1 || tool["type"] != "web_search" {
+				t.Errorf("tools %#v", req["tools"])
+			}
+			input, _ := req["input"].([]any)
+			blob, _ := json.Marshal(input)
+			if !strings.Contains(string(blob), "补救检索") {
+				t.Errorf("short prompt %s", blob)
+			}
+			_, _ = w.Write([]byte(`{"output_text":"参见 [住建部](https://www.mohurd.gov.cn/gongkai/1)。"}`))
+			return
+		}
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "补救检索成功", "angle": "今天就能做"})
+		case "资料检索":
+			chatCalls++
+			writeChoice(w, map[string]any{"notes": "", "sources": []any{}})
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "补救检索成功", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	user, account, plan := seedPaid(t, st, "backup@example.com", srv.URL)
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if chatCalls != 1 || responseCalls != 1 {
+		t.Fatalf("chat %d responses %d", chatCalls, responseCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 {
+		t.Fatal(err)
+	}
+	if !strings.Contains(articles[0].BodyHTML, "mohurd点gov点cn") || strings.Contains(articles[0].DeliveryNote, "无参考来源") {
+		t.Fatal(articles[0].BodyHTML, articles[0].DeliveryNote)
+	}
+	notes, _, err := st.ListNotifications(ctx, user.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, note := range notes {
+		if note.Title == "无参考来源" {
+			t.Fatalf("%#v", notes)
+		}
+	}
+}
+
+func TestExpandTrimStopsNearOneHundredFive(t *testing.T) {
+	long := strings.Repeat("步骤写清楚。", 400)
+	var sawGoal bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		if stageOf(req) != "扩写" {
+			t.Errorf("stage %s", stageOf(req))
+		}
+		msgs, _ := req["messages"].([]any)
+		if len(msgs) > 0 {
+			last, _ := msgs[len(msgs)-1].(map[string]any)
+			content, _ := last["content"].(string)
+			if strings.Contains(content, `"expand_goal":840`) || strings.Contains(content, `"expand_goal": 840`) {
+				sawGoal = true
+			}
+		}
+		writeChoice(w, map[string]any{
+			"title": "短稿", "summary": "摘要",
+			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}},
+			"closing":  "结束", "sources": []any{},
+		})
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	draft := map[string]any{
+		"title": "短稿", "summary": "摘要",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
+		"closing":  "结束", "sources": []any{},
+	}
+	out, _, trace := fitBody(context.Background(), gw, []llm.Provider{{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}, map[string]any{"word_target": 800}, draft, 800)
+	if !sawGoal {
+		t.Fatal("expand payload missing expand_goal")
+	}
+	if content.BodyRunes(out) > 800*105/100 {
+		t.Fatalf("runes %d trace %#v", content.BodyRunes(out), trace)
+	}
+}
+
+func TestBackupResearchKeepsExistingGrok4(t *testing.T) {
+	providers := []llm.Provider{
+		{Name: "快", Protocol: "openai", Model: "grok-chat-fast"},
+		{Name: "推理", Protocol: "openai", Model: "grok-4.7"},
+	}
+	out := backupResearchProviders(providers, "grok-4.7")
+	if len(out) != 2 || out[0].Model != "grok-4.7" || out[0].Protocol != "openai" || out[1].Model != "grok-chat-fast" {
+		t.Fatalf("%#v", out)
+	}
+	only := backupResearchProviders([]llm.Provider{{Name: "快", Protocol: "openai", Model: "grok-chat-fast"}}, "")
+	if len(only) != 2 || only[0].Protocol != "responses" || only[0].Model != "grok-4.7" || !strings.Contains(only[0].Name, "补救") || only[1].Protocol != "openai" {
+		t.Fatalf("%#v", only)
+	}
 }
 
 func TestResearchDropsAggregatorDomains(t *testing.T) {

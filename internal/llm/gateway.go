@@ -44,10 +44,12 @@ type Completion struct {
 }
 
 type Gateway struct {
-	Client      *http.Client
-	Mock        bool
-	Backoff     time.Duration
-	MaxAttempts int
+	Client              *http.Client
+	Mock                bool
+	Backoff             time.Duration
+	MaxAttempts         int
+	ResearchTimeout     time.Duration
+	ResearchBackupModel string
 }
 
 func NewGateway(mock bool, client *http.Client) *Gateway {
@@ -171,9 +173,16 @@ func (g *Gateway) CompleteFirst(ctx context.Context, providers []Provider, messa
 	return g.CompleteText(ctx, providers, messages, schema, true)
 }
 
-// CompleteResearch 用 90 秒超时，并且这一次调用内部不再重试。资料检索自己最多再试一次。
+// CompleteResearch 默认等 150 秒，并且这一次调用内部不再重试。资料检索自己还会做一次更短的补救检索。
 func (g *Gateway) CompleteResearch(ctx context.Context, providers []Provider, messages []map[string]string) (Completion, error) {
-	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: 90 * time.Second, attempts: 1})
+	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: g.researchTimeout(), attempts: 1})
+}
+
+func (g *Gateway) researchTimeout() time.Duration {
+	if g != nil && g.ResearchTimeout > 0 {
+		return g.ResearchTimeout
+	}
+	return 150 * time.Second
 }
 
 // CompleteText 按顺序调用供应商。stream 为 false 时请求体里写 stream:false。schema 为空时不附带 json_schema。
@@ -490,6 +499,11 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 	body["stream"] = stream
 	applyEffort(body, effort)
 	delete(body, "messages")
+	if stageFromMessages(messages) == "资料检索" {
+		if _, exists := body["tools"]; !exists {
+			body["tools"] = []any{map[string]any{"type": "web_search"}}
+		}
+	}
 	if schema != nil && schema.Body != nil {
 		if _, exists := body["text"]; !exists {
 			body["text"] = map[string]any{
