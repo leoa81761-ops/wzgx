@@ -139,6 +139,15 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", a.handle(a.health))
 	mux.HandleFunc("POST /api/auth/register", a.handle(a.register))
 	mux.HandleFunc("POST /api/auth/login", a.handle(a.login))
+	mux.HandleFunc("GET /api/auth/options", a.handle(a.authOptions))
+	mux.HandleFunc("POST /api/auth/sms/send", a.handle(a.sendSMS))
+	mux.HandleFunc("POST /api/auth/sms/login", a.handle(a.loginSMS))
+	mux.HandleFunc("GET /api/auth/wechat/start", a.handle(a.wechatScanStart))
+	mux.HandleFunc("GET /api/auth/wechat/callback", a.handle(a.wechatScanCallback))
+	mux.HandleFunc("POST /api/auth/wechat/ticket", a.handle(a.wechatTicket))
+	mux.HandleFunc("GET /api/wechat/component/notify", a.handle(a.componentNotify))
+	mux.HandleFunc("POST /api/wechat/component/notify", a.handle(a.componentNotify))
+	mux.HandleFunc("GET /api/auth/wechat/component/callback", a.handle(a.componentCallback))
 	mux.HandleFunc("GET /api/auth/me", a.withUser(false, func(w http.ResponseWriter, r *http.Request, u *model.User) error {
 		writeJSON(w, 200, userDict(u))
 		return nil
@@ -163,6 +172,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/complaints", a.handle(a.createComplaint))
 	mux.HandleFunc("GET /api/accounts", a.withUser(false, a.listAccounts))
 	mux.HandleFunc("POST /api/accounts", a.withUser(false, a.bindAccount))
+	mux.HandleFunc("POST /api/accounts/component/start", a.withUser(false, a.componentStart))
 	mux.HandleFunc("POST /api/accounts/{account_id}/recheck", a.withUser(false, a.recheckAccount))
 	mux.HandleFunc("DELETE /api/accounts/{account_id}", a.withUser(false, a.unbindAccount))
 	mux.HandleFunc("GET /api/plans", a.withUser(false, a.listPlans))

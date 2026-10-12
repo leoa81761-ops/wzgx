@@ -460,6 +460,39 @@ CREATE TABLE IF NOT EXISTS hot_item (
   fetched_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_hot_fetched ON hot_item(source_name, fetched_at);
+
+CREATE TABLE IF NOT EXISTS sms_code (
+  id {{PK}},
+  phone TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sms_phone ON sms_code(phone, created_at);
+
+CREATE TABLE IF NOT EXISTS oauth_state (
+  state TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  user_id INTEGER,
+  payload TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wechat_identity (
+  open_id TEXT PRIMARY KEY,
+  union_id TEXT NOT NULL DEFAULT '',
+  user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wechat_union ON wechat_identity(union_id);
+
+CREATE TABLE IF NOT EXISTS wechat_authorizer (
+  wx_account_id INTEGER PRIMARY KEY,
+  refresh_token TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	for _, stmt := range strings.Split(schema, ";") {
