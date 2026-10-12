@@ -6,6 +6,11 @@
     <p v-if="error" class="banner">{{ error }}</p>
     <label>手机号或邮箱<input v-model="account" autocomplete="username" required /></label>
     <label>密码（至少 8 位）<input v-model="password" type="password" minlength="8" autocomplete="new-password" required /></label>
+    <div v-if="registerVerify" class="row">
+      <label style="flex: 1">验证码<input v-model="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required /></label>
+      <button class="btn-ghost" type="button" :disabled="sending || !account" @click="sendCode">{{ sending ? "发送中…" : "获取验证码" }}</button>
+    </div>
+    <p v-if="registerVerify" class="muted">手机号收取短信验证码，邮箱收取邮件验证码。验证码 5 分钟内有效。</p>
     <label class="check">
       <input v-model="deviceConsent" type="checkbox" />
       <span>同意保存本机标识，仅用于邀请防刷。不勾选也可以注册，但无法用设备信息识别互刷。</span>
@@ -21,7 +26,7 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
 import { acceptLogin } from "../session";
@@ -34,6 +39,9 @@ const agree = ref(false);
 const deviceConsent = ref(false);
 const error = ref("");
 const loading = ref(false);
+const registerVerify = ref(false);
+const code = ref("");
+const sending = ref(false);
 const inviteCode = ref(typeof route.query.invite === "string" ? route.query.invite : "");
 
 function deviceID() {
@@ -44,6 +52,27 @@ function deviceID() {
     localStorage.setItem(key, id);
   }
   return id;
+}
+
+onMounted(async () => {
+  try {
+    const options = await api("/api/auth/options");
+    registerVerify.value = !!options.register_verify;
+  } catch {
+    registerVerify.value = false;
+  }
+});
+
+async function sendCode() {
+  error.value = "";
+  sending.value = true;
+  try {
+    await api("/api/auth/register/code", { method: "POST", body: { account: account.value } });
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    sending.value = false;
+  }
 }
 
 async function submit() {
@@ -59,6 +88,7 @@ async function submit() {
         invite_code: inviteCode.value,
         device_id: deviceConsent.value ? deviceID() : "",
         device_consent: deviceConsent.value,
+        code: code.value,
       },
     });
     await acceptLogin(data);

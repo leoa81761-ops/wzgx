@@ -9,6 +9,16 @@ import (
 	"strings"
 )
 
+func ValidPrivateKey(raw string) error {
+	_, err := parsePrivateKey(raw)
+	return err
+}
+
+func ValidPublicKey(raw string) error {
+	_, _, err := parsePublicKey(raw)
+	return err
+}
+
 func parsePrivateKey(raw string) (*rsa.PrivateKey, error) {
 	raw = strings.TrimSpace(strings.ReplaceAll(raw, `\n`, "\n"))
 	if raw == "" {

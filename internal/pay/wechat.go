@@ -122,6 +122,52 @@ func (w *WeChat) CreateNative(ctx context.Context, outTradeNo, subject string, c
 	return code, nil
 }
 
+// Probe asks WeChat for an order number that does not exist. ORDER_NOT_EXIST means the signature was accepted.
+func (w *WeChat) Probe(ctx context.Context) error {
+	outTradeNo := "probe" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	endpoint := w.APIBase + "/v3/pay/transactions/out-trade-no/" + url.PathEscape(outTradeNo) + "?mchid=" + url.QueryEscape(w.MchID)
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := randomNonce()
+	message := "GET\n" + u.RequestURI() + "\n" + ts + "\n" + nonce + "\n\n"
+	sig, err := signSHA256(w.Private, message)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf(`WECHATPAY2-SHA256-RSA2048 mchid="%s",nonce_str="%s",signature="%s",timestamp="%s",serial_no="%s"`, w.MchID, nonce, sig, ts, w.Serial))
+	resp, err := w.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var data map[string]any
+	_ = json.Unmarshal(raw, &data)
+	code, _ := data["code"].(string)
+	if resp.StatusCode == http.StatusNotFound && (code == "ORDER_NOT_EXIST" || code == "RESOURCE_NOT_EXISTS") {
+		return nil
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	msg, _ := data["message"].(string)
+	if msg == "" {
+		msg = strings.TrimSpace(string(raw))
+	}
+	if msg == "" {
+		msg = "微信支付连通失败"
+	}
+	return errors.New(msg)
+}
+
 func (w *WeChat) ParseNotify(now time.Time, header http.Header, body []byte) (Notice, error) {
 	ts := strings.TrimSpace(header.Get("Wechatpay-Timestamp"))
 	nonce := strings.TrimSpace(header.Get("Wechatpay-Nonce"))

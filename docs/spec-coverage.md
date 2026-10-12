@@ -27,7 +27,7 @@
 
 | 要求 | 状态 |
 | --- | --- |
-| 手机号 / 微信扫码登录 | 手机号或邮箱 + 密码 done；短信验证码与微信扫码 needs-external-credentials，没配环境变量就关闭 |
+| 手机号 / 微信扫码登录 | 手机号或邮箱 + 密码 done；短信验证码与微信扫码 needs-external-credentials，没配凭证就关闭。注册验证码默认关闭，配好短信或邮件后可在配置中心打开 |
 | 公众号绑定、主体与认证、权限检测 | AppID / AppSecret done；开放平台授权 needs-external-credentials，没配时仍用 AppSecret |
 | 全托管：只选方向 | done |
 | 精细设置：关键词、读者、风格、模板、篇幅、禁用词、固定开头结尾 | done。禁用词走全局敏感词。写作方向可以填写固定开头和结尾 |
@@ -59,7 +59,7 @@
 | --- | --- |
 | 用户与订单 | done |
 | 套餐与额度 | done |
-| 服务配置中心（5.9） | 文本、生图、检索路由、审核词、来源名单 done；热点源 added（管理员填写地址，没配来源就关闭）；支付与邮件 needs-external-credentials |
+| 服务配置中心（5.9） | 文本、生图、检索路由、审核词、来源名单 done；热点源 added（管理员填写地址，没配来源就关闭）；短信、邮件、微信支付、支付宝、微信扫码、第三方平台、模板消息和失败转发可在「服务」页保存。数据库里的值覆盖环境变量，空白密钥表示不改，界面只显示末四位。支付与邮件仍是 needs-external-credentials |
 | 买断与定制授权、权益调整 | done。买断用管理员改档位。用户行可以保存公司、合同编号和备注 |
 | 邀请奖励配置与风控审核 | added。配置中心可改参数，冻结的邀请可通过或撤销 |
 | 垂类、风格、模板 | done |
@@ -221,14 +221,15 @@
 
 | 能力 | 变量 |
 | --- | --- |
-| 微信支付 | `WXPAY_MCH_ID`、`WXPAY_APP_ID`、`WXPAY_MCH_SERIAL`、`WXPAY_API_V3_KEY`、`WXPAY_PRIVATE_KEY` 或 `_FILE`、`WXPAY_PLATFORM_CERT` 或 `_FILE`、`WXPAY_NOTIFY_URL` |
-| 支付宝 | `ALIPAY_APP_ID`、`ALIPAY_PRIVATE_KEY` 或 `_FILE`、`ALIPAY_PUBLIC_KEY` 或 `_FILE`、`ALIPAY_NOTIFY_URL`；电脑网站再加 `ALIPAY_RETURN_URL` |
+| 站点地址 | `PUBLIC_BASE_URL`。生产环境 `https://mp.nbn168.uk`。配置中心可以覆盖。回调地址留空时用它拼默认路径，不用请求里的 Host |
+| 微信支付 | `WXPAY_MCH_ID`、`WXPAY_APP_ID`、`WXPAY_MCH_SERIAL`、`WXPAY_API_V3_KEY`、`WXPAY_PRIVATE_KEY` 或 `_FILE`、`WXPAY_PLATFORM_CERT` 或 `_FILE`、`WXPAY_NOTIFY_URL`（可留空，改用 `PUBLIC_BASE_URL` + `/api/billing/wechat/notify`） |
+| 支付宝 | `ALIPAY_APP_ID`、`ALIPAY_PRIVATE_KEY` 或 `_FILE`、`ALIPAY_PUBLIC_KEY` 或 `_FILE`、`ALIPAY_NOTIFY_URL`（可留空，改用 `PUBLIC_BASE_URL` + `/api/billing/alipay/notify`）；电脑网站回跳留空时是 `PUBLIC_BASE_URL` + `/pricing` |
 | 邮件 | `SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASSWORD`、`SMTP_FROM` |
 | 失败转发 | `NOTIFY_WEBHOOK_URL` |
 | 真实模型 / 微信 | 配置中心或 `LLM_*`、`WX_APP_ID`、`WX_APP_SECRET` |
 | 服务号模板消息 | `WECHAT_TPL_APP_ID`、`WECHAT_TPL_APP_SECRET`、`WECHAT_TPL_ID`；可选 `WECHAT_TPL_API_BASE`、`WECHAT_TPL_FIELDS` |
 | 短信登录、找回密码、换绑手机 | 同一组变量：`SMS_PROVIDER`（`aliyun` 或 `tencent`）、`SMS_ACCESS_KEY`、`SMS_ACCESS_SECRET`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`；腾讯云再加 `SMS_SDK_APP_ID`。可选 `SMS_REGION`、`SMS_API_BASE` |
-| 微信扫码登录 | `WECHAT_OPEN_APP_ID`、`WECHAT_OPEN_APP_SECRET`、`WECHAT_OPEN_REDIRECT_URL`。接口基址用 `WECHAT_API_BASE` |
-| 微信开放平台授权 | `WECHAT_COMPONENT_APP_ID`、`WECHAT_COMPONENT_APP_SECRET`、`WECHAT_COMPONENT_TOKEN`、`WECHAT_COMPONENT_AES_KEY`、`WECHAT_COMPONENT_REDIRECT_URL` |
+| 微信扫码登录 | `WECHAT_OPEN_APP_ID`、`WECHAT_OPEN_APP_SECRET`、`WECHAT_OPEN_REDIRECT_URL`（可留空，改用 `PUBLIC_BASE_URL` + `/api/auth/wechat/callback`）。接口基址用 `WECHAT_API_BASE` |
+| 微信开放平台授权 | `WECHAT_COMPONENT_APP_ID`、`WECHAT_COMPONENT_APP_SECRET`、`WECHAT_COMPONENT_TOKEN`、`WECHAT_COMPONENT_AES_KEY`、`WECHAT_COMPONENT_REDIRECT_URL`（可留空，改用 `PUBLIC_BASE_URL` + `/api/auth/wechat/component/callback`） |
 
-没配这些变量时，对应按钮保持关闭或只走站内通知，进程照常启动。
+没配这些变量时，对应按钮保持关闭或只走站内通知，进程照常启动。配置中心「服务」页可以填写同一组凭证：保存后覆盖环境变量，留空的密钥保持原值，重启前就会生效。注册验证码默认关闭；短信和邮件都没配好时不能打开。打开后，手机号注册走短信验证码，邮箱注册走邮件验证码，次数和占用规则与短信登录相同。

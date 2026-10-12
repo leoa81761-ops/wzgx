@@ -18,16 +18,17 @@ import (
 )
 
 func (a *App) payOptions() (sandbox, wx, ali, page bool) {
-	if a.Cfg.PaySandbox {
+	cfg := a.effective(context.Background())
+	if cfg.PaySandbox {
 		return true, false, false, false
 	}
-	if a.Cfg.WeChatPayReady() {
-		if _, err := pay.NewWeChat(a.Cfg, a.HTTP); err == nil {
+	if cfg.WeChatPayReady() {
+		if _, err := pay.NewWeChat(cfg, a.HTTP); err == nil {
 			wx = true
 		}
 	}
-	if a.Cfg.AlipayReady() {
-		if client, err := pay.NewAlipay(a.Cfg, a.HTTP); err == nil {
+	if cfg.AlipayReady() {
+		if client, err := pay.NewAlipay(cfg, a.HTTP); err == nil {
 			ali = true
 			page = strings.TrimSpace(client.ReturnURL) != ""
 		}
@@ -184,7 +185,7 @@ func (a *App) checkout(w http.ResponseWriter, r *http.Request, user *model.User)
 	case "sandbox":
 		codeURL = "sandbox:" + order.OutTradeNo
 	case "wechat":
-		client, err := pay.NewWeChat(a.Cfg, a.HTTP)
+		client, err := pay.NewWeChat(a.effective(r.Context()), a.HTTP)
 		if err != nil {
 			_ = a.Store.FailPayOrder(r.Context(), nil, order.ID)
 			return bad("微信支付配置无法读取")
@@ -195,7 +196,7 @@ func (a *App) checkout(w http.ResponseWriter, r *http.Request, user *model.User)
 			return bad(err.Error())
 		}
 	case "alipay":
-		client, err := pay.NewAlipay(a.Cfg, a.HTTP)
+		client, err := pay.NewAlipay(a.effective(r.Context()), a.HTTP)
 		if err != nil {
 			_ = a.Store.FailPayOrder(r.Context(), nil, order.ID)
 			return bad("支付宝配置无法读取")
@@ -293,7 +294,7 @@ func (a *App) billingOrder(w http.ResponseWriter, r *http.Request, user *model.U
 
 func (a *App) wechatNotify(w http.ResponseWriter, r *http.Request) error {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	client, err := pay.NewWeChat(a.Cfg, a.HTTP)
+	client, err := pay.NewWeChat(a.effective(r.Context()), a.HTTP)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"code": "FAIL", "message": "微信支付未配置"})
 		return nil
@@ -316,7 +317,7 @@ func (a *App) alipayNotify(w http.ResponseWriter, r *http.Request) error {
 		http.Error(w, "fail", http.StatusBadRequest)
 		return nil
 	}
-	client, err := pay.NewAlipay(a.Cfg, a.HTTP)
+	client, err := pay.NewAlipay(a.effective(r.Context()), a.HTTP)
 	if err != nil {
 		http.Error(w, "fail", http.StatusNotFound)
 		return nil

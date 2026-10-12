@@ -35,6 +35,7 @@ type App struct {
 	smsSendIP     *ipWindow
 	smsLoginIP    *ipWindow
 	smsLoginPhone *ipWindow
+	credTest      *ipWindow
 	cancel        context.CancelFunc
 }
 
@@ -70,6 +71,7 @@ func Open(cfg config.Settings) (*App, error) {
 		Cache: runtime.New(st, cfg), Gateway: gateway,
 		Pool: scheduler.NewPool(cfg.MaxConcurrency), complaints: newIPWindow(5, time.Hour),
 		smsSendIP: newIPWindow(20, time.Hour), smsLoginIP: newIPWindow(60, time.Hour), smsLoginPhone: newIPWindow(30, 10*time.Minute),
+		credTest: newIPWindow(5, time.Hour),
 	}
 	app.Runner = &scheduler.Runner{Deps: app.deps(), Pool: app.Pool}
 	ctx := context.Background()
@@ -81,11 +83,12 @@ func Open(cfg config.Settings) (*App, error) {
 }
 
 func (a *App) deps() pipeline.Deps {
+	cfg := a.effective(context.Background())
 	return pipeline.Deps{
-		Store: a.Store, Settings: a.Cfg, Gateway: a.Gateway, HTTP: a.HTTP, Tokens: a.Tokens, Cache: a.Cache,
+		Store: a.Store, Settings: cfg, Gateway: a.Gateway, HTTP: a.HTTP, Tokens: a.Tokens, Cache: a.Cache,
 		Notifier: notify.Fanout{Senders: []notify.Sender{
-			notify.Hook{URL: a.Cfg.NotifyWebhookURL, HTTP: a.HTTP, Log: log.Default()},
-			notify.SMTP{Host: a.Cfg.SMTPHost, Port: a.Cfg.SMTPPort, User: a.Cfg.SMTPUser, Password: a.Cfg.SMTPPassword, From: a.Cfg.SMTPFrom, Log: log.Default()},
+			notify.Hook{URL: cfg.NotifyWebhookURL, HTTP: a.HTTP, Log: log.Default()},
+			notify.SMTP{Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom, Log: log.Default()},
 		}},
 	}
 }
@@ -108,6 +111,7 @@ func (a *App) StartScheduler() {
 		}
 		for {
 			start := time.Now()
+			a.Runner.Deps = a.deps()
 			if _, err := a.Runner.ScanOnce(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
 				log.Printf("调度扫描失败: %v", err)
 			}

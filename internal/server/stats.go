@@ -286,7 +286,7 @@ func (a *App) resetWeights(w http.ResponseWriter, r *http.Request, user *model.U
 }
 
 func (a *App) bindTemplate(w http.ResponseWriter, r *http.Request, user *model.User) error {
-	if !a.Cfg.TemplateEnabled() {
+	if !a.effective(r.Context()).TemplateEnabled() {
 		return bad("服务号模板消息还没有配置")
 	}
 	var body struct {
