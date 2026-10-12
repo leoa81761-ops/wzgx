@@ -29,13 +29,14 @@
         <p v-if="section.error" class="banner">{{ section.error }}</p>
         <label v-for="field in section.fields" :key="field.key">
           {{ field.label }}
-          <span v-if="field.secret && field.set" class="muted">已保存 {{ field.hint }}<template v-if="field.source === 'env'">（来自环境变量，留空不修改）</template><template v-else>（留空不修改）</template></span>
-          <textarea v-if="field.multiline" v-model="integrationForm[section.key][field.key]" rows="4" :placeholder="field.secret ? '留空则不修改' : ''"></textarea>
-          <input v-else v-model="integrationForm[section.key][field.key]" :type="field.secret ? 'password' : 'text'" :placeholder="field.secret ? '留空则不修改' : ''" />
+          <span v-if="field.hint && !field.secret" class="muted">{{ field.hint }}</span>
+          <span v-else-if="field.secret && field.set" class="muted">已保存 {{ field.hint }}<template v-if="field.source === 'env'">（来自环境变量，留空不修改）</template><template v-else>（留空不修改）</template></span>
+          <textarea v-if="field.multiline" v-model="integrationForm[section.key][field.key]" rows="4" :placeholder="field.placeholder || (field.secret ? '留空则不修改' : '')"></textarea>
+          <input v-else v-model="integrationForm[section.key][field.key]" :type="field.secret ? 'password' : 'text'" :placeholder="field.placeholder || (field.secret ? '留空则不修改' : '')" />
         </label>
         <div class="row">
           <button class="btn" type="button" @click="saveIntegration(section)">保存</button>
-          <button class="btn-ghost" type="button" @click="testIntegration(section)">测试连通</button>
+          <button v-if="section.key !== 'public'" class="btn-ghost" type="button" @click="testIntegration(section)">测试连通</button>
         </div>
         <label v-if="section.key === 'sms'">测试手机号<input v-model="probePhone" placeholder="13800138000" /></label>
       </section>

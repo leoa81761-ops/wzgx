@@ -64,7 +64,7 @@
 - `WXPAY_API_V3_KEY`（正好 32 字节）
 - `WXPAY_PRIVATE_KEY` 或 `WXPAY_PRIVATE_KEY_FILE`
 - `WXPAY_PLATFORM_CERT` 或 `WXPAY_PLATFORM_CERT_FILE`
-- `WXPAY_NOTIFY_URL`（公网 HTTPS，指向 `/api/billing/wechat/notify`）
+- `WXPAY_NOTIFY_URL`（公网 HTTPS，指向 `/api/billing/wechat/notify`）。留空时用 `PUBLIC_BASE_URL` 拼出这个地址
 
 可选：`WXPAY_API_BASE`，默认 `https://api.mch.weixin.qq.com`。
 
@@ -73,9 +73,11 @@
 - `ALIPAY_APP_ID`
 - `ALIPAY_PRIVATE_KEY` 或 `ALIPAY_PRIVATE_KEY_FILE`
 - `ALIPAY_PUBLIC_KEY` 或 `ALIPAY_PUBLIC_KEY_FILE`
-- `ALIPAY_NOTIFY_URL`（公网地址，指向 `/api/billing/alipay/notify`）
+- `ALIPAY_NOTIFY_URL`（公网地址，指向 `/api/billing/alipay/notify`）。留空时用 `PUBLIC_BASE_URL` 拼出这个地址
 
-电脑网站支付还要再加 `ALIPAY_RETURN_URL`。可选：`ALIPAY_GATEWAY`，默认 `https://openapi.alipay.com/gateway.do`。沙箱网关是 `https://openapi-sandbox.dl.alipaydev.com/gateway.do`。
+电脑网站支付的回跳地址是 `ALIPAY_RETURN_URL`。留空时回到定价页 `{PUBLIC_BASE_URL}/pricing`。可选：`ALIPAY_GATEWAY`，默认 `https://openapi.alipay.com/gateway.do`。沙箱网关是 `https://openapi-sandbox.dl.alipaydev.com/gateway.do`。
+
+`PUBLIC_BASE_URL` 是站点对外地址，生产环境是 `https://mp.nbn168.uk`。配置中心「服务」页可以改它，保存后盖过环境变量。回调地址留空时分别是 `{PUBLIC_BASE_URL}/api/billing/wechat/notify`、`{PUBLIC_BASE_URL}/api/billing/alipay/notify`、`{PUBLIC_BASE_URL}/pricing`、`{PUBLIC_BASE_URL}/api/auth/wechat/callback`、`{PUBLIC_BASE_URL}/api/auth/wechat/component/callback`。不会用浏览器请求里的 Host 来猜。
 
 价格默认是普通版月 30 元 / 年 299 元，高级版月 99 元 / 年 990 元，买断 3000 元，加量包 19 元 10 篇，单位在环境变量里是分。可选覆盖：`PAY_PRICE_STANDARD_MONTH`、`PAY_PRICE_STANDARD_YEAR`、`PAY_PRICE_PREMIUM_MONTH`、`PAY_PRICE_PREMIUM_YEAR`、`PAY_PRICE_LIFETIME`、`PAY_PRICE_PACK`、`PAY_PACK_ARTICLES`。
 
@@ -152,13 +154,13 @@
 
 微信网站扫码登录：
 
-- `WECHAT_OPEN_APP_ID`、`WECHAT_OPEN_APP_SECRET`、`WECHAT_OPEN_REDIRECT_URL`
+- `WECHAT_OPEN_APP_ID`、`WECHAT_OPEN_APP_SECRET`、`WECHAT_OPEN_REDIRECT_URL`（留空时用 `PUBLIC_BASE_URL` 拼 `/api/auth/wechat/callback`）
 - 回调地址填开放平台里登记的域名，指向 `/api/auth/wechat/callback`
 - 接口基址沿用 `WECHAT_API_BASE`，默认 `https://api.weixin.qq.com`
 
 微信开放平台第三方平台授权（用来代替用户填写 AppSecret）：
 
-- `WECHAT_COMPONENT_APP_ID`、`WECHAT_COMPONENT_APP_SECRET`、`WECHAT_COMPONENT_TOKEN`、`WECHAT_COMPONENT_AES_KEY`（43 位）、`WECHAT_COMPONENT_REDIRECT_URL`
+- `WECHAT_COMPONENT_APP_ID`、`WECHAT_COMPONENT_APP_SECRET`、`WECHAT_COMPONENT_TOKEN`、`WECHAT_COMPONENT_AES_KEY`（43 位）、`WECHAT_COMPONENT_REDIRECT_URL`（留空时用 `PUBLIC_BASE_URL` 拼 `/api/auth/wechat/component/callback`）
 - 授权事件接收地址指向 `/api/wechat/component/notify`。收到 `component_verify_ticket` 之后，绑定页才出现「使用微信开放平台授权」
 - 回调指向 `/api/auth/wechat/component/callback`。刷新令牌加密存在侧表里，公众号表的 AppSecret 留空
 - 微信如果轮换刷新令牌，需要用户重新授权。AppID / AppSecret 绑定仍然可用，正式模式下的重新检测和草稿回读会走已保存的授权

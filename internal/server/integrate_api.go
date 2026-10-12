@@ -31,7 +31,7 @@ func (a *App) effective(ctx context.Context) config.Settings {
 		return a.Cfg
 	}
 	if len(rows) == 0 {
-		return a.Cfg
+		return integrate.WithCallbackDefaults(a.Cfg)
 	}
 	return integrate.Merge(a.Cfg, rows, a.Cfg.MasterKey)
 }
@@ -286,13 +286,36 @@ func (a *App) integrationView(ctx context.Context, docs map[string]integrate.Doc
 				"key": field.Key, "label": field.Label, "secret": field.Secret, "multiline": field.Multiline,
 				"source": source, "set": effective != "",
 			}
+			placeholder := ""
+			if spec.Key == "public" && field.Key == "base_url" {
+				effective = stored
+				if stored != "" {
+					source = "db"
+				} else {
+					source = ""
+				}
+				placeholder = integrate.PublicBaseHint
+				hint := "留空则使用环境变量 PUBLIC_BASE_URL。生产环境为 " + integrate.PublicBaseHint + "。"
+				if env != "" {
+					hint = "当前环境变量：" + env + "。" + hint
+				}
+				item["source"] = source
+				item["set"] = stored != ""
+				item["hint"] = hint
+			}
 			if field.Secret {
 				item["value"] = ""
 				item["hint"] = security.MaskSecret(effective)
-			} else {
+			} else if spec.Key != "public" || field.Key != "base_url" {
 				item["value"] = effective
 				item["hint"] = ""
+			} else {
+				item["value"] = effective
 			}
+			if placeholder == "" && effective == "" {
+				placeholder = integrate.CallbackDefault(cfg.PublicBaseURL, spec.Key, field.Key)
+			}
+			item["placeholder"] = placeholder
 			fields = append(fields, item)
 		}
 		row := map[string]any{

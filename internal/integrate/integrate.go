@@ -36,6 +36,9 @@ type Doc struct {
 
 func Sections() []Section {
 	return []Section{
+		{Key: "public", Title: "站点地址", Fields: []Field{
+			{Key: "base_url", Label: "PUBLIC_BASE_URL"},
+		}},
 		{Key: "sms", Title: "短信", Fields: []Field{
 			{Key: "provider", Label: "服务商（aliyun 或 tencent）"},
 			{Key: "access_key", Label: "AccessKey", Secret: true},
@@ -293,6 +296,10 @@ func Apply(base config.Settings, docs map[string]Doc) config.Settings {
 	if v := set("notify", "webhook_url"); v != "" {
 		out.NotifyWebhookURL = v
 	}
+	if v := set("public", "base_url"); v != "" {
+		out.PublicBaseURL = strings.TrimRight(v, "/")
+	}
+	out = WithCallbackDefaults(out)
 	if doc, ok := docs["register"]; ok {
 		if v, exists := doc.Plain["verify"]; exists {
 			out.RegisterVerify = v == "1" || v == "true" || v == "on"
@@ -388,6 +395,8 @@ func EnvValue(base config.Settings, section, key string) string {
 		return base.TplFields
 	case "notify.webhook_url":
 		return base.NotifyWebhookURL
+	case "public.base_url":
+		return base.PublicBaseURL
 	default:
 		return ""
 	}
@@ -495,7 +504,7 @@ func validate(section, key, value string) error {
 		if strings.Contains(value, "://") || strings.ContainsAny(value, " /") {
 			return fmt.Errorf("SMTP 主机不正确")
 		}
-	case "wxpay.notify_url", "wxpay.api_base", "alipay.notify_url", "alipay.return_url", "alipay.gateway",
+	case "public.base_url", "wxpay.notify_url", "wxpay.api_base", "alipay.notify_url", "alipay.return_url", "alipay.gateway",
 		"wechat_open.redirect_url", "wechat_component.redirect_url", "wechat_tpl.api_base", "sms.api_base", "notify.webhook_url":
 		if err := httpURL(value); err != nil {
 			return err
@@ -556,6 +565,8 @@ func Ready(section string, cfg config.Settings) bool {
 		return cfg.TemplateEnabled()
 	case "notify":
 		return strings.TrimSpace(cfg.NotifyWebhookURL) != ""
+	case "public":
+		return strings.TrimSpace(cfg.PublicBaseURL) != ""
 	default:
 		return false
 	}
