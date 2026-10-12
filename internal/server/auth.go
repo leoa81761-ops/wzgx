@@ -133,6 +133,7 @@ type registerBody struct {
 	InviteCode    string `json:"invite_code"`
 	DeviceID      string `json:"device_id"`
 	DeviceConsent bool   `json:"device_consent"`
+	Code          string `json:"code"`
 }
 
 type loginBody struct {
@@ -155,6 +156,21 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	cfg := a.effective(r.Context())
+	var codeID int64
+	var codeHashValue string
+	if cfg.RegisterVerify {
+		if kind == "phone" && !cfg.SMSEnabled() {
+			return bad("手机注册需要短信验证码，短信还没配好")
+		}
+		if kind == "email" && strings.TrimSpace(cfg.SMTPHost) == "" {
+			return bad("邮箱注册需要邮件验证码，邮件还没配好")
+		}
+		codeID, codeHashValue, err = a.matchRegisterCode(r, cfg, account, body.Code)
+		if err != nil {
+			return err
+		}
+	}
 	hash, err := security.HashPassword(body.Password)
 	if err != nil {
 		return err
@@ -173,6 +189,15 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 		}
 		if existing != nil {
 			return bad("该手机号或邮箱已注册")
+		}
+		if codeID != 0 {
+			ok, err := a.Store.DeleteSMSMatch(r.Context(), tx, codeID, codeHashValue)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return bad("验证码不正确或已过期")
+			}
 		}
 		if err := a.Store.InsertUser(r.Context(), tx, user); err != nil {
 			if db.IsUnique(err) {

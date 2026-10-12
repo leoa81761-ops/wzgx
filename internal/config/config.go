@@ -80,6 +80,8 @@ type Settings struct {
 	TplID                   string
 	TplAPIBase              string
 	TplFields               string
+	// RegisterVerify 只由配置中心写入。默认关闭，环境变量不能单独打开。
+	RegisterVerify bool
 }
 
 func Load() Settings {

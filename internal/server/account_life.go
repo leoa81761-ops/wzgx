@@ -20,6 +20,7 @@ import (
 )
 
 func (a *App) recoverSend(w http.ResponseWriter, r *http.Request) error {
+	cfg := a.effective(r.Context())
 	var body struct {
 		Account string `json:"account"`
 	}
@@ -41,10 +42,10 @@ func (a *App) recoverSend(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, 200, map[string]any{"ok": true})
 		return nil
 	}
-	if kind == "phone" && !a.Cfg.SMSEnabled() {
+	if kind == "phone" && !cfg.SMSEnabled() {
 		return bad("手机号找回需要先配置短信")
 	}
-	if kind == "email" && strings.TrimSpace(a.Cfg.SMTPHost) == "" {
+	if kind == "email" && strings.TrimSpace(cfg.SMTPHost) == "" {
 		return bad("邮箱找回需要先配置邮件")
 	}
 	code, err := a.issueRecovery(r, account, "reset")
@@ -52,10 +53,10 @@ func (a *App) recoverSend(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if kind == "phone" {
-		if err := sms.Send(r.Context(), a.HTTP, a.Cfg, sms.Message{Phone: account, Code: code}); err != nil {
+		if err := sms.Send(r.Context(), a.HTTP, cfg, sms.Message{Phone: account, Code: code}); err != nil {
 			return bad(err.Error())
 		}
-	} else if err := (notify.SMTP{Host: a.Cfg.SMTPHost, Port: a.Cfg.SMTPPort, User: a.Cfg.SMTPUser, Password: a.Cfg.SMTPPassword, From: a.Cfg.SMTPFrom}).Send(r.Context(), notify.Message{
+	} else if err := (notify.SMTP{Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom}).Send(r.Context(), notify.Message{
 		UserID: user.ID, Kind: "recover", Title: "重置公号智写密码", Account: account, Body: "验证码 " + code + "，10 分钟内有效。",
 	}); err != nil {
 		return bad("邮件发送失败")
@@ -113,6 +114,7 @@ func (a *App) recoverReset(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) rebindSend(w http.ResponseWriter, r *http.Request, user *model.User) error {
+	cfg := a.effective(r.Context())
 	var body struct {
 		Phone string `json:"phone"`
 	}
@@ -123,7 +125,7 @@ func (a *App) rebindSend(w http.ResponseWriter, r *http.Request, user *model.Use
 	if !phoneRe.MatchString(phone) {
 		return bad("请填写中国大陆手机号")
 	}
-	if !a.Cfg.SMSEnabled() {
+	if !cfg.SMSEnabled() {
 		return bad("换绑手机需要先配置短信")
 	}
 	if !a.smsSendIP.allow(clientIP(r)) {
@@ -141,7 +143,7 @@ func (a *App) rebindSend(w http.ResponseWriter, r *http.Request, user *model.Use
 	if err != nil {
 		return err
 	}
-	if err := sms.Send(r.Context(), a.HTTP, a.Cfg, sms.Message{Phone: phone, Code: code}); err != nil {
+	if err := sms.Send(r.Context(), a.HTTP, cfg, sms.Message{Phone: phone, Code: code}); err != nil {
 		return bad(err.Error())
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})

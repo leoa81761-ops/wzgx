@@ -105,6 +105,41 @@ func (a *Alipay) PagePayURL(outTradeNo, subject string, cents int) (string, erro
 	return a.Gateway + "?" + a.signedForm(params), nil
 }
 
+// Probe queries an order that does not exist. TRADE_NOT_EXIST means the signature was accepted.
+func (a *Alipay) Probe(ctx context.Context) error {
+	biz, _ := json.Marshal(map[string]string{"out_trade_no": "probe-not-exist"})
+	body := a.signedForm(a.base("alipay.trade.query", string(biz)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.Gateway, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := a.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var data map[string]any
+	if json.Unmarshal(raw, &data) != nil {
+		return errors.New("支付宝连通结果无法解析")
+	}
+	respBody, _ := data["alipay_trade_query_response"].(map[string]any)
+	code, _ := respBody["code"].(string)
+	sub, _ := respBody["sub_code"].(string)
+	if code == "10000" || strings.Contains(sub, "TRADE_NOT_EXIST") {
+		return nil
+	}
+	msg, _ := respBody["sub_msg"].(string)
+	if msg == "" {
+		msg, _ = respBody["msg"].(string)
+	}
+	if msg == "" {
+		msg = "支付宝连通失败"
+	}
+	return errors.New(msg)
+}
+
 func (a *Alipay) ParseNotify(values url.Values) (Notice, error) {
 	params := map[string]string{}
 	for key, list := range values {

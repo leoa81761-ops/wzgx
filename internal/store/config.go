@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
@@ -94,6 +95,23 @@ func (s *Store) GetService(ctx context.Context, q db.Q, id int64) (*model.Servic
 	return c, err
 }
 
+func (s *Store) ListIntegrations(ctx context.Context) ([]model.ServiceConfig, error) {
+	rows, err := s.DB.Query(ctx, `SELECT `+serviceCols+` FROM service_config WHERE config_type = ? ORDER BY id ASC`, "integration")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.ServiceConfig
+	for rows.Next() {
+		item, err := scanService(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) FindService(ctx context.Context, q db.Q, configType, name string) (*model.ServiceConfig, error) {
 	if q == nil {
 		q = s.DB
@@ -167,6 +185,24 @@ func (s *Store) InsertService(ctx context.Context, q db.Q, c *model.ServiceConfi
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		c.ConfigType, c.Name, c.Protocol, c.BaseURL, c.APIKeyEncrypted, c.ModelName, jsonStr(c.ExtraHeaders), jsonStr(c.ExtraParams), c.Priority, bint(c.Enabled), c.TimeoutSeconds, timeReq(c.UpdatedAt),
 	).Scan(&c.ID)
+}
+
+func (s *Store) UpsertIntegration(ctx context.Context, name string, params map[string]any, now time.Time) error {
+	existing, err := s.FindService(ctx, nil, "integration", name)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		row := &model.ServiceConfig{
+			ConfigType: "integration", Name: name, Protocol: "credential", ExtraParams: params,
+			Enabled: true, TimeoutSeconds: 10, Priority: 100, UpdatedAt: now,
+		}
+		return s.InsertService(ctx, nil, row)
+	}
+	existing.ExtraParams = params
+	existing.Protocol = "credential"
+	existing.UpdatedAt = now
+	return s.UpdateService(ctx, nil, existing)
 }
 
 func (s *Store) UpdateService(ctx context.Context, q db.Q, c *model.ServiceConfig) error {

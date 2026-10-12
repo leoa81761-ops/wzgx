@@ -26,14 +26,17 @@ import (
 )
 
 func (a *App) authOptions(w http.ResponseWriter, r *http.Request) error {
+	cfg := a.effective(r.Context())
 	writeJSON(w, 200, map[string]any{
-		"password": true, "sms": a.Cfg.SMSEnabled(), "wechat_scan": a.Cfg.WeChatScanEnabled(), "wechat_component": a.Cfg.WeChatComponentEnabled(),
+		"password": true, "sms": cfg.SMSEnabled(), "wechat_scan": cfg.WeChatScanEnabled(), "wechat_component": cfg.WeChatComponentEnabled(),
+		"register_verify": cfg.RegisterVerify, "register_sms": cfg.SMSEnabled(), "register_email": strings.TrimSpace(cfg.SMTPHost) != "",
 	})
 	return nil
 }
 
 func (a *App) sendSMS(w http.ResponseWriter, r *http.Request) error {
-	if !a.Cfg.SMSEnabled() {
+	cfg := a.effective(r.Context())
+	if !cfg.SMSEnabled() {
 		return bad("短信登录未开通")
 	}
 	var body struct {
@@ -69,12 +72,12 @@ func (a *App) sendSMS(w http.ResponseWriter, r *http.Request) error {
 		if day >= 5 {
 			return bad("这个手机号今天的验证码次数已用完")
 		}
-		return a.Store.ReplaceSMSCode(r.Context(), tx, phone, codeHash(a.Cfg.MasterKey, phone, code), now.Add(5*time.Minute), now)
+		return a.Store.ReplaceSMSCode(r.Context(), tx, phone, codeHash(cfg.MasterKey, phone, code), now.Add(5*time.Minute), now)
 	})
 	if err != nil {
 		return err
 	}
-	if err := sms.Send(r.Context(), a.HTTP, a.Cfg, sms.Message{Phone: phone, Code: code}); err != nil {
+	if err := sms.Send(r.Context(), a.HTTP, cfg, sms.Message{Phone: phone, Code: code}); err != nil {
 		return bad(err.Error())
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -82,7 +85,8 @@ func (a *App) sendSMS(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) loginSMS(w http.ResponseWriter, r *http.Request) error {
-	if !a.Cfg.SMSEnabled() {
+	cfg := a.effective(r.Context())
+	if !cfg.SMSEnabled() {
 		return bad("短信登录未开通")
 	}
 	var body struct {
@@ -119,7 +123,7 @@ func (a *App) loginSMS(w http.ResponseWriter, r *http.Request) error {
 	} else if !ok {
 		return bad("验证码不正确或已过期")
 	}
-	expect := codeHash(a.Cfg.MasterKey, phone, strings.TrimSpace(body.Code))
+	expect := codeHash(cfg.MasterKey, phone, strings.TrimSpace(body.Code))
 	if !hmac.Equal([]byte(hash), []byte(expect)) {
 		return bad("验证码不正确或已过期")
 	}
@@ -191,7 +195,8 @@ func (a *App) loginSMS(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) wechatScanStart(w http.ResponseWriter, r *http.Request) error {
-	if !a.Cfg.WeChatScanEnabled() {
+	cfg := a.effective(r.Context())
+	if !cfg.WeChatScanEnabled() {
 		return bad("微信扫码登录未开通")
 	}
 	state, err := randomSecret()
@@ -207,12 +212,13 @@ func (a *App) wechatScanStart(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	setFlowCookie(w, wxScanCookie, nonce)
-	writeJSON(w, 200, map[string]any{"url": wxopen.ScanURL(a.Cfg.WeChatOpenAppID, a.Cfg.WeChatOpenRedirect, state)})
+	writeJSON(w, 200, map[string]any{"url": wxopen.ScanURL(cfg.WeChatOpenAppID, cfg.WeChatOpenRedirect, state)})
 	return nil
 }
 
 func (a *App) wechatScanCallback(w http.ResponseWriter, r *http.Request) error {
-	if !a.Cfg.WeChatScanEnabled() {
+	cfg := a.effective(r.Context())
+	if !cfg.WeChatScanEnabled() {
 		return bad("微信扫码登录未开通")
 	}
 	state := r.URL.Query().Get("state")
@@ -226,7 +232,7 @@ func (a *App) wechatScanCallback(w http.ResponseWriter, r *http.Request) error {
 		http.Redirect(w, r, "/login?error="+url.QueryEscape("扫码已过期，请重试"), http.StatusFound)
 		return nil
 	}
-	profile, err := wxopen.ExchangeScan(r.Context(), a.HTTP, a.Cfg.WeChatAPIBase, a.Cfg.WeChatOpenAppID, a.Cfg.WeChatOpenSecret, code)
+	profile, err := wxopen.ExchangeScan(r.Context(), a.HTTP, cfg.WeChatAPIBase, cfg.WeChatOpenAppID, cfg.WeChatOpenSecret, code)
 	if err != nil {
 		http.Redirect(w, r, "/login?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return nil
@@ -345,7 +351,8 @@ func (a *App) wechatTicket(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) componentStart(w http.ResponseWriter, r *http.Request, user *model.User) error {
-	if !a.Cfg.WeChatComponentEnabled() {
+	cfg := a.effective(r.Context())
+	if !cfg.WeChatComponentEnabled() {
 		return bad("微信开放平台授权未开通")
 	}
 	ticket, err := a.Store.GetSetting(r.Context(), nil, "wechat_component_ticket")
@@ -368,13 +375,13 @@ func (a *App) componentStart(w http.ResponseWriter, r *http.Request, user *model
 		return err
 	}
 	setFlowCookie(w, wxBindCookie, nonce)
-	redirect := a.Cfg.WeChatComponentRedirect
+	redirect := cfg.WeChatComponentRedirect
 	if strings.Contains(redirect, "?") {
 		redirect += "&state=" + url.QueryEscape(state)
 	} else {
 		redirect += "?state=" + url.QueryEscape(state)
 	}
-	link, err := wxopen.PreAuthURL(r.Context(), a.HTTP, a.Cfg.WeChatAPIBase, a.Cfg.WeChatComponentAppID, a.Cfg.WeChatComponentSecret, ticket, redirect)
+	link, err := wxopen.PreAuthURL(r.Context(), a.HTTP, cfg.WeChatAPIBase, cfg.WeChatComponentAppID, cfg.WeChatComponentSecret, ticket, redirect)
 	if err != nil {
 		return bad(err.Error())
 	}
@@ -383,11 +390,12 @@ func (a *App) componentStart(w http.ResponseWriter, r *http.Request, user *model
 }
 
 func (a *App) componentCallback(w http.ResponseWriter, r *http.Request) error {
+	cfg := a.effective(r.Context())
 	fail := func(msg string) error {
 		http.Redirect(w, r, "/accounts?error="+url.QueryEscape(msg), http.StatusFound)
 		return nil
 	}
-	if !a.Cfg.WeChatComponentEnabled() {
+	if !cfg.WeChatComponentEnabled() {
 		return fail("微信开放平台授权未开通")
 	}
 	state := r.URL.Query().Get("state")
@@ -403,7 +411,7 @@ func (a *App) componentCallback(w http.ResponseWriter, r *http.Request) error {
 	if err != nil || ticket == "" {
 		return fail("还没有收到微信的验证票据")
 	}
-	info, err := wxopen.QueryAuth(r.Context(), a.HTTP, a.Cfg.WeChatAPIBase, a.Cfg.WeChatComponentAppID, a.Cfg.WeChatComponentSecret, ticket, authCode)
+	info, err := wxopen.QueryAuth(r.Context(), a.HTTP, cfg.WeChatAPIBase, cfg.WeChatComponentAppID, cfg.WeChatComponentSecret, ticket, authCode)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -413,20 +421,20 @@ func (a *App) componentCallback(w http.ResponseWriter, r *http.Request) error {
 	}
 	now := time.Now().UTC()
 	mode := "live"
-	if a.Cfg.WeChatMode == "mock" || strings.HasPrefix(info.AppID, "wx_mock") {
+	if cfg.WeChatMode == "mock" || strings.HasPrefix(info.AppID, "wx_mock") {
 		mode = "mock"
 	}
 	var client wechat.Client
 	if mode == "mock" {
-		client = wechat.Build(info.AppID, "component", mode, a.Cfg.WeChatAPIBase, a.HTTP, a.Tokens)
+		client = wechat.Build(info.AppID, "component", mode, cfg.WeChatAPIBase, a.HTTP, a.Tokens)
 	} else {
-		client = wechat.NewAuthorizer(info.AppID, info.RefreshToken, a.Cfg.WeChatComponentAppID, a.Cfg.WeChatComponentSecret, ticket, a.Cfg.WeChatAPIBase, a.HTTP, a.Tokens)
+		client = wechat.NewAuthorizer(info.AppID, info.RefreshToken, cfg.WeChatComponentAppID, cfg.WeChatComponentSecret, ticket, cfg.WeChatAPIBase, a.HTTP, a.Tokens)
 	}
 	report := wechat.CheckPermissions(r.Context(), client, cover.CoverPNG("simple"))
 	if !report.OK {
 		return fail("授权成功，但草稿权限检测没有通过")
 	}
-	enc, err := security.EncryptSecret(a.Cfg.MasterKey, info.RefreshToken)
+	enc, err := security.EncryptSecret(cfg.MasterKey, info.RefreshToken)
 	if err != nil {
 		return err
 	}
@@ -473,7 +481,8 @@ func (a *App) componentCallback(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) componentNotify(w http.ResponseWriter, r *http.Request) error {
-	if !a.Cfg.WeChatComponentEnabled() {
+	cfg := a.effective(r.Context())
+	if !cfg.WeChatComponentEnabled() {
 		http.Error(w, "未开通", http.StatusNotFound)
 		return nil
 	}
@@ -481,7 +490,7 @@ func (a *App) componentNotify(w http.ResponseWriter, r *http.Request) error {
 	nonce := r.URL.Query().Get("nonce")
 	signature := r.URL.Query().Get("msg_signature")
 	if r.Method == http.MethodGet {
-		plain, err := wxopen.DecryptMessage(a.Cfg.WeChatComponentAESKey, a.Cfg.WeChatComponentToken, timestamp, nonce, signature, r.URL.Query().Get("echostr"))
+		plain, err := wxopen.DecryptMessage(cfg.WeChatComponentAESKey, cfg.WeChatComponentToken, timestamp, nonce, signature, r.URL.Query().Get("echostr"))
 		if err != nil {
 			http.Error(w, "签名不正确", http.StatusForbidden)
 			return nil
@@ -494,7 +503,7 @@ func (a *App) componentNotify(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	encrypted := wxopen.ExtractEncrypt(raw)
-	plain, err := wxopen.DecryptMessage(a.Cfg.WeChatComponentAESKey, a.Cfg.WeChatComponentToken, timestamp, nonce, signature, encrypted)
+	plain, err := wxopen.DecryptMessage(cfg.WeChatComponentAESKey, cfg.WeChatComponentToken, timestamp, nonce, signature, encrypted)
 	if err != nil {
 		http.Error(w, "签名不正确", http.StatusForbidden)
 		return nil
@@ -510,6 +519,7 @@ func (a *App) componentNotify(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) accountWeChatClient(ctx context.Context, account *model.WxAccount, secret string) (wechat.Client, error) {
+	cfg := a.effective(ctx)
 	wx, err := a.Cache.WeChat(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -525,7 +535,7 @@ func (a *App) accountWeChatClient(ctx context.Context, account *model.WxAccount,
 			return nil, err
 		}
 		if enc != "" {
-			refresh, err = security.DecryptSecret(a.Cfg.MasterKey, enc)
+			refresh, err = security.DecryptSecret(cfg.MasterKey, enc)
 			if err != nil {
 				return nil, bad(err.Error())
 			}
@@ -535,12 +545,12 @@ func (a *App) accountWeChatClient(ctx context.Context, account *model.WxAccount,
 	if base == "" {
 		base = "https://api.weixin.qq.com"
 	}
-	if refresh != "" && a.Cfg.WeChatComponentEnabled() && mode != "mock" && !strings.HasPrefix(account.AppID, "wx_mock") {
+	if refresh != "" && cfg.WeChatComponentEnabled() && mode != "mock" && !strings.HasPrefix(account.AppID, "wx_mock") {
 		ticket, err := a.Store.GetSetting(ctx, nil, "wechat_component_ticket")
 		if err != nil {
 			return nil, err
 		}
-		return wechat.NewAuthorizer(account.AppID, refresh, a.Cfg.WeChatComponentAppID, a.Cfg.WeChatComponentSecret, ticket, base, a.HTTP, a.Tokens), nil
+		return wechat.NewAuthorizer(account.AppID, refresh, cfg.WeChatComponentAppID, cfg.WeChatComponentSecret, ticket, base, a.HTTP, a.Tokens), nil
 	}
 	if secret == "" {
 		if refresh == "" {

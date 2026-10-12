@@ -9,6 +9,38 @@
     <p v-if="error" class="banner">{{ error }}</p>
     <p v-if="message" class="banner ok">{{ message }}</p>
 
+    <section v-if="tab === 'services'" class="stack">
+      <section class="card stack">
+        <h2>注册需验证码</h2>
+        <p class="muted">默认关闭。打开后，手机号注册要短信验证码，邮箱注册要邮件验证码。验证码 5 分钟有效，提交时先占用一次机会。</p>
+        <p v-if="registerCfg.reason" class="banner">{{ registerCfg.reason }}</p>
+        <p v-else-if="registerCfg.note" class="muted">{{ registerCfg.note }}</p>
+        <label class="check">
+          <input v-model="registerCfg.verify" type="checkbox" :disabled="!!registerCfg.reason" />
+          注册需验证码
+        </label>
+        <button class="btn" type="button" :disabled="!!registerCfg.reason" @click="saveRegisterVerify">保存开关</button>
+      </section>
+      <section v-for="section in integrations" :key="section.key" class="card stack">
+        <div class="split">
+          <h2>{{ section.title }}</h2>
+          <span class="muted">{{ section.ready ? "已配齐" : "未配齐" }}</span>
+        </div>
+        <p v-if="section.error" class="banner">{{ section.error }}</p>
+        <label v-for="field in section.fields" :key="field.key">
+          {{ field.label }}
+          <span v-if="field.secret && field.set" class="muted">已保存 {{ field.hint }}<template v-if="field.source === 'env'">（来自环境变量，留空不修改）</template><template v-else>（留空不修改）</template></span>
+          <textarea v-if="field.multiline" v-model="integrationForm[section.key][field.key]" rows="4" :placeholder="field.secret ? '留空则不修改' : ''"></textarea>
+          <input v-else v-model="integrationForm[section.key][field.key]" :type="field.secret ? 'password' : 'text'" :placeholder="field.secret ? '留空则不修改' : ''" />
+        </label>
+        <div class="row">
+          <button class="btn" type="button" @click="saveIntegration(section)">保存</button>
+          <button class="btn-ghost" type="button" @click="testIntegration(section)">测试连通</button>
+        </div>
+        <label v-if="section.key === 'sms'">测试手机号<input v-model="probePhone" placeholder="13800138000" /></label>
+      </section>
+    </section>
+
     <section v-if="tab === 'users'" class="card stack">
       <h2>套餐额度</h2>
       <p class="muted">每天篇数按用户合计，立即生成和定时生成都从这里扣。免费和普通默认 1，高级和买断默认 5。改完之后，新的写作方向不能把每天篇数加起来超过这个上限。</p>
@@ -487,6 +519,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { api, formatTime } from "../api";
 
 const tabs = [
+  { key: "services", label: "服务" },
   { key: "users", label: "会员" },
   { key: "models", label: "模型" },
   { key: "routes", label: "环节路由" },
@@ -508,6 +541,10 @@ const checks = ref([]);
 const checkForm = reactive({ layout_key: "simple", device: "", theme: "light", result: "pass", note: "" });
 const error = ref("");
 const message = ref("");
+const integrations = ref([]);
+const integrationForm = reactive({});
+const registerCfg = reactive({ verify: false, reason: "", note: "" });
+const probePhone = ref("");
 const users = ref([]);
 const planConfigs = ref([]);
 const edits = reactive({});
@@ -693,6 +730,48 @@ async function loadConsents() {
   }
 }
 
+function fillIntegrations(data) {
+  integrations.value = data.sections || [];
+  Object.assign(registerCfg, data.register || { verify: false, reason: "", note: "" });
+  for (const section of integrations.value) {
+    if (!integrationForm[section.key]) integrationForm[section.key] = {};
+    for (const field of section.fields) {
+      integrationForm[section.key][field.key] = field.secret ? "" : (field.value || "");
+    }
+  }
+}
+async function saveIntegration(section) {
+  error.value = "";
+  message.value = "";
+  try {
+    const data = await api(`/api/admin/integrations/${section.key}`, { method: "PUT", body: { fields: integrationForm[section.key] } });
+    fillIntegrations(data);
+    message.value = section.title + "已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+async function saveRegisterVerify() {
+  error.value = "";
+  message.value = "";
+  try {
+    const data = await api("/api/admin/integrations/register", { method: "PUT", body: { fields: { verify: registerCfg.verify ? "1" : "0" } } });
+    fillIntegrations(data);
+    message.value = "注册验证码开关已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+async function testIntegration(section) {
+  error.value = "";
+  message.value = "";
+  try {
+    const data = await api(`/api/admin/integrations/${section.key}/test`, { method: "POST", body: { phone: probePhone.value } });
+    message.value = data.message || "连通成功";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
 async function load() {
   planConfigs.value = await api("/api/admin/plan-configs");
   users.value = await api("/api/admin/users");
@@ -728,6 +807,7 @@ async function load() {
   referrals.value = await api("/api/admin/referrals");
   Object.assign(inviteRules, await api("/api/admin/invite-rules"));
   hotSources.value = await api("/api/admin/hot-sources");
+  fillIntegrations(await api("/api/admin/integrations"));
 }
 
 async function saveInviteRules() {
