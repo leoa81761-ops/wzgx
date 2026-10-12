@@ -53,6 +53,10 @@
           <input type="checkbox" :value="day.value" v-model="form.weekdays" /> {{ day.label }}
         </label>
       </div>
+      <label>固定开头<input v-model="form.opening" maxlength="200" placeholder="例如：关注后回复「目录」可看往期" /></label>
+      <label>固定结尾<input v-model="form.ending" maxlength="200" placeholder="例如：觉得有用就转给同事" /></label>
+      <label>栏目名<input v-model="form.column_name" placeholder="留空则整号用上面的风格" /></label>
+      <label>该栏目风格<input v-model="form.column_style" placeholder="例如 plain，只在这一栏切换" /></label>
       <label>时段
         <select v-model="form.time_window" :disabled="quota.tier === 'free'">
           <option v-for="item in windows" :key="item.key" :value="item.key">{{ item.label }}</option>
@@ -163,6 +167,10 @@ const form = reactive({
   weekdays: [1, 3, 5],
   time_window: "night",
   daily_count: 1,
+  opening: "",
+  ending: "",
+  column_name: "",
+  column_style: "",
 });
 
 const wordOptions = computed(() => {

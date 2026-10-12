@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -51,6 +52,14 @@ type Gateway struct {
 	MaxAttempts         int
 	ResearchTimeout     time.Duration
 	ResearchBackupModel string
+	CacheTTL            time.Duration
+	cacheMu             sync.Mutex
+	cache               map[string]cachedCompletion
+}
+
+type cachedCompletion struct {
+	until      time.Time
+	completion Completion
 }
 
 func NewGateway(mock bool, client *http.Client) *Gateway {
@@ -131,7 +140,7 @@ func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messag
 	var errorsFound []string
 	var attempts []map[string]any
 	for _, provider := range providers {
-		if provider.Protocol != "openai" && provider.Protocol != "anthropic" && provider.Protocol != "responses" {
+		if provider.Protocol != "openai" && provider.Protocol != "anthropic" && provider.Protocol != "responses" && provider.Protocol != "http" {
 			message := fmt.Sprintf("%s: 不支持的协议 %s", provider.Name, provider.Protocol)
 			errorsFound = append(errorsFound, message)
 			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "protocol": provider.Protocol, "ok": false, "error": message})
@@ -222,7 +231,7 @@ func (g *Gateway) completeText(ctx context.Context, providers []Provider, messag
 	var errorsFound []string
 	var attempts []map[string]any
 	for _, provider := range providers {
-		if provider.Protocol != "openai" && provider.Protocol != "anthropic" && provider.Protocol != "responses" {
+		if provider.Protocol != "openai" && provider.Protocol != "anthropic" && provider.Protocol != "responses" && provider.Protocol != "http" {
 			message := provider.Name + ": 不支持的协议 " + provider.Protocol
 			errorsFound = append(errorsFound, message)
 			attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": provider.Protocol, "model": provider.Model, "ok": false, "error": message})
@@ -246,6 +255,13 @@ func (g *Gateway) completeText(ctx context.Context, providers []Provider, messag
 func (g *Gateway) complete(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool, limit callLimit) (Completion, error) {
 	if g.Mock || strings.HasPrefix(provider.BaseURL, "mock://") {
 		return mockComplete(provider, messages)
+	}
+	cacheKey := ""
+	if g.CacheTTL > 0 && !stream {
+		cacheKey = completionKey(provider, messages)
+		if hit, ok := g.cached(cacheKey); ok {
+			return hit, nil
+		}
 	}
 	attempts := g.MaxAttempts
 	if limit.attempts > 0 {
@@ -293,6 +309,9 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 		if err == nil {
 			completion.Attempts = failed
 			completion.ReasoningEffort = effort
+			if cacheKey != "" {
+				g.remember(cacheKey, completion)
+			}
 			return completion, nil
 		}
 		last = err
@@ -503,6 +522,8 @@ func (g *Gateway) call(ctx context.Context, provider Provider, messages []map[st
 		return g.callAnthropic(ctx, provider, messages, stream, effort)
 	case "responses":
 		return g.callResponses(ctx, provider, messages, schema, stream, effort)
+	case "http":
+		return g.callMapped(ctx, provider, messages)
 	default:
 		return g.callOpenAI(ctx, provider, messages, schema, stream, effort)
 	}

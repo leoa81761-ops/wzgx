@@ -68,6 +68,7 @@
             <option value="openai">OpenAI 兼容 Chat Completions</option>
             <option value="responses">OpenAI Responses</option>
             <option value="anthropic" :disabled="provider.kind === 'image'">Anthropic Messages</option>
+            <option value="http" :disabled="provider.kind === 'image'">自定义 HTTP 字段映射</option>
           </select>
         </label>
         <label>Base URL<input v-model="provider.base_url" required placeholder="https://api.openai.com/v1" /></label>

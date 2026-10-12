@@ -460,6 +460,69 @@ CREATE TABLE IF NOT EXISTS hot_item (
   fetched_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_hot_fetched ON hot_item(source_name, fetched_at);
+
+CREATE TABLE IF NOT EXISTS plan_extra (
+  plan_id INTEGER PRIMARY KEY,
+  opening TEXT NOT NULL DEFAULT '',
+  ending TEXT NOT NULL DEFAULT '',
+  column_name TEXT NOT NULL DEFAULT '',
+  column_style TEXT NOT NULL DEFAULT '',
+  asset_id INTEGER NOT NULL DEFAULT 0,
+  profile_id INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS style_profile (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  features TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prompt_variant (
+  id {{PK}},
+  stage TEXT NOT NULL,
+  label TEXT NOT NULL,
+  body TEXT NOT NULL,
+  uses INTEGER NOT NULL DEFAULT 0,
+  adopted INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (stage, label)
+);
+
+CREATE TABLE IF NOT EXISTS prompt_cache (
+  cache_key TEXT PRIMARY KEY,
+  body TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_asset (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL DEFAULT '',
+  license_note TEXT NOT NULL DEFAULT '',
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sample_draft (
+  user_id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trial_log (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  day_key TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS article_variant (
+  article_id INTEGER PRIMARY KEY,
+  variant_id INTEGER NOT NULL
+);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	for _, stmt := range strings.Split(schema, ";") {

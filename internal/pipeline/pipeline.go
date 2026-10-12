@@ -71,6 +71,14 @@ type work struct {
 	Pack            store.VerticalPack
 	StyleName       string
 	StyleHint       string
+	Opening         string
+	Ending          string
+	ColumnName      string
+	ColumnStyle     string
+	AssetCover      []byte
+	AssetNote       string
+	PromptExtra     string
+	VariantID       int64
 }
 
 type Built struct {
@@ -289,6 +297,9 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		finishFailure(ctx, deps, taskID, clip(err.Error(), 500), now, false, nil)
 		return nil, false
 	}
+	if ok && w != nil {
+		attachStudio(ctx, deps, w)
+	}
 	return w, ok
 }
 
@@ -350,9 +361,27 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		image = nil
 		in.CostNote = "本月生成成本已达上限，这篇没有使用联网检索和 AI 配图。"
 	}
+	variants, _ := deps.Store.ListPromptVariants(ctx, nil, "正文")
+	if len(variants) > 0 {
+		rows := make([][2]int, len(variants))
+		for i, row := range variants {
+			rows[i] = [2]int{row.Uses, row.Adopted}
+		}
+		index := content.PickVariant(rows, len(variants) > 1 && time.Now().UnixNano()%5 == 0, 0)
+		if index >= 0 {
+			in.PromptExtra = variants[index].Body
+			w.VariantID = variants[index].ID
+		}
+	}
 	built, err := Build(ctx, deps.Gateway, in, sensitive, providers, policy, now)
 	if err != nil {
 		return nil, &tracedError{err: err, trace: built.Trace}
+	}
+	if content.CopiedSpan(content.DraftText(built.Draft), content.SourceTexts(built.Draft)) {
+		return nil, &llm.Error{Message: "正文与参考来源有整段相同的表述"}
+	}
+	if deps.Gateway != nil && !deps.Gateway.Mock {
+		content.AnnotateAccess(ctx, deps.HTTP, built.Draft)
 	}
 	push, err := pushDraft(ctx, deps, w, built, wx, image)
 	if err != nil {
@@ -391,7 +420,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		"delivery_note": note, "risk_level": level, "cost_action": costAction, "month_key": month,
 		"chat_cents":   ops.ChatCents(built.Tokens, costPolicy.ChatCentsPer1K),
 		"search_cents": searchCents, "image_cents": push.ImageCalls * costPolicy.ImageCents,
-		"image_calls": push.ImageCalls,
+		"image_calls": push.ImageCalls, "variant_id": w.VariantID,
 	}, nil
 }
 
@@ -412,6 +441,12 @@ type Input struct {
 	StyleHint      string
 	AILabel        bool
 	CostNote       string
+	Opening        string
+	Ending         string
+	ColumnName     string
+	ColumnStyle    string
+	AssetNote      string
+	PromptExtra    string
 }
 
 func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
@@ -452,13 +487,16 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra}
 }
 
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
 	topic := topics.PickTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.History, now, w.Vetoed...)
 	if w.Locked != nil {
 		topic = *w.Locked
+	}
+	if w.ColumnName != "" && w.ColumnStyle != "" && topic.Column == w.ColumnName {
+		w.StyleKey = w.ColumnStyle
 	}
 	style := catalog.StyleByKey(w.StyleKey)
 	styleName := style.Name
@@ -473,6 +511,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	if w.StyleHint != "" {
 		styleHint = w.StyleHint
+	}
+	if w.PromptExtra != "" {
+		if styleHint != "" {
+			styleHint += "。"
+		}
+		styleHint += w.PromptExtra
 	}
 	base := map[string]any{
 		"direction": w.Direction, "subtopic": topic.Subtopic, "column": topic.Column, "angle": topic.Angle,
@@ -635,6 +679,18 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.AILabel {
 		draft["ai_label"] = true
 	}
+	if w.Opening != "" {
+		sections := asList(draft["sections"])
+		lead := map[string]any{"paragraphs": []any{w.Opening}}
+		draft["sections"] = append([]any{lead}, sections...)
+	}
+	if w.Ending != "" {
+		draft["closing"] = w.Ending
+	}
+	if w.AssetNote != "" {
+		notes := asList(draft["footnotes"])
+		draft["footnotes"] = append(notes, "配图来自用户素材："+w.AssetNote)
+	}
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
 	if err != nil {
 		return Built{Trace: trace}, err
@@ -662,7 +718,18 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	html := article.HTML
 	outHTML := html
 	aiCover, inlineN := catalog.ImageAllowance(w.Tier)
-	png, filename, coverTrace := chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey, aiCover)
+	var png []byte
+	var filename string
+	var coverTrace map[string]any
+	if len(w.AssetCover) > 0 {
+		if body, name, _, err := cover.PrepareCover(w.AssetCover); err == nil && len(body) > 0 {
+			png, filename = body, name
+			coverTrace = map[string]any{"stage": "cover", "ok": true, "source": "library"}
+		}
+	}
+	if len(png) == 0 {
+		png, filename, coverTrace = chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey, aiCover)
+	}
 	imageCalls := 0
 	if coverTrace["source"] == "ai" {
 		imageCalls++
@@ -752,6 +819,7 @@ func placeDraft(ctx context.Context, client wechat.Client, existing string, draf
 func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[string]any, now time.Time) {
 	var publishNow int64
 	var costPaused bool
+	var quietPaused bool
 	var noticeUser int64
 	var inviteChange *store.ReferralChange
 	txErr := deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
@@ -821,7 +889,11 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 				continue
 			}
 			url := str(source["url"])
-			sources = append(sources, model.ArticleSource{Seq: i + 1, SourceType: clip(str(source["source_type"]), 32), Name: str(source["name"]), Title: str(source["title"]), PublishedOn: str(source["published_on"]), RawURL: url, DisplayURL: render.DisplayURL(url), Accessible: "未校验"})
+			access := str(source["accessible"])
+			if access == "" {
+				access = "未校验"
+			}
+			sources = append(sources, model.ArticleSource{Seq: i + 1, SourceType: clip(str(source["source_type"]), 32), Name: str(source["name"]), Title: str(source["title"]), PublishedOn: str(source["published_on"]), RawURL: url, DisplayURL: render.DisplayURL(url), Accessible: access})
 		}
 		if err := deps.Store.ReplaceSources(ctx, tx, article.ID, sources); err != nil {
 			return err
@@ -858,6 +930,24 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 			plan.PauseReason = "本月成本已达上限"
 			costPaused = true
 			noticeUser = task.UserID
+		}
+		if plan.Status == "active" && task.TriggerType != "regenerate" {
+			if paused, err := pauseIfQuiet(ctx, deps, tx, plan, now); err != nil {
+				return err
+			} else if paused {
+				plan.Status = "paused"
+				plan.PauseReason = "连续 5 篇没有反馈"
+				quietPaused = true
+				noticeUser = task.UserID
+			}
+		}
+		if variantID := int64(intOf(result["variant_id"])); variantID > 0 && article != nil {
+			if err := deps.Store.SaveArticleVariant(ctx, tx, article.ID, variantID); err != nil {
+				return err
+			}
+			if err := deps.Store.IncrementVariantUse(ctx, tx, variantID); err != nil {
+				return err
+			}
 		}
 		if err := recordCost(ctx, deps, tx, task.UserID, task.ID, str(result["month_key"]), intOf(result["tokens"]), intOf(result["chat_cents"]), intOf(result["search_cents"]), intOf(result["image_calls"]), intOf(result["image_cents"]), now); err != nil {
 			return err
@@ -898,6 +988,9 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	}
 	if costPaused && noticeUser > 0 {
 		emitNotice(ctx, deps, noticeUser, "cost", "本月成本已达上限", "高成本功能已暂停。调高上限或下个月会自动恢复前，请在写作计划里手动恢复。")
+	}
+	if quietPaused && noticeUser > 0 && !costPaused {
+		emitNotice(ctx, deps, noticeUser, "feedback", "连续 5 篇没有反馈", "这个写作方向已暂停。在文章页选择已发布、修改后发布、弃用或已处理后，可以再恢复。认证号自动发布不使用这条规则。")
 	}
 	if str(result["status"]) == "held" {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "risk", "有一篇稿没有写入草稿", str(result["delivery_note"]))
@@ -1713,6 +1806,8 @@ func intOf(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n
+	case int64:
+		return int(n)
 	case float64:
 		return int(n)
 	default:

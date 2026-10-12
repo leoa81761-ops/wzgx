@@ -23,6 +23,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/render"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 	"github.com/leoa81761-ops/wzgx/internal/security"
+	"github.com/leoa81761-ops/wzgx/internal/store"
 	"github.com/leoa81761-ops/wzgx/internal/wechat"
 )
 
@@ -326,6 +327,16 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 	}
 	view["specified_title"] = title
 	view["vetoes"] = tags
+	if extra, err := a.Store.GetPlanExtra(ctx, nil, plan.ID); err != nil {
+		return nil, err
+	} else {
+		view["opening"] = extra.Opening
+		view["ending"] = extra.Ending
+		view["column_name"] = extra.ColumnName
+		view["column_style"] = extra.ColumnStyle
+		view["asset_id"] = extra.AssetID
+		view["profile_id"] = extra.ProfileID
+	}
 	if err := a.attachProposal(ctx, view, plan.ID); err != nil {
 		return nil, err
 	}
@@ -738,6 +749,12 @@ type planBody struct {
 	ScheduleType string `json:"schedule_type"`
 	Weekdays     []int  `json:"weekdays"`
 	TimeWindow   string `json:"time_window"`
+	Opening      string `json:"opening"`
+	Ending       string `json:"ending"`
+	ColumnName   string `json:"column_name"`
+	ColumnStyle  string `json:"column_style"`
+	AssetID      int64  `json:"asset_id"`
+	ProfileID    int64  `json:"profile_id"`
 }
 
 func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -834,7 +851,16 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			ScheduleType: body.ScheduleType, Weekdays: weekdays, TimeWindow: window, Status: "active",
 			NextRunAt: &next, CreatedAt: now,
 		}
-		return a.Store.InsertPlan(r.Context(), tx, created)
+		if err := a.Store.InsertPlan(r.Context(), tx, created); err != nil {
+			return err
+		}
+		opening := clipText(body.Opening, 200)
+		ending := clipText(body.Ending, 200)
+		return a.Store.SavePlanExtra(r.Context(), tx, store.PlanExtra{
+			PlanID: created.ID, Opening: opening, Ending: ending,
+			ColumnName: strings.TrimSpace(body.ColumnName), ColumnStyle: strings.TrimSpace(body.ColumnStyle),
+			AssetID: body.AssetID, ProfileID: body.ProfileID,
+		})
 	})
 	if err != nil {
 		return err

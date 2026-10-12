@@ -125,6 +125,7 @@ type Client interface {
 	GetDraft(ctx context.Context, mediaID string) (map[string]any, error)
 	DeleteDraft(ctx context.Context, mediaID string) error
 	DraftCount(ctx context.Context) (int, error)
+	ListDraftTitles(ctx context.Context, limit int) ([]string, error)
 	ProbePublish(ctx context.Context) (bool, string, error)
 	SubmitPublish(ctx context.Context, mediaID string) (string, error)
 	GetPublish(ctx context.Context, publishID string) (PublishState, error)
@@ -265,6 +266,29 @@ func (c *MockClient) DraftCount(context.Context) (int, error) {
 	c.box.mu.Lock()
 	defer c.box.mu.Unlock()
 	return len(c.box.drafts), nil
+}
+
+func (c *MockClient) ListDraftTitles(_ context.Context, limit int) ([]string, error) {
+	if _, err := c.GetToken(context.Background()); err != nil {
+		return nil, err
+	}
+	c.box.mu.Lock()
+	defer c.box.mu.Unlock()
+	if limit < 1 {
+		limit = 20
+	}
+	out := make([]string, 0, len(c.box.drafts))
+	for _, draft := range c.box.drafts {
+		title, _ := draft["title"].(string)
+		if title == "" {
+			continue
+		}
+		out = append(out, title)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (c *MockClient) ProbePublish(context.Context) (bool, string, error) {
@@ -493,6 +517,35 @@ func (c *LiveClient) GetPublish(ctx context.Context, publishID string) (PublishS
 		}
 	}
 	return state, nil
+}
+
+func (c *LiveClient) ListDraftTitles(ctx context.Context, limit int) ([]string, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/draft/batchget", map[string]any{"offset": 0, "count": limit, "no_content": 1}, true)
+	if err != nil {
+		return nil, err
+	}
+	items, _ := data["item"].([]any)
+	var titles []string
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		content, _ := item["content"].(map[string]any)
+		news, _ := content["news_item"].([]any)
+		if len(news) == 0 {
+			continue
+		}
+		first, _ := news[0].(map[string]any)
+		title, _ := first["title"].(string)
+		if title != "" {
+			titles = append(titles, title)
+		}
+	}
+	return titles, nil
 }
 
 func (c *LiveClient) DraftCount(ctx context.Context) (int, error) {
