@@ -473,6 +473,7 @@ CREATE TABLE IF NOT EXISTS mp_stats (
   favors INTEGER NOT NULL DEFAULT 0,
   follows INTEGER NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT '',
+  article_title TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE(account_id, stat_date, article_key, source)
 );
@@ -528,7 +529,17 @@ CREATE TABLE IF NOT EXISTS plan_extra (
   banned_words TEXT NOT NULL DEFAULT '',
   vertical_key TEXT NOT NULL DEFAULT '',
   topic_mode TEXT NOT NULL DEFAULT '',
-  image_mode TEXT NOT NULL DEFAULT ''
+  image_mode TEXT NOT NULL DEFAULT '',
+  tone TEXT NOT NULL DEFAULT '',
+  persona_columns TEXT NOT NULL DEFAULT '',
+  signatures TEXT NOT NULL DEFAULT '',
+  taboos TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS title_bias (
+  account_id INTEGER PRIMARY KEY,
+  shape TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS style_profile (
@@ -688,6 +699,11 @@ CREATE TABLE IF NOT EXISTS user_contract (
 		{"plan_extra", "vertical_key", "TEXT NOT NULL DEFAULT ''"},
 		{"plan_extra", "topic_mode", "TEXT NOT NULL DEFAULT ''"},
 		{"plan_extra", "image_mode", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "tone", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "persona_columns", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "signatures", "TEXT NOT NULL DEFAULT ''"},
+		{"plan_extra", "taboos", "TEXT NOT NULL DEFAULT ''"},
+		{"mp_stats", "article_title", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err

@@ -63,6 +63,10 @@
         <label>该栏目风格<input v-model="form.column_style" placeholder="例如 plain，只在这一栏切换" /></label>
         <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房,弱电" /></label>
         <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
+        <label>语气<input v-model="form.tone" maxlength="80" placeholder="例如：务实，少形容词。留空则按方向自动带上" /></label>
+        <label>常设栏目<input v-model="form.persona_columns" maxlength="80" placeholder="例如：现场笔记,验收清单" /></label>
+        <label>口头禅<input v-model="form.signatures" maxlength="80" placeholder="例如：先看现场，再谈方案" /></label>
+        <label>不写的话题<input v-model="form.taboos" maxlength="80" placeholder="例如：保证中标,包过验收" /></label>
         <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔，这篇里不要出现" /></label>
         <label>垂类资料包
           <select v-model="form.vertical_key">
@@ -221,6 +225,10 @@ const form = reactive({
   keywords: "",
   audience: "",
   banned_words: "",
+  tone: "",
+  persona_columns: "",
+  signatures: "",
+  taboos: "",
   vertical_key: "",
   topic_mode: "auto",
   image_mode: "auto",

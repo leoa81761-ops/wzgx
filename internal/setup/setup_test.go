@@ -22,8 +22,11 @@ func TestSuggestDiffersByAccount(t *testing.T) {
 	engineer := Suggest(Input{AccountName: "弱电陈工", SubjectType: "personal", ServiceType: "subscription", Tier: "premium", MaxWords: 4000, Packs: packs})
 	family := Suggest(Input{AccountName: "奶奶不当家", SubjectType: "personal", ServiceType: "subscription", Tier: "premium", MaxWords: 4000, Packs: packs})
 	company := Suggest(Input{AccountName: "公司号", SubjectType: "enterprise", ServiceType: "subscription", Verified: true, Tier: "premium", MaxWords: 4000, Packs: packs})
-	if engineer.Direction != "弱电智能化" || engineer.VerticalKey != "elv" || engineer.StyleKey != "plain" || engineer.Audience != "做工程和物业的读者" {
+	if engineer.Direction != "弱电智能化" || engineer.VerticalKey != "elv" || engineer.StyleKey != "plain" || engineer.Audience != "做工程和物业的读者" || engineer.Tone == "" || !strings.Contains(engineer.Taboos, "验收") {
 		t.Fatal(engineer)
+	}
+	if family.Tone == engineer.Tone && family.Signatures == engineer.Signatures {
+		t.Fatal("persona collapsed", engineer, family)
 	}
 	if family.Direction != "个人成长" || family.VerticalKey != "" || family.StyleKey != "warm" {
 		t.Fatal(family)

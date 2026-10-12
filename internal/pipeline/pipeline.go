@@ -13,11 +13,14 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/cover"
 	"github.com/leoa81761-ops/wzgx/internal/db"
+	"github.com/leoa81761-ops/wzgx/internal/editorial"
+	"github.com/leoa81761-ops/wzgx/internal/headline"
 	"github.com/leoa81761-ops/wzgx/internal/hot"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/notify"
 	"github.com/leoa81761-ops/wzgx/internal/ops"
+	"github.com/leoa81761-ops/wzgx/internal/persona"
 	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/render"
@@ -87,6 +90,11 @@ type work struct {
 	BannedWords       string
 	TopicMode         string
 	ImageMode         string
+	Tone              string
+	PersonaColumns    string
+	Signatures        string
+	Taboos            string
+	TitlePrefer       string
 }
 
 type Built struct {
@@ -305,6 +313,29 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		for _, row := range historyRows {
 			history = append(history, topics.Coverage{Subtopic: row.Subtopic, Column: row.ColumnType, Angle: row.Angle, CreatedAt: row.CreatedAt})
 		}
+		history, err = AppendSiblingCoverage(ctx, deps.Store, tx, user.ID, plan.ID, history)
+		if err != nil {
+			return err
+		}
+		siblingTitles, err := deps.Store.SiblingTitles(ctx, tx, user.ID, plan.ID, 20)
+		if err != nil {
+			return err
+		}
+		seenTitle := map[string]bool{}
+		for _, title := range titles {
+			seenTitle[title] = true
+		}
+		for _, title := range siblingTitles {
+			if title == "" || seenTitle[title] {
+				continue
+			}
+			seenTitle[title] = true
+			titles = append(titles, title)
+		}
+		prefer, err := deps.Store.GetTitleBias(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
 		weights, err := deps.Store.ListTopicWeights(ctx, tx, plan.ID)
 		if err != nil {
 			return err
@@ -320,7 +351,9 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			StyleName: styleName, StyleHint: styleHint, Weights: weights,
 			Audience: strings.TrimSpace(extra.Audience), Keywords: strings.TrimSpace(extra.Keywords),
 			BannedWords: strings.TrimSpace(extra.BannedWords), TopicMode: strings.TrimSpace(extra.TopicMode),
-			ImageMode: strings.TrimSpace(extra.ImageMode),
+			ImageMode: strings.TrimSpace(extra.ImageMode), Tone: strings.TrimSpace(extra.Tone),
+			PersonaColumns: strings.TrimSpace(extra.PersonaColumns), Signatures: strings.TrimSpace(extra.Signatures),
+			Taboos: strings.TrimSpace(extra.Taboos), TitlePrefer: strings.TrimSpace(prefer),
 		}
 		ok = true
 		return nil
@@ -339,6 +372,14 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if msg := draftWaitMessage(ctx, deps, w); msg != "" {
 		return nil, errors.New(msg)
 	}
+	if w != nil {
+		filled := fillPersona(w.input())
+		w.Audience = filled.Audience
+		w.Tone = filled.Tone
+		w.PersonaColumns = filled.PersonaColumns
+		w.Signatures = filled.Signatures
+		w.Taboos = filled.Taboos
+	}
 	var sensitive []string
 	var wx runtime.WeChat
 	var image *llm.Provider
@@ -351,6 +392,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 			return err
 		}
 		sensitive = mergeBanned(sensitive, w.BannedWords)
+		sensitive = mergeBanned(sensitive, w.Taboos)
 		wx, err = deps.Cache.WeChat(ctx, tx)
 		if err != nil {
 			return err
@@ -492,6 +534,11 @@ type Input struct {
 	BannedWords    string
 	TopicMode      string
 	ImageMode      string
+	Tone           string
+	PersonaColumns string
+	Signatures     string
+	Taboos         string
+	TitlePrefer    string
 }
 
 func hotAllowed(in *Input) bool {
@@ -539,7 +586,32 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer}
+}
+
+// AppendSiblingCoverage keeps another account's recent angles out of this plan's rotation.
+func AppendSiblingCoverage(ctx context.Context, st *store.Store, q db.Q, userID, planID int64, history []topics.Coverage) ([]topics.Coverage, error) {
+	rows, err := st.ListSiblingCoverage(ctx, q, userID, planID)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		history = append(history, topics.Coverage{Subtopic: row.Subtopic, Column: row.ColumnType, Angle: row.Angle, CreatedAt: row.CreatedAt})
+	}
+	return history, nil
+}
+
+func fillPersona(in Input) Input {
+	suggested := persona.Suggest(in.Direction, in.Pack.Key)
+	filled := persona.Fill(persona.Profile{
+		Audience: in.Audience, Tone: in.Tone, Columns: in.PersonaColumns, Signatures: in.Signatures, Taboos: in.Taboos,
+	}, suggested)
+	in.Audience = filled.Audience
+	in.Tone = filled.Tone
+	in.PersonaColumns = filled.Columns
+	in.Signatures = filled.Signatures
+	in.Taboos = filled.Taboos
+	return in
 }
 
 func voiceFields(in Input) map[string]any {
@@ -555,6 +627,18 @@ func voiceFields(in Input) map[string]any {
 	}
 	if mode := strings.TrimSpace(in.TopicMode); mode != "" && mode != "auto" {
 		out["topic_mode"] = mode
+	}
+	if text := strings.TrimSpace(in.Tone); text != "" {
+		out["tone"] = text
+	}
+	if text := strings.TrimSpace(in.PersonaColumns); text != "" {
+		out["persona_columns"] = text
+	}
+	if text := strings.TrimSpace(in.Signatures); text != "" {
+		out["signatures"] = text
+	}
+	if text := strings.TrimSpace(in.Taboos); text != "" {
+		out["taboos"] = text
 	}
 	return out
 }
@@ -591,7 +675,70 @@ func ImagePlan(mode string, hasAsset, aiCover bool, inline int) (useModel bool, 
 	return true, aiCover, inline
 }
 
+func polishDraft(draft map[string]any, w Input, topic topics.Choice, fallbackTitle string) map[string]any {
+	if draft == nil {
+		return draft
+	}
+	max := 0
+	if w.WordTarget > 0 {
+		max = w.WordTarget * 130 / 100
+	}
+	draft, _ = editorial.Reshape(draft, max)
+	if max > 0 && content.BodyRunes(draft) > max {
+		draft = content.TrimToMax(draft, max)
+	}
+	best, alts := headline.Choose(str(draft["title"]), stringList(asList(draft["alt_titles"])), headline.Topic{
+		Subtopic: topic.Subtopic, Angle: topic.Angle, Column: topic.Column, Direction: w.Direction,
+	}, splitWords(w.Pack.RedLines, w.BannedWords), w.RecentTitles, w.TitlePrefer)
+	title := best
+	if strings.TrimSpace(w.SpecifiedTitle) != "" {
+		title = strings.TrimSpace(w.SpecifiedTitle)
+	}
+	if title == "" {
+		title = fallbackTitle
+	}
+	draft["title"] = clip(title, 64)
+	var altAny []any
+	for _, item := range alts {
+		if item == "" || item == draft["title"].(string) {
+			continue
+		}
+		altAny = append(altAny, item)
+	}
+	if altAny == nil {
+		altAny = []any{}
+	}
+	draft["alt_titles"] = altAny
+	return draft
+}
+
+func stringList(items []any) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text := strings.TrimSpace(str(item)); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func splitWords(parts ...string) []string {
+	var out []string
+	for _, part := range parts {
+		for _, word := range strings.FieldsFunc(part, func(r rune) bool {
+			return r == ',' || r == '，' || r == '\n' || r == '、' || r == ';' || r == '；'
+		}) {
+			word = strings.TrimSpace(word)
+			if word != "" {
+				out = append(out, word)
+			}
+		}
+	}
+	return out
+}
+
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
+	w = fillPersona(w)
 	topic := topics.PickTree(topics.ExpandTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.Weights), w.Direction, w.Tier, w.History, now, w.Vetoed...)
 	if w.Locked != nil {
 		topic = *w.Locked
@@ -645,6 +792,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	for key, value := range voiceFields(w) {
 		base[key] = value
 	}
+	base["structure"] = editorial.Structure(w.Pack.Key, w.Direction)
 	var trace []map[string]any
 	tokens := 0
 	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
@@ -759,14 +907,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if high := w.WordTarget * 130 / 100; w.WordTarget > 0 && content.BodyRunes(draft) > high {
 		draft = content.TrimToMax(draft, high)
 	}
-	title := str(draft["title"])
-	if w.SpecifiedTitle != "" {
-		title = w.SpecifiedTitle
-	}
-	if title == "" {
-		title = topicTitle
-	}
-	draft["title"] = clip(title, 64)
+	draft = polishDraft(draft, w, topic, topicTitle)
 	footnotes := []any{"请发布前审阅。"}
 	if w.Pack.Disclaimer != "" {
 		footnotes = append(footnotes, w.Pack.Disclaimer)

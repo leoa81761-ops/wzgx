@@ -12,6 +12,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/pipeline"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/schedule"
 	"github.com/leoa81761-ops/wzgx/internal/security"
@@ -217,6 +218,10 @@ func (a *App) planCalendar(w http.ResponseWriter, r *http.Request, user *model.U
 	history := make([]topics.Coverage, 0, len(rows))
 	for _, row := range rows {
 		history = append(history, topics.Coverage{Subtopic: row.Subtopic, Column: row.ColumnType, Angle: row.Angle, CreatedAt: row.CreatedAt})
+	}
+	history, err = pipeline.AppendSiblingCoverage(r.Context(), a.Store, nil, user.ID, plan.ID, history)
+	if err != nil {
+		return err
 	}
 	vetoes, err := a.Store.ListVetoTags(r.Context(), nil, plan.ID)
 	if err != nil {

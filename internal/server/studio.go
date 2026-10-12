@@ -17,6 +17,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
 	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/persona"
 	"github.com/leoa81761-ops/wzgx/internal/pipeline"
 	"github.com/leoa81761-ops/wzgx/internal/publish"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
@@ -362,6 +363,16 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 		}
 		view["topic_mode"] = topicMode
 		view["image_mode"] = imageMode
+		view["tone"] = extra.Tone
+		view["persona_columns"] = extra.PersonaColumns
+		view["signatures"] = extra.Signatures
+		view["taboos"] = extra.Taboos
+		suggested := persona.Suggest(plan.Direction, extra.VerticalKey)
+		view["suggested_tone"] = suggested.Tone
+		view["suggested_columns"] = suggested.Columns
+		view["suggested_signatures"] = suggested.Signatures
+		view["suggested_taboos"] = suggested.Taboos
+		view["suggested_audience"] = suggested.Audience
 	}
 	if err := a.attachProposal(ctx, view, plan.ID); err != nil {
 		return nil, err
@@ -764,27 +775,31 @@ func (a *App) listPlans(w http.ResponseWriter, r *http.Request, user *model.User
 }
 
 type planBody struct {
-	WxAccountID  int64  `json:"wx_account_id"`
-	Direction    string `json:"direction"`
-	StyleKey     string `json:"style_key"`
-	TemplateKey  string `json:"template_key"`
-	WordTarget   int    `json:"word_target"`
-	DailyCount   int    `json:"daily_count"`
-	ScheduleType string `json:"schedule_type"`
-	Weekdays     []int  `json:"weekdays"`
-	TimeWindow   string `json:"time_window"`
-	Opening      string `json:"opening"`
-	Ending       string `json:"ending"`
-	ColumnName   string `json:"column_name"`
-	ColumnStyle  string `json:"column_style"`
-	AssetID      int64  `json:"asset_id"`
-	ProfileID    int64  `json:"profile_id"`
-	Keywords     string `json:"keywords"`
-	Audience     string `json:"audience"`
-	BannedWords  string `json:"banned_words"`
-	VerticalKey  string `json:"vertical_key"`
-	TopicMode    string `json:"topic_mode"`
-	ImageMode    string `json:"image_mode"`
+	WxAccountID    int64  `json:"wx_account_id"`
+	Direction      string `json:"direction"`
+	StyleKey       string `json:"style_key"`
+	TemplateKey    string `json:"template_key"`
+	WordTarget     int    `json:"word_target"`
+	DailyCount     int    `json:"daily_count"`
+	ScheduleType   string `json:"schedule_type"`
+	Weekdays       []int  `json:"weekdays"`
+	TimeWindow     string `json:"time_window"`
+	Opening        string `json:"opening"`
+	Ending         string `json:"ending"`
+	ColumnName     string `json:"column_name"`
+	ColumnStyle    string `json:"column_style"`
+	AssetID        int64  `json:"asset_id"`
+	ProfileID      int64  `json:"profile_id"`
+	Keywords       string `json:"keywords"`
+	Audience       string `json:"audience"`
+	BannedWords    string `json:"banned_words"`
+	VerticalKey    string `json:"vertical_key"`
+	TopicMode      string `json:"topic_mode"`
+	ImageMode      string `json:"image_mode"`
+	Tone           string `json:"tone"`
+	PersonaColumns string `json:"persona_columns"`
+	Signatures     string `json:"signatures"`
+	Taboos         string `json:"taboos"`
 }
 
 func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -875,6 +890,7 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			Opening: body.Opening, Ending: body.Ending, ColumnName: body.ColumnName, ColumnStyle: body.ColumnStyle,
 			Keywords: body.Keywords, Audience: body.Audience, BannedWords: body.BannedWords,
 			VerticalKey: body.VerticalKey, TopicMode: body.TopicMode, ImageMode: body.ImageMode,
+			Tone: body.Tone, PersonaColumns: body.PersonaColumns, Signatures: body.Signatures, Taboos: body.Taboos,
 			AssetID: body.AssetID, ProfileID: body.ProfileID,
 		})
 		if err != nil {

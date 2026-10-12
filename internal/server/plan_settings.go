@@ -17,18 +17,22 @@ import (
 )
 
 type planSettings struct {
-	Opening     string
-	Ending      string
-	ColumnName  string
-	ColumnStyle string
-	Keywords    string
-	Audience    string
-	BannedWords string
-	VerticalKey string
-	TopicMode   string
-	ImageMode   string
-	AssetID     int64
-	ProfileID   int64
+	Opening        string
+	Ending         string
+	ColumnName     string
+	ColumnStyle    string
+	Keywords       string
+	Audience       string
+	BannedWords    string
+	VerticalKey    string
+	TopicMode      string
+	ImageMode      string
+	Tone           string
+	PersonaColumns string
+	Signatures     string
+	Taboos         string
+	AssetID        int64
+	ProfileID      int64
 }
 
 func (s planSettings) extra(planID int64) store.PlanExtra {
@@ -38,6 +42,7 @@ func (s planSettings) extra(planID int64) store.PlanExtra {
 		AssetID: s.AssetID, ProfileID: s.ProfileID,
 		Keywords: s.Keywords, Audience: s.Audience, BannedWords: s.BannedWords,
 		VerticalKey: s.VerticalKey, TopicMode: s.TopicMode, ImageMode: s.ImageMode,
+		Tone: s.Tone, PersonaColumns: s.PersonaColumns, Signatures: s.Signatures, Taboos: s.Taboos,
 	}
 }
 
@@ -65,6 +70,22 @@ func (a *App) normalizePlanSettings(ctx context.Context, q db.Q, userID int64, t
 	if err != nil {
 		return planSettings{}, err
 	}
+	tone, err := boundedText("语气", raw.Tone, 80)
+	if err != nil {
+		return planSettings{}, err
+	}
+	columns, err := boundedText("常设栏目", raw.PersonaColumns, 80)
+	if err != nil {
+		return planSettings{}, err
+	}
+	signatures, err := boundedText("口头禅", raw.Signatures, 80)
+	if err != nil {
+		return planSettings{}, err
+	}
+	taboos, err := boundedText("不写的话题", raw.Taboos, 80)
+	if err != nil {
+		return planSettings{}, err
+	}
 	verticalKey := strings.TrimSpace(raw.VerticalKey)
 	if utf8.RuneCountInString(verticalKey) > 40 {
 		return planSettings{}, bad("垂类资料包不正确")
@@ -82,7 +103,8 @@ func (a *App) normalizePlanSettings(ctx context.Context, q db.Q, userID int64, t
 		Opening: clipText(raw.Opening, 200), Ending: clipText(raw.Ending, 200),
 		ColumnName: strings.TrimSpace(raw.ColumnName), ColumnStyle: strings.TrimSpace(raw.ColumnStyle),
 		Keywords: keywords, Audience: audience, BannedWords: banned, VerticalKey: verticalKey,
-		TopicMode: topic, ImageMode: image, AssetID: raw.AssetID, ProfileID: raw.ProfileID,
+		TopicMode: topic, ImageMode: image, Tone: tone, PersonaColumns: columns,
+		Signatures: signatures, Taboos: taboos, AssetID: raw.AssetID, ProfileID: raw.ProfileID,
 	}, nil
 }
 
@@ -188,27 +210,31 @@ func (a *App) getPlan(w http.ResponseWriter, r *http.Request, user *model.User) 
 }
 
 type planPatch struct {
-	WxAccountID  *int64  `json:"wx_account_id"`
-	Direction    *string `json:"direction"`
-	StyleKey     *string `json:"style_key"`
-	TemplateKey  *string `json:"template_key"`
-	WordTarget   *int    `json:"word_target"`
-	DailyCount   *int    `json:"daily_count"`
-	ScheduleType *string `json:"schedule_type"`
-	Weekdays     *[]int  `json:"weekdays"`
-	TimeWindow   *string `json:"time_window"`
-	Opening      *string `json:"opening"`
-	Ending       *string `json:"ending"`
-	ColumnName   *string `json:"column_name"`
-	ColumnStyle  *string `json:"column_style"`
-	AssetID      *int64  `json:"asset_id"`
-	ProfileID    *int64  `json:"profile_id"`
-	Keywords     *string `json:"keywords"`
-	Audience     *string `json:"audience"`
-	BannedWords  *string `json:"banned_words"`
-	VerticalKey  *string `json:"vertical_key"`
-	TopicMode    *string `json:"topic_mode"`
-	ImageMode    *string `json:"image_mode"`
+	WxAccountID    *int64  `json:"wx_account_id"`
+	Direction      *string `json:"direction"`
+	StyleKey       *string `json:"style_key"`
+	TemplateKey    *string `json:"template_key"`
+	WordTarget     *int    `json:"word_target"`
+	DailyCount     *int    `json:"daily_count"`
+	ScheduleType   *string `json:"schedule_type"`
+	Weekdays       *[]int  `json:"weekdays"`
+	TimeWindow     *string `json:"time_window"`
+	Opening        *string `json:"opening"`
+	Ending         *string `json:"ending"`
+	ColumnName     *string `json:"column_name"`
+	ColumnStyle    *string `json:"column_style"`
+	AssetID        *int64  `json:"asset_id"`
+	ProfileID      *int64  `json:"profile_id"`
+	Keywords       *string `json:"keywords"`
+	Audience       *string `json:"audience"`
+	BannedWords    *string `json:"banned_words"`
+	VerticalKey    *string `json:"vertical_key"`
+	TopicMode      *string `json:"topic_mode"`
+	ImageMode      *string `json:"image_mode"`
+	Tone           *string `json:"tone"`
+	PersonaColumns *string `json:"persona_columns"`
+	Signatures     *string `json:"signatures"`
+	Taboos         *string `json:"taboos"`
 }
 
 func pickString(next *string, current string) string {
@@ -319,6 +345,8 @@ func (a *App) updatePlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			Keywords: pickString(body.Keywords, extra.Keywords), Audience: pickString(body.Audience, extra.Audience),
 			BannedWords: pickString(body.BannedWords, extra.BannedWords), VerticalKey: pickString(body.VerticalKey, extra.VerticalKey),
 			TopicMode: topicIn, ImageMode: pickString(body.ImageMode, extra.ImageMode),
+			Tone: pickString(body.Tone, extra.Tone), PersonaColumns: pickString(body.PersonaColumns, extra.PersonaColumns),
+			Signatures: pickString(body.Signatures, extra.Signatures), Taboos: pickString(body.Taboos, extra.Taboos),
 			AssetID: pickInt(body.AssetID, extra.AssetID), ProfileID: pickInt(body.ProfileID, extra.ProfileID),
 		})
 		if err != nil {

@@ -11,9 +11,11 @@ import (
 )
 
 // Row 是一天里的一条统计。Key 为空或 follows 表示账号级，其它是微信 msgid。
+// Title 有值时才能把这篇阅读对到账号里的文章，没有标题就不猜选题。
 type Row struct {
 	Date    string
 	Key     string
+	Title   string
 	Reads   int
 	Shares  int
 	Favors  int
@@ -54,6 +56,9 @@ func Collect(ctx context.Context, client wechat.Client, day string) ([]Row, erro
 				continue
 			}
 			item.Reads += row.Reads
+			if item.Title == "" {
+				item.Title = row.Title
+			}
 		}
 	}
 	if shareErr == nil {
@@ -65,6 +70,9 @@ func Collect(ctx context.Context, client wechat.Client, day string) ([]Row, erro
 				continue
 			}
 			item.Shares += row.Shares
+			if item.Title == "" {
+				item.Title = row.Title
+			}
 		}
 	}
 	var out []Row
@@ -98,7 +106,7 @@ func parseArticle(data map[string]any, kind string) []Row {
 		if detail == nil {
 			continue
 		}
-		got := Row{Date: text(row["ref_date"]), Key: key}
+		got := Row{Date: text(row["ref_date"]), Key: key, Title: text(row["title"])}
 		if kind == "read" {
 			got.Reads = number(detail["read_user"])
 		} else {
@@ -201,4 +209,238 @@ func SuggestWeights(rows []TopicCount) (map[string]int, string) {
 		return nil, "样本不足或没有明显差别，不调整选题权重。"
 	}
 	return out, "按反馈调整：" + strings.Join(notes, "，") + "。可以在写作计划里撤销。"
+}
+
+// ArticleHit is one saved article that certified stats may match.
+type ArticleHit struct {
+	ID           int64
+	Title        string
+	Subtopic     string
+	DraftMediaID string
+}
+
+// Engagement is reads and shares joined to one article. Unmatched msgids are left out.
+type Engagement struct {
+	Subtopic string
+	Title    string
+	Reads    int
+	Shares   int
+}
+
+// MatchReads joins stored stats to articles by title, article id, or draft media id.
+// Account-level keys (manual, follows, empty) are not treated as an article.
+func MatchReads(articles []ArticleHit, rows []Row) []Engagement {
+	type agg struct {
+		reads  int
+		shares int
+		title  string
+	}
+	byKey := map[string]*agg{}
+	for _, row := range rows {
+		key := strings.TrimSpace(row.Key)
+		if key == "" || key == "empty" || key == "follows" || key == "manual" {
+			continue
+		}
+		item := byKey[key]
+		if item == nil {
+			item = &agg{title: strings.TrimSpace(row.Title)}
+			byKey[key] = item
+		}
+		item.reads += row.Reads
+		item.shares += row.Shares
+		if item.title == "" {
+			item.title = strings.TrimSpace(row.Title)
+		}
+	}
+	var out []Engagement
+	used := map[string]bool{}
+	for _, article := range articles {
+		title := strings.TrimSpace(article.Title)
+		if title == "" || title == "正在生成" || strings.TrimSpace(article.Subtopic) == "" {
+			continue
+		}
+		for key, item := range byKey {
+			if used[key] || !sameArticle(article, key, item.title) {
+				continue
+			}
+			used[key] = true
+			out = append(out, Engagement{Subtopic: article.Subtopic, Title: title, Reads: item.reads, Shares: item.shares})
+			break
+		}
+	}
+	return out
+}
+
+func sameArticle(article ArticleHit, key, statTitle string) bool {
+	title := strings.TrimSpace(article.Title)
+	if statTitle != "" && statTitle == title {
+		return true
+	}
+	if key == title {
+		return true
+	}
+	if key == fmt.Sprint(article.ID) {
+		return true
+	}
+	return article.DraftMediaID != "" && key == article.DraftMediaID
+}
+
+// MergeTune keeps feedback weights and fills gaps from certified reads and shares.
+// Fewer than three matched articles changes nothing. The returned shape is question or number.
+func MergeTune(weights map[string]int, note string, matched []Engagement) (map[string]int, string, string) {
+	statWeights, shape, statNote := fromReads(matched)
+	if len(statWeights) == 0 && shape == "" {
+		return weights, note, ""
+	}
+	if weights == nil {
+		weights = map[string]int{}
+	}
+	applied := false
+	for sub, weight := range statWeights {
+		if _, exists := weights[sub]; exists {
+			continue
+		}
+		weights[sub] = weight
+		applied = true
+	}
+	if applied || shape != "" {
+		note = strings.TrimRight(note, "。") + "。" + statNote
+	}
+	if !applied && len(statWeights) > 0 && shape == "" && len(weights) == 0 {
+		return nil, note, ""
+	}
+	return weights, note, shape
+}
+
+func fromReads(matched []Engagement) (map[string]int, string, string) {
+	if len(matched) < 3 {
+		return nil, "", ""
+	}
+	type bucket struct {
+		n     int
+		score int
+	}
+	bySub := map[string]*bucket{}
+	for _, item := range matched {
+		b := bySub[item.Subtopic]
+		if b == nil {
+			b = &bucket{}
+			bySub[item.Subtopic] = b
+		}
+		b.n++
+		b.score += item.Reads + 3*item.Shares
+	}
+	type avg struct {
+		sub string
+		n   int
+		avg int
+	}
+	var qualified []avg
+	for sub, b := range bySub {
+		if b.n < 3 {
+			continue
+		}
+		qualified = append(qualified, avg{sub: sub, n: b.n, avg: b.score / b.n})
+	}
+	out := map[string]int{}
+	var notes []string
+	if len(qualified) >= 2 {
+		low, high := qualified[0], qualified[0]
+		for _, item := range qualified[1:] {
+			if item.avg < low.avg {
+				low = item
+			}
+			if item.avg > high.avg {
+				high = item
+			}
+		}
+		if high.sub != low.sub && high.avg >= 3 && high.avg >= low.avg*2 && high.avg > low.avg {
+			out[high.sub] = 2
+			notes = append(notes, high.sub+"阅读更高")
+			if low.avg == 0 {
+				out[low.sub] = 0
+				notes = append(notes, low.sub+"阅读偏低")
+			}
+		}
+	}
+	shape, shapeNote := titleShape(matched)
+	if shapeNote != "" {
+		notes = append(notes, shapeNote)
+	}
+	if len(out) == 0 && shape == "" {
+		return nil, "", ""
+	}
+	return out, shape, "按阅读和分享调整：" + strings.Join(notes, "，") + "。"
+}
+
+func titleShape(matched []Engagement) (string, string) {
+	type bucket struct {
+		n     int
+		reads int
+	}
+	groups := map[string]*bucket{}
+	for _, item := range matched {
+		if item.Reads+item.Shares <= 0 {
+			continue
+		}
+		kind := "plain"
+		if strings.ContainsAny(item.Title, "？?") || strings.Contains(item.Title, "为什么") || strings.Contains(item.Title, "怎么") || strings.Contains(item.Title, "吗") {
+			kind = "question"
+		} else if hasDigit(item.Title) {
+			kind = "number"
+		}
+		b := groups[kind]
+		if b == nil {
+			b = &bucket{}
+			groups[kind] = b
+		}
+		b.n++
+		b.reads += item.Reads
+	}
+	bestKind := ""
+	bestAvg := 0
+	restN, restReads := 0, 0
+	for kind, b := range groups {
+		if kind == "plain" || b.n < 3 {
+			restN += b.n
+			restReads += b.reads
+			continue
+		}
+		avg := b.reads / b.n
+		if avg > bestAvg {
+			bestAvg = avg
+			bestKind = kind
+		}
+	}
+	if bestKind == "" {
+		return "", ""
+	}
+	for kind, b := range groups {
+		if kind == bestKind || kind == "plain" || b.n < 3 {
+			continue
+		}
+		restN += b.n
+		restReads += b.reads
+	}
+	if restN < 1 {
+		return "", ""
+	}
+	restAvg := restReads / restN
+	if bestAvg < 2 || bestAvg < restAvg*2 || bestAvg <= restAvg {
+		return "", ""
+	}
+	label := "问句标题"
+	if bestKind == "number" {
+		label = "带数字的标题"
+	}
+	return bestKind, label + "阅读更好"
+}
+
+func hasDigit(text string) bool {
+	for _, r := range text {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
 }

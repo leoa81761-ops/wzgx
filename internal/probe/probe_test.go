@@ -90,7 +90,8 @@ func TestProbeAgainstFakeServers(t *testing.T) {
 		t.Fatalf("draft articles %#v", draftArticles)
 	}
 	first := articles[0].(map[string]any)
-	if first["thumb_media_id"] != "thumb-real" || first["title"] != "连通测试标题" {
+	title, _ := first["title"].(string)
+	if first["thumb_media_id"] != "thumb-real" || title == "" || strings.Contains(title, "震惊") {
 		t.Fatal(first)
 	}
 	content, _ := first["content"].(string)

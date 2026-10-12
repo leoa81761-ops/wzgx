@@ -44,6 +44,7 @@ func TestPlansStayIndependentPerAccount(t *testing.T) {
 		"keywords": "验收,机房", "audience": "物业工程负责人", "banned_words": "1000V",
 		"vertical_key": "elv", "topic_mode": "rotate", "image_mode": "none",
 		"opening": "先说结论", "ending": "转给同事",
+		"tone": "务实，少形容词", "persona_columns": "现场笔记", "signatures": "先看现场，再谈方案", "taboos": "保证中标",
 	})
 	if elv.StatusCode != 200 {
 		t.Fatal(elv.StatusCode, elv.Body)
@@ -54,13 +55,14 @@ func TestPlansStayIndependentPerAccount(t *testing.T) {
 		"keywords": "家常,收纳", "audience": "带孙子的家庭", "banned_words": "偏方",
 		"vertical_key": "family", "topic_mode": "hot", "image_mode": "cover",
 		"opening": "从晚饭说起", "ending": "明天继续",
+		"tone": "像家里人说话", "persona_columns": "带娃记", "signatures": "先把今天过好", "taboos": "恐吓式育儿",
 	})
 	if family.StatusCode != 200 {
 		t.Fatal(family.StatusCode, family.Body)
 	}
 	elvID := int64(elv.JSON["id"].(float64))
 	familyID := int64(family.JSON["id"].(float64))
-	if elv.JSON["account_name"] != "弱电陈工" || elv.JSON["keywords"] != "验收,机房" || elv.JSON["vertical_key"] != "elv" || elv.JSON["topic_mode"] != "rotate" || elv.JSON["image_mode"] != "none" {
+	if elv.JSON["account_name"] != "弱电陈工" || elv.JSON["keywords"] != "验收,机房" || elv.JSON["vertical_key"] != "elv" || elv.JSON["topic_mode"] != "rotate" || elv.JSON["image_mode"] != "none" || elv.JSON["tone"] != "务实，少形容词" || elv.JSON["suggested_tone"] == "" {
 		t.Fatal(elv.JSON)
 	}
 	if family.JSON["audience"] != "带孙子的家庭" || family.JSON["opening"] != "从晚饭说起" || family.JSON["wx_account_id"] == elv.JSON["wx_account_id"] {
@@ -77,11 +79,11 @@ func TestPlansStayIndependentPerAccount(t *testing.T) {
 	updated := putJSON(t, ts.URL+"/api/plans/"+strconv.FormatInt(elvID, 10), token, map[string]any{
 		"keywords": "验收,线槽", "audience": "项目经理", "style_key": "warm", "word_target": 800,
 	})
-	if updated.StatusCode != 200 || updated.JSON["keywords"] != "验收,线槽" || updated.JSON["audience"] != "项目经理" || updated.JSON["opening"] != "先说结论" || updated.JSON["vertical_key"] != "elv" {
+	if updated.StatusCode != 200 || updated.JSON["keywords"] != "验收,线槽" || updated.JSON["audience"] != "项目经理" || updated.JSON["opening"] != "先说结论" || updated.JSON["vertical_key"] != "elv" || updated.JSON["tone"] != "务实，少形容词" || updated.JSON["taboos"] != "保证中标" {
 		t.Fatal(updated.StatusCode, updated.JSON)
 	}
 	kept := getJSON(t, ts.URL+"/api/plans/"+strconv.FormatInt(familyID, 10), token)
-	if kept.StatusCode != 200 || kept.JSON["keywords"] != "家常,收纳" || kept.JSON["audience"] != "带孙子的家庭" || kept.JSON["style_key"] != "warm" || kept.JSON["opening"] != "从晚饭说起" {
+	if kept.StatusCode != 200 || kept.JSON["keywords"] != "家常,收纳" || kept.JSON["audience"] != "带孙子的家庭" || kept.JSON["style_key"] != "warm" || kept.JSON["opening"] != "从晚饭说起" || kept.JSON["tone"] != "像家里人说话" {
 		t.Fatal(kept.StatusCode, kept.JSON)
 	}
 	listed := getJSON(t, ts.URL+"/api/plans", token)

@@ -105,6 +105,72 @@ func (s *Store) UpdateArticle(ctx context.Context, q db.Q, a *model.Article) err
 	return err
 }
 
+func (s *Store) ListArticleBriefs(ctx context.Context, accountID int64) ([]model.Article, error) {
+	rows, err := s.DB.Query(ctx, `SELECT id, title, subtopic, draft_media_id FROM article WHERE wx_account_id = ? AND title != '' ORDER BY id DESC`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Article
+	for rows.Next() {
+		var row model.Article
+		if err := rows.Scan(&row.ID, &row.Title, &row.Subtopic, &row.DraftMediaID); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListSiblingCoverage(ctx context.Context, q db.Q, userID, exceptPlanID int64) ([]model.TopicCoverage, error) {
+	if q == nil {
+		q = s.DB
+	}
+	rows, err := q.Query(ctx, `SELECT c.id, c.plan_id, c.subtopic, c.column_type, c.angle, c.topic_tag, c.created_at
+		FROM topic_coverage c JOIN writing_plan p ON p.id = c.plan_id
+		WHERE p.user_id = ? AND c.plan_id != ? ORDER BY c.id DESC LIMIT 40`, userID, exceptPlanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.TopicCoverage
+	for rows.Next() {
+		var c model.TopicCoverage
+		var created string
+		if err := rows.Scan(&c.ID, &c.PlanID, &c.Subtopic, &c.ColumnType, &c.Angle, &c.TopicTag, &created); err != nil {
+			return nil, err
+		}
+		c.CreatedAt = mustTime(created)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SiblingTitles(ctx context.Context, q db.Q, userID, exceptPlanID int64, limit int) ([]string, error) {
+	if q == nil {
+		q = s.DB
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	rows, err := q.Query(ctx, `SELECT a.title FROM article a JOIN writing_plan p ON p.id = a.plan_id
+		WHERE p.user_id = ? AND a.plan_id != ? AND a.title != '' AND a.title != '正在生成'
+		ORDER BY a.id DESC LIMIT ?`, userID, exceptPlanID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var titles []string
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			return nil, err
+		}
+		titles = append(titles, title)
+	}
+	return titles, rows.Err()
+}
+
 func (s *Store) ListCoverage(ctx context.Context, q db.Q, planID int64) ([]model.TopicCoverage, error) {
 	if q == nil {
 		q = s.DB
