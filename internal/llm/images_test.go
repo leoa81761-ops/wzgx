@@ -156,8 +156,12 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 	if strings.Contains(expandSystem, "85% 到 130%") || !strings.Contains(expandSystem, "105%") || !strings.Contains(expandSystem, "110%") {
 		t.Fatal(expandSystem)
 	}
-	draft := StageMessages("正文", map[string]any{"word_target": 1500})
-	if !strings.Contains(draft[0]["content"], "word_target") || !strings.Contains(draft[0]["content"], "JSON Schema") {
+	draft := StageMessages("正文", map[string]any{"word_target": 1500, "avoid_motifs": []any{"温茶转圈"}})
+	if !strings.Contains(draft[0]["content"], "word_target") || !strings.Contains(draft[0]["content"], "JSON Schema") || !strings.Contains(draft[0]["content"], "机构名") || !strings.Contains(draft[0]["content"], "温茶转圈") {
 		t.Fatal(draft[0]["content"])
+	}
+	structure := StageMessages("栏目结构", map[string]any{"column_structure": "news"})
+	if !strings.Contains(structure[0]["content"], "不要在句首机械地加") || strings.Contains(structure[0]["content"], "答：按上面的问题") {
+		t.Fatal(structure[0]["content"])
 	}
 }

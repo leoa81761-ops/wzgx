@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
 var (
@@ -21,6 +24,9 @@ var (
 	baiduBlock = regexp.MustCompile(`(?s)mu="(https?://[^"]+)"(.{0,700})`)
 	baiduTitle = regexp.MustCompile(`(?s)<a[^>]*>(.*?)</a>`)
 	htmlTag    = regexp.MustCompile(`(?s)<[^>]+>`)
+	pageTitle  = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	metaDescA  = regexp.MustCompile(`(?is)<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]*content=["']([^"']*)["']`)
+	metaDescB  = regexp.MustCompile(`(?is)<meta[^>]+content=["']([^"']*)["'][^>]*(?:name|property)=["'](?:description|og:description)["']`)
 )
 
 // SearchTarget is one backup search endpoint. An API key selects the JSON provider.
@@ -67,6 +73,59 @@ func SearchWeb(ctx context.Context, client *http.Client, endpoint, query string)
 		return nil, &Error{Message: "检索页面返回 " + resp.Status}
 	}
 	return ParseSearchBody(body), nil
+}
+
+// FetchPageMeta reads a page title and meta description. The caller caps how many pages are fetched.
+// The provided client only decides whether a fetch is attempted. The request itself uses PublicClient,
+// which refuses private and loopback addresses.
+func FetchPageMeta(ctx context.Context, client *http.Client, rawURL string) (string, string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" || client == nil {
+		return "", ""
+	}
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return "", ""
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; gonghao-research/1.0)")
+	resp, err := content.PublicClient().Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 || !htmlContent(resp.Header.Get("Content-Type")) {
+		return "", ""
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return "", ""
+	}
+	title, desc := pageMeta(string(body))
+	return clipRunes(title, 80), clipRunes(desc, 180)
+}
+
+func htmlContent(header string) bool {
+	media, _, err := mime.ParseMediaType(header)
+	return err == nil && media == "text/html"
+}
+
+func pageMeta(html string) (string, string) {
+	title := ""
+	if match := pageTitle.FindStringSubmatch(html); len(match) > 1 {
+		title = strings.TrimSpace(htmlTag.ReplaceAllString(match[1], ""))
+	}
+	desc := ""
+	if match := metaDescA.FindStringSubmatch(html); len(match) > 1 {
+		desc = match[1]
+	} else if match := metaDescB.FindStringSubmatch(html); len(match) > 1 {
+		desc = match[1]
+	}
+	return title, strings.TrimSpace(htmlTag.ReplaceAllString(desc, ""))
 }
 
 // SearchChain tries each endpoint until one returns a result. An API key uses the JSON provider.

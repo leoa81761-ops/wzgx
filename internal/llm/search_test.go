@@ -74,6 +74,42 @@ func TestSearchChainFallsBackFromBing(t *testing.T) {
 	}
 }
 
+func TestPageMetaReadsHTMLTitleAndDescription(t *testing.T) {
+	title, desc := pageMeta(`<html><head><title>布线施工记录</title><meta name="description" content="弱电验收要看的公开说明"></head><body>page</body></html>`)
+	if title != "布线施工记录" || desc != "弱电验收要看的公开说明" {
+		t.Fatal(title, desc)
+	}
+	title, desc = pageMeta(`<html><head><meta property="og:description" content="综合布线的条文说明"><title></title></head></html>`)
+	if title != "" || desc != "综合布线的条文说明" {
+		t.Fatal(title, desc)
+	}
+	title, desc = pageMeta(`<html><head><title>奶奶养生茶</title><meta name="description" content="周末喝茶转圈"></head></html>`)
+	if title != "奶奶养生茶" || desc != "周末喝茶转圈" {
+		t.Fatal(title, desc)
+	}
+	if !htmlContent("text/html; charset=utf-8") || htmlContent("application/json") || htmlContent("text/plain") || htmlContent("application/xhtml+xml") || htmlContent("") {
+		t.Fatal("content type")
+	}
+}
+
+func TestFetchPageMetaRefusesLoopback(t *testing.T) {
+	var hits int
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><head><title>布线施工记录</title></head></html>`))
+	}))
+	defer page.Close()
+	title, desc := FetchPageMeta(t.Context(), page.Client(), page.URL+"/std")
+	if title != "" || desc != "" || hits != 0 {
+		t.Fatalf("title %q desc %q hits %d", title, desc, hits)
+	}
+	title, desc = FetchPageMeta(t.Context(), http.DefaultClient, "http://127.0.0.1/secret")
+	if title != "" || desc != "" {
+		t.Fatal(title, desc)
+	}
+}
+
 func TestSearchQueryParamFollowsTheEngine(t *testing.T) {
 	sogou := url.Values{}
 	setSearchQuery("www.sogou.com", sogou, "验收")

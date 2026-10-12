@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
@@ -315,7 +316,7 @@ func splitColumns(text string) []string {
 	return out
 }
 
-// Diverge moves off a subtopic or angle that already appears in recent account titles.
+// Diverge moves off a subtopic or angle already used in recent titles, topics, or hook motifs.
 func Diverge(choice Choice, subs, angles, titles []string) Choice {
 	if next := nextUnused(subs, choice.Subtopic, titles); next != "" {
 		choice.Subtopic = next
@@ -325,6 +326,40 @@ func Diverge(choice Choice, subs, angles, titles []string) Choice {
 	}
 	choice.TopicTag = choice.Subtopic + "|" + choice.Column + "|" + choice.Angle
 	return choice
+}
+
+// RepeatedMotifs returns distinctive 4-rune images already used in recent titles, such as 温茶转圈.
+func RepeatedMotifs(texts []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(word string) {
+		if utf8.RuneCountInString(word) != 4 || seen[word] || motifStop(word) || len(out) >= 12 {
+			return
+		}
+		seen[word] = true
+		out = append(out, word)
+	}
+	for _, text := range texts {
+		var run []rune
+		flush := func() {
+			if len(run) >= 4 {
+				add(string(run[:4]))
+				if len(run) > 4 {
+					add(string(run[len(run)-4:]))
+				}
+			}
+			run = nil
+		}
+		for _, r := range text {
+			if !unicode.Is(unicode.Han, r) || motifStop(string(r)) {
+				flush()
+				continue
+			}
+			run = append(run, r)
+		}
+		flush()
+	}
+	return out
 }
 
 // AngleOptions lists the current angle first, then the catalog angles in a stable order.
@@ -379,15 +414,58 @@ func usedInTitles(text string, titles []string) bool {
 	if utf8.RuneCountInString(text) < 2 {
 		return false
 	}
+	keys := contentKeys(text)
 	for _, title := range titles {
 		title = strings.TrimSpace(title)
 		if title == "" {
 			continue
 		}
-		if strings.Contains(title, text) {
+		if strings.Contains(title, text) || strings.Contains(text, title) && utf8.RuneCountInString(title) >= 4 {
 			return true
 		}
 		if utf8.RuneCountInString(text) >= 4 && shareRunes(text, title, 4) {
+			return true
+		}
+		if len(keys) >= 2 {
+			hit := 0
+			for _, key := range keys {
+				if strings.Contains(title, key) {
+					hit++
+				}
+			}
+			if hit >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func contentKeys(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(text, func(r rune) bool {
+		switch r {
+		case '，', '。', '；', '、', '！', '？', ',', '.', ';', ' ', '\n', '的', '了', '和', '与', '把', '用', '在', '是', '将', '就', '都', '而', '要', '给', '让', '从', '对', '及', '或', '：', ':':
+			return true
+		default:
+			return false
+		}
+	}) {
+		part = strings.TrimSpace(part)
+		if utf8.RuneCountInString(part) < 2 || seen[part] || motifStop(part) {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
+}
+
+func motifStop(text string) bool {
+	for _, r := range text {
+		switch r {
+		case '的', '了', '在', '是', '和', '与', '及', '把', '用', '就', '都', '而', '要', '对', '从', '给', '让', '这', '那', '一', '个', '不', '也', '又', '很', '最', '会', '能', '可', '被', '向', '中', '上', '下', '来', '去', '周', '月', '日', '年', '早', '晚', '今', '昨', '你', '我', '他', '她', '它', '，', '。', ' ':
 			return true
 		}
 	}

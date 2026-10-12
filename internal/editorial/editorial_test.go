@@ -7,6 +7,40 @@ import (
 	"testing"
 )
 
+func TestUnsourcedInstitutionIsRemoved(t *testing.T) {
+	draft := map[string]any{
+		"title":   "验收",
+		"summary": "住建部发了通知。",
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"住建部要求先看 GB 50311。现场再核对编号。",
+			"《综合布线设计规范》写了这一步。",
+			"对照来源里的说明即可。",
+		}}},
+		"sources": []any{map[string]any{"title": "综合布线验收说明", "url": "https://www.gov.cn/a", "snippet": "公开说明"}},
+	}
+	out := StripUnsourcedNames(draft)
+	text := out["summary"].(string)
+	section := out["sections"].([]any)[0].(map[string]any)
+	var body string
+	for _, item := range section["paragraphs"].([]any) {
+		body += item.(string)
+	}
+	if strings.Contains(text, "住建部") || strings.Contains(body, "住建部") || strings.Contains(body, "GB 50311") || strings.Contains(body, "综合布线设计规范") {
+		t.Fatal(text, body)
+	}
+	if !strings.Contains(body, "对照来源里的说明即可") {
+		t.Fatal(body)
+	}
+	kept := StripUnsourcedNames(map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"住建部的公开说明可以核对。[1]"}}},
+		"sources":  []any{map[string]any{"title": "住建部公开说明", "name": "住建部", "snippet": "GB 50311"}},
+	})
+	keptBody := kept["sections"].([]any)[0].(map[string]any)["paragraphs"].([]any)[0].(string)
+	if !strings.Contains(keptBody, "住建部") {
+		t.Fatal(keptBody)
+	}
+}
+
 func TestRewriteReplacesTheOpening(t *testing.T) {
 	first := "验收时核对线槽，是否盖好。"
 	second := "拍完留在当天的记录里[1]。"

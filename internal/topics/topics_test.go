@@ -49,6 +49,19 @@ func TestDivergeSkipsATitleAlreadyUsed(t *testing.T) {
 	}
 }
 
+func TestDivergeSkipsRepeatedAnglesAndMotifs(t *testing.T) {
+	titles := []string{"星形和环形哪种损耗更低", "损耗核算再写一遍", "爷爷奶奶捧着温茶转圈"}
+	motifs := RepeatedMotifs(titles)
+	if !strings.Contains(strings.Join(motifs, ","), "温茶转圈") {
+		t.Fatal(motifs)
+	}
+	choice := Choice{Subtopic: "星形与环形", Column: "知识FAQ", Angle: "损耗核算"}
+	got := Diverge(choice, []string{"星形与环形", "验收记录", "机房接地"}, AngleOptions(choice.Angle), append(append([]string{}, titles...), motifs...))
+	if strings.Contains(got.Subtopic, "星形") || strings.Contains(got.Subtopic, "环形") || strings.Contains(got.Angle, "损耗") || strings.Contains(got.Angle, "温茶") {
+		t.Fatal(got)
+	}
+}
+
 func TestVetoSkipsTagAndCalendarAdvances(t *testing.T) {
 	now := time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC)
 	first := Pick("职场成长", "free", nil, now)

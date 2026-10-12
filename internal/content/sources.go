@@ -2,9 +2,12 @@ package content
 
 import (
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+var standardNumber = regexp.MustCompile(`(?i)GB\s*/?\s*T?\s*\d{2,}`)
 
 // DefaultBlockedDomains 是没单独配置时屏蔽的聚合站、转载站和低质量镜像。管理员保存过名单后以保存的为准。
 var DefaultBlockedDomains = []string{
@@ -100,6 +103,65 @@ func (p SourcePolicy) Filter(sources []map[string]any) []map[string]any {
 // Relaxed 去掉允许名单，屏蔽名单仍然生效。允许名单把可用网址全部丢掉时用这一档再滤一次。
 func (p SourcePolicy) Relaxed() SourcePolicy {
 	return SourcePolicy{Block: append([]string{}, p.Block...)}
+}
+
+// ForTopic 在选题里出现标准号时，放开标准正文站。其他选题仍按屏蔽名单处理。
+func (p SourcePolicy) ForTopic(topic string) SourcePolicy {
+	if !StandardNumberTopic(topic) {
+		return p
+	}
+	block := make([]string, 0, len(p.Block))
+	for _, domain := range p.Block {
+		if StandardTextHost(domain) {
+			continue
+		}
+		block = append(block, domain)
+	}
+	return SourcePolicy{Block: block, Allow: append([]string{}, p.Allow...)}
+}
+
+// StandardNumberTopic reports a topic that names a standard, such as GB 50311 or GB/T 50311.
+func StandardNumberTopic(topic string) bool {
+	return standardNumber.MatchString(topic)
+}
+
+// StandardTextHost is a standards-text site that stays blocked until the topic names a standard number.
+func StandardTextHost(domain string) bool {
+	domain = normalizeDomain(domain)
+	if domain == "" {
+		return false
+	}
+	for _, root := range []string{"bzfyw.com", "biaozhun.org", "co188.com"} {
+		if domain == root || strings.HasSuffix(domain, "."+root) || strings.Contains(domain, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// TechnicalTopic is an engineering or standards subject, not a household one.
+func TechnicalTopic(topic string) bool {
+	for _, word := range []string{"弱电", "智能化", "工程", "布线", "机房", "监控", "门禁", "标准", "GB", "验收"} {
+		if strings.Contains(topic, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// OfficialHost is gov.cn or a standards site. A technical topic can keep these even when the title is thin.
+func OfficialHost(raw string) bool {
+	host := sourceHost(raw)
+	if host == "" {
+		return false
+	}
+	if host == "gov.cn" || strings.HasSuffix(host, ".gov.cn") {
+		return true
+	}
+	if standardsHost(host) || StandardTextHost(host) {
+		return true
+	}
+	return false
 }
 
 // Split 分开保留和丢弃的来源。丢弃项带 url 和 reason，供 model_trace 记录。

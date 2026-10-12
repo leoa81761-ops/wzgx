@@ -274,6 +274,10 @@ func (a *App) planCalendar(w http.ResponseWriter, r *http.Request, user *model.U
 		if err != nil {
 			return err
 		}
+		covered, err := a.Store.AccountTopicLines(r.Context(), nil, plan.WxAccountID, 20)
+		if err != nil {
+			return err
+		}
 		for i := range slots {
 			seen := append([]string{}, uses...)
 			for _, row := range hist[len(history):] {
@@ -281,7 +285,7 @@ func (a *App) planCalendar(w http.ResponseWriter, r *http.Request, user *model.U
 					seen = append(seen, row.Column)
 				}
 			}
-			choice, _, ok := pipeline.ApplyColumnChoice(slots[i].Choice, slots[i].At, active, extra.ColumnRotation, days, plan.Direction, extra.Keywords, hist, seen, titles)
+			choice, _, ok := pipeline.ApplyColumnChoice(slots[i].Choice, slots[i].At, active, extra.ColumnRotation, days, plan.Direction, extra.Keywords, hist, seen, titles, covered)
 			if ok {
 				slots[i].Choice = choice
 			}

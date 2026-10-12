@@ -41,22 +41,41 @@ func TestDiffStyleFeaturesOmitText(t *testing.T) {
 }
 
 func TestDropUnreachable(t *testing.T) {
-	okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var hits int
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
 		w.WriteHeader(200)
 	}))
-	defer okSrv.Close()
-	missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(404)
-	}))
-	defer missing.Close()
+	defer page.Close()
 	draft := map[string]any{"sources": []any{
-		map[string]any{"title": "在", "url": okSrv.URL},
-		map[string]any{"title": "丢", "url": missing.URL},
+		map[string]any{"title": "在", "url": page.URL},
+		map[string]any{"title": "回环", "url": "http://127.0.0.1/secret"},
 	}}
-	DropUnreachable(context.Background(), okSrv.Client(), draft)
+	DropUnreachable(context.Background(), page.Client(), draft)
+	if hits != 0 {
+		t.Fatal(hits)
+	}
 	left, _ := draft["sources"].([]any)
-	if len(left) != 1 {
+	if len(left) != 2 {
 		t.Fatal(len(left))
+	}
+	for _, raw := range left {
+		source, _ := raw.(map[string]any)
+		if source["accessible"] != "未确认" {
+			t.Fatal(source)
+		}
+	}
+	if Reachable(context.Background(), page.Client(), "http://127.0.0.1/secret") != "未确认" {
+		t.Fatal("loopback")
+	}
+	if hits != 0 {
+		t.Fatal(hits)
+	}
+}
+
+func TestReachLabel(t *testing.T) {
+	if reachLabel(200) != "可访问" || reachLabel(404) != "打不开" || reachLabel(410) != "打不开" || reachLabel(500) != "未确认" {
+		t.Fatal(reachLabel(200), reachLabel(404), reachLabel(500))
 	}
 }
 

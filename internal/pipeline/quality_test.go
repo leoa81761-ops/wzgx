@@ -263,9 +263,17 @@ func TestActiveColumnReplacesPackSubtopics(t *testing.T) {
 	at := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
 	choice, col, ok := ApplyColumnChoice(topics.Choice{Subtopic: "亲子阅读", Column: "避坑辟谣", Angle: "一个说法"}, at, []columns.Column{{
 		ID: 1, Name: "工程圈快报", Status: "active", Positioning: "行业消息",
-	}}, "weight", nil, "弱电智能化", "验收", nil, nil, nil)
+	}}, "weight", nil, "弱电智能化", "验收", nil, nil, nil, nil)
 	if !ok || choice.Subtopic == "亲子阅读" || strings.Contains(choice.TopicTag, "亲子阅读") || strings.Contains(choice.TopicTag, "综合布线") || choice.Column != "工程圈快报" || col.Name != "工程圈快报" {
 		t.Fatal(choice, col, ok)
+	}
+	repeated, _, ok := ApplyColumnChoice(topics.Choice{Subtopic: "星形与环形", Angle: "损耗核算"}, at, []columns.Column{{
+		ID: 2, Name: "知识FAQ", Status: "active", Positioning: "星形与环形", Structure: "qa",
+	}, {
+		ID: 3, Name: "方案拆解", Status: "active", Structure: "steps",
+	}}, "", nil, "弱电智能化", "验收", []topics.Coverage{{Subtopic: "星形与环形", Angle: "损耗核算"}}, nil, []string{"星形和环形哪种损耗更低", "爷爷奶奶捧着温茶转圈"}, []string{"损耗核算"})
+	if !ok || strings.Contains(repeated.Subtopic, "星形") || strings.Contains(repeated.Angle, "损耗") {
+		t.Fatal(repeated, ok)
 	}
 }
 

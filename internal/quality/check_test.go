@@ -74,26 +74,19 @@ func TestColumnStructure(t *testing.T) {
 	for _, item := range section["paragraphs"].([]any) {
 		paras = append(paras, item.(string))
 	}
-	if !StructureOK("news", paras) {
+	if paras[0] != "综合布线验收有一条说明。" || paras[1] != "另一条消息没有日期。" || StructureOK("news", paras) {
 		t.Fatal(paras)
 	}
 	stepDraft := RepairDraft("steps", map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"先看现场。", "再核对编号。"}}}})
 	stepSection := stepDraft["sections"].([]any)[0].(map[string]any)
-	var stepParas []string
-	for _, item := range stepSection["paragraphs"].([]any) {
-		stepParas = append(stepParas, item.(string))
-	}
-	if !StructureOK("steps", stepParas) {
-		t.Fatal(stepParas)
+	if stepSection["paragraphs"].([]any)[0] != "先看现场。" {
+		t.Fatal(stepSection)
 	}
 	qaDraft := RepairDraft("qa", map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"验收要看什么", "对照图纸"}}}})
 	qaSection := qaDraft["sections"].([]any)[0].(map[string]any)
-	var qaParas []string
-	for _, item := range qaSection["paragraphs"].([]any) {
-		qaParas = append(qaParas, item.(string))
-	}
-	if !StructureOK("qa", qaParas) {
-		t.Fatal(qaParas)
+	joined := qaSection["paragraphs"].([]any)[0].(string) + qaSection["paragraphs"].([]any)[1].(string)
+	if strings.Contains(joined, "？") || strings.Contains(joined, "答") {
+		t.Fatal(joined)
 	}
 	repeat := Fixture{Title: "快报", Paragraphs: []string{"近日，第一条。[1]", "近日，第二条。[1]"}, Sources: 1, WordTarget: 10, Structure: "news"}
 	if !has(Check(repeat), "structure") {
@@ -103,11 +96,8 @@ func TestColumnStructure(t *testing.T) {
 		"sources":  []any{map[string]any{"url": "https://www.gov.cn/a"}},
 		"sections": []any{map[string]any{"paragraphs": []any{"近日，第一条。", "近日，第二条。"}}},
 	})
-	var varied []string
-	for _, item := range repaired["sections"].([]any)[0].(map[string]any)["paragraphs"].([]any) {
-		varied = append(varied, item.(string))
-	}
-	if !StructureOK("news", varied) {
+	varied := repaired["sections"].([]any)[0].(map[string]any)["paragraphs"].([]any)
+	if varied[0] != "近日，第一条。" || varied[1] != "近日，第二条。" || strings.Contains(varied[0].(string), "[1]") {
 		t.Fatal(varied)
 	}
 	stray := Fixture{Title: "问答", Paragraphs: []string{"验收要看什么？", "答：这样做对吗？"}, Sources: 1, WordTarget: 10, Structure: "qa"}

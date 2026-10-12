@@ -166,6 +166,15 @@ func TestSourceQuality(t *testing.T) {
 			t.Fatalf("default blocklist should drop %s", domain)
 		}
 	}
+	opened := policy.ForTopic("综合布线 GB 50311")
+	for _, domain := range []string{"bzfyw.com", "www.biaozhun.org", "bbs.co188.com", "www.co188.com"} {
+		if !opened.AllowsURL("https://" + domain + "/a") {
+			t.Fatalf("standard topic should allow %s", domain)
+		}
+	}
+	if opened.AllowsURL("https://bzko.com/a") || policy.ForTopic("奶奶养生茶").AllowsURL("https://bzfyw.com/a") {
+		t.Fatal("unblock is only for standard-number topics")
+	}
 	cleared := PolicyFromParams(map[string]any{"block": []any{}, "allow": []any{}}, true)
 	if !cleared.AllowsURL("https://bzko.com/a") {
 		t.Fatal("saved empty blocklist stays editable")
