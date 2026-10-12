@@ -127,6 +127,7 @@ type Client interface {
 	DraftCount(ctx context.Context) (int, error)
 	DraftSwitch(ctx context.Context) (open bool, supported bool, err error)
 	Datacube(ctx context.Context, path, begin, end string) (map[string]any, error)
+	ListDraftTitles(ctx context.Context, limit int) ([]string, error)
 	ProbePublish(ctx context.Context) (bool, string, error)
 	SubmitPublish(ctx context.Context, mediaID string) (string, error)
 	GetPublish(ctx context.Context, publishID string) (PublishState, error)
@@ -299,6 +300,29 @@ func (c *MockClient) Datacube(_ context.Context, path, _, _ string) (map[string]
 	return map[string]any{"list": []any{}}, nil
 }
 
+func (c *MockClient) ListDraftTitles(_ context.Context, limit int) ([]string, error) {
+	if _, err := c.GetToken(context.Background()); err != nil {
+		return nil, err
+	}
+	c.box.mu.Lock()
+	defer c.box.mu.Unlock()
+	if limit < 1 {
+		limit = 20
+	}
+	out := make([]string, 0, len(c.box.drafts))
+	for _, draft := range c.box.drafts {
+		title, _ := draft["title"].(string)
+		if title == "" {
+			continue
+		}
+		out = append(out, title)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (c *MockClient) ProbePublish(context.Context) (bool, string, error) {
 	return true, "模拟环境不调用发布接口，是否可发布以绑定的企业已认证信息为准", nil
 }
@@ -372,13 +396,17 @@ func (c *TokenCache) Delete(key string) {
 }
 
 type LiveClient struct {
-	AppID   string
-	Secret  string
-	BaseURL string
-	HTTP    *http.Client
-	Timeout time.Duration
-	Cache   *TokenCache
-	key     string
+	AppID           string
+	Secret          string
+	BaseURL         string
+	HTTP            *http.Client
+	Timeout         time.Duration
+	Cache           *TokenCache
+	RefreshToken    string
+	ComponentAppID  string
+	ComponentSecret string
+	ComponentTicket string
+	key             string
 }
 
 func NewLive(appID, secret, base string, client *http.Client, cache *TokenCache) *LiveClient {
@@ -400,6 +428,55 @@ func (c *LiveClient) GetToken(ctx context.Context) (string, error) {
 	return c.token(ctx, false)
 }
 
+func (c *LiveClient) authorizerToken(ctx context.Context) (string, error) {
+	compKey := "component|" + c.ComponentAppID
+	componentToken, ok := c.Cache.Get(compKey)
+	if !ok {
+		data, err := c.do(ctx, http.MethodPost, "/cgi-bin/component/api_component_token", nil, map[string]any{
+			"component_appid": c.ComponentAppID, "component_appsecret": c.ComponentSecret, "component_verify_ticket": c.ComponentTicket,
+		})
+		if err != nil {
+			return "", err
+		}
+		componentToken, _ = data["component_access_token"].(string)
+		if componentToken == "" {
+			return "", &Error{Message: "没有拿到第三方平台调用凭证"}
+		}
+		expires := intOf(data["expires_in"])
+		if expires < 120 {
+			expires = 7200
+		}
+		c.Cache.Set(compKey, componentToken, time.Now().Add(time.Duration(expires-300)*time.Second))
+	}
+	data, err := c.do(ctx, http.MethodPost, "/cgi-bin/component/api_authorizer_token", map[string]string{"component_access_token": componentToken}, map[string]any{
+		"component_appid": c.ComponentAppID, "authorizer_appid": c.AppID, "authorizer_refresh_token": c.RefreshToken,
+	})
+	if err != nil {
+		return "", err
+	}
+	token, _ := data["authorizer_access_token"].(string)
+	if token == "" {
+		return "", &Error{Message: "没有拿到授权方调用凭证"}
+	}
+	expires := intOf(data["expires_in"])
+	if expires < 120 {
+		expires = 7200
+	}
+	c.Cache.Set(c.key, token, time.Now().Add(time.Duration(expires-300)*time.Second))
+	return token, nil
+}
+
+func NewAuthorizer(appID, refresh, componentAppID, componentSecret, ticket, base string, client *http.Client, cache *TokenCache) *LiveClient {
+	c := NewLive(appID, refresh, base, client, cache)
+	c.Secret = ""
+	c.RefreshToken = refresh
+	c.ComponentAppID = componentAppID
+	c.ComponentSecret = componentSecret
+	c.ComponentTicket = ticket
+	c.key = appID + "|authorizer|" + c.BaseURL
+	return c
+}
+
 func (c *LiveClient) token(ctx context.Context, force bool) (string, error) {
 	if !force {
 		if token, ok := c.Cache.Get(c.key); ok {
@@ -407,6 +484,9 @@ func (c *LiveClient) token(ctx context.Context, force bool) (string, error) {
 		}
 	} else {
 		c.Cache.Delete(c.key)
+	}
+	if c.RefreshToken != "" {
+		return c.authorizerToken(ctx)
 	}
 	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/stable_token", map[string]any{
 		"grant_type": "client_credential", "appid": c.AppID, "secret": c.Secret, "force_refresh": force,
@@ -551,6 +631,35 @@ func (c *LiveClient) Datacube(ctx context.Context, path, begin, end string) (map
 		return nil, &Error{Message: "未知的数据接口"}
 	}
 	return c.request(ctx, http.MethodPost, path, map[string]any{"begin_date": begin, "end_date": end}, true)
+}
+
+func (c *LiveClient) ListDraftTitles(ctx context.Context, limit int) ([]string, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/draft/batchget", map[string]any{"offset": 0, "count": limit, "no_content": 1}, true)
+	if err != nil {
+		return nil, err
+	}
+	items, _ := data["item"].([]any)
+	var titles []string
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		content, _ := item["content"].(map[string]any)
+		news, _ := content["news_item"].([]any)
+		if len(news) == 0 {
+			continue
+		}
+		first, _ := news[0].(map[string]any)
+		title, _ := first["title"].(string)
+		if title != "" {
+			titles = append(titles, title)
+		}
+	}
+	return titles, nil
 }
 
 func (c *LiveClient) DraftCount(ctx context.Context) (int, error) {

@@ -379,8 +379,8 @@ func parseProvider(body providerBody) (model.ServiceConfig, map[string]string, e
 	if utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 40 || utf8.RuneCountInString(modelName) < 1 || utf8.RuneCountInString(modelName) > 120 {
 		return model.ServiceConfig{}, nil, invalid()
 	}
-	if body.Protocol != "openai" && body.Protocol != "anthropic" && body.Protocol != "responses" {
-		return model.ServiceConfig{}, nil, bad("协议只支持 openai（Chat Completions）、responses（Responses API）或 anthropic（Messages）")
+	if body.Protocol != "openai" && body.Protocol != "anthropic" && body.Protocol != "responses" && body.Protocol != "http" {
+		return model.ServiceConfig{}, nil, bad("协议只支持 openai（Chat Completions）、responses（Responses API）、anthropic（Messages）或 http（自定义字段映射）")
 	}
 	kind := strings.TrimSpace(body.Kind)
 	if kind == "" {
@@ -391,6 +391,9 @@ func parseProvider(body providerBody) (model.ServiceConfig, map[string]string, e
 	}
 	if kind == "image" && body.Protocol != "openai" {
 		return model.ServiceConfig{}, nil, bad("封面生图使用 OpenAI 兼容的 /v1/images/generations，协议请选 openai")
+	}
+	if body.Protocol == "http" && kind != "text" {
+		return model.ServiceConfig{}, nil, bad("自定义字段映射只用于文本")
 	}
 	if err := validateHTTPURL(body.BaseURL); err != nil {
 		return model.ServiceConfig{}, nil, err

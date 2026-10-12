@@ -64,9 +64,9 @@ func (a *App) saveFeedback(w http.ResponseWriter, r *http.Request, user *model.U
 		return err
 	}
 	switch body.Kind {
-	case "published", "edited_published", "discarded":
+	case "published", "edited_published", "discarded", "handled":
 	default:
-		return bad("请选择已发布、修改后发布或弃用")
+		return bad("请选择已发布、修改后发布、弃用或已处理")
 	}
 	if body.Score < 0 || body.Score > 5 {
 		return bad("评分应为 0 到 5")
@@ -78,6 +78,11 @@ func (a *App) saveFeedback(w http.ResponseWriter, r *http.Request, user *model.U
 	row := &store.Feedback{UserID: user.ID, ArticleID: article.ID, Kind: body.Kind, Score: body.Score, Note: note, CreatedAt: time.Now().UTC()}
 	if err := a.Store.InsertFeedback(r.Context(), nil, row); err != nil {
 		return err
+	}
+	if body.Kind == "published" || body.Kind == "edited_published" {
+		if variantID, err := a.Store.ArticleVariant(r.Context(), article.ID); err == nil && variantID > 0 {
+			_ = a.Store.IncrementVariantAdopted(r.Context(), variantID)
+		}
 	}
 	writeJSON(w, 200, feedbackDict(*row))
 	return nil
@@ -105,22 +110,20 @@ func (a *App) rereadDraft(w http.ResponseWriter, r *http.Request, user *model.Us
 		if err != nil {
 			return err
 		}
-		if account == nil || account.SecretEncrypted == "" {
+		if account == nil {
 			return bad("公众号凭证不可用，无法回读草稿")
 		}
-		secret, err := security.DecryptSecret(a.Cfg.MasterKey, account.SecretEncrypted)
-		if err != nil {
-			return bad(err.Error())
+		secret := ""
+		if account.SecretEncrypted != "" {
+			secret, err = security.DecryptSecret(a.Cfg.MasterKey, account.SecretEncrypted)
+			if err != nil {
+				return bad(err.Error())
+			}
 		}
-		wx, err := a.Cache.WeChat(r.Context(), nil)
+		client, err := a.accountWeChatClient(r.Context(), account, secret)
 		if err != nil {
 			return err
 		}
-		mode := "live"
-		if wx.Mode == "mock" || strings.HasPrefix(account.AppID, "wx_mock") {
-			mode = "mock"
-		}
-		client := wechat.Build(account.AppID, secret, mode, wx.Base, a.HTTP, a.Tokens)
 		raw, err := client.GetDraft(r.Context(), article.DraftMediaID)
 		if err != nil {
 			if !wechat.MissingDraft(err) {
