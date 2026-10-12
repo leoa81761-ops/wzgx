@@ -9,79 +9,83 @@ import (
 
 // Settings 从环境变量读取。不要在代码里写真实密钥。
 type Settings struct {
-	DatabaseURL             string
-	MasterKey               string
-	JWTSecret               string
-	AdminEmail              string
-	AdminPassword           string
-	WeChatMode              string
-	WeChatAPIBase           string
-	LLMMode                 string
-	PublicEgressIP          string
-	SchedulerEnabled        bool
-	SchedulerInterval       time.Duration
-	MaxConcurrency          int
-	StaleTaskSeconds        int
-	DBMaxOpen               int
-	DBMaxIdle               int
-	HTTPAddr                string
-	StaticDir               string
-	HTTPIdleConns           int
-	HTTPIdlePerHost         int
-	NotifyWebhookURL        string
-	PublicBaseURL           string
-	SMTPHost                string
-	SMTPPort                int
-	SMTPUser                string
-	SMTPPassword            string
-	SMTPFrom                string
-	PaySandbox              bool
-	PublishDailyCap         int
-	WxPayMchID              string
-	WxPayAppID              string
-	WxPayMchSerial          string
-	WxPayAPIv3Key           string
-	WxPayPrivateKey         string
-	WxPayPlatformCert       string
-	WxPayNotifyURL          string
-	WxPayAPIBase            string
-	AlipayAppID             string
-	AlipayPrivateKey        string
-	AlipayPublicKey         string
-	AlipayNotifyURL         string
-	AlipayReturnURL         string
-	AlipayGateway           string
-	PriceStandardMonth      int
-	PriceStandardYear       int
-	PricePremiumMonth       int
-	PricePremiumYear        int
-	PriceLifetime           int
-	PricePack               int
-	PackArticles            int
-	ResearchTimeout         time.Duration
-	ResearchBackupModel     string
-	ResearchBackupSearch    string
-	SMSProvider             string
-	SMSAccessKey            string
-	SMSAccessSecret         string
-	SMSSignName             string
-	SMSTemplateCode         string
-	SMSSdkAppID             string
-	SMSRegion               string
-	SMSAPIBase              string
-	WeChatOpenAppID         string
-	WeChatOpenSecret        string
-	WeChatOpenRedirect      string
-	WeChatComponentAppID    string
-	WeChatComponentSecret   string
-	WeChatComponentToken    string
-	WeChatComponentAESKey   string
-	WeChatComponentRedirect string
-	TplAppID                string
-	TplSecret               string
-	TplID                   string
-	TplAPIBase              string
-	TplFields               string
+	DatabaseURL               string
+	MasterKey                 string
+	JWTSecret                 string
+	AdminEmail                string
+	AdminPassword             string
+	WeChatMode                string
+	WeChatAPIBase             string
+	LLMMode                   string
+	PublicEgressIP            string
+	SchedulerEnabled          bool
+	SchedulerInterval         time.Duration
+	MaxConcurrency            int
+	StaleTaskSeconds          int
+	DBMaxOpen                 int
+	DBMaxIdle                 int
+	HTTPAddr                  string
+	StaticDir                 string
+	HTTPIdleConns             int
+	HTTPIdlePerHost           int
+	NotifyWebhookURL          string
+	PublicBaseURL             string
+	SMTPHost                  string
+	SMTPPort                  int
+	SMTPUser                  string
+	SMTPPassword              string
+	SMTPFrom                  string
+	PaySandbox                bool
+	PublishDailyCap           int
+	WxPayMchID                string
+	WxPayAppID                string
+	WxPayMchSerial            string
+	WxPayAPIv3Key             string
+	WxPayPrivateKey           string
+	WxPayPlatformCert         string
+	WxPayNotifyURL            string
+	WxPayAPIBase              string
+	AlipayAppID               string
+	AlipayPrivateKey          string
+	AlipayPublicKey           string
+	AlipayNotifyURL           string
+	AlipayReturnURL           string
+	AlipayGateway             string
+	PriceStandardMonth        int
+	PriceStandardYear         int
+	PricePremiumMonth         int
+	PricePremiumYear          int
+	PriceLifetime             int
+	PricePack                 int
+	PackArticles              int
+	ResearchTimeout           time.Duration
+	ResearchBackupModel       string
+	ResearchBackupSearch      string
+	ResearchBackupSearchAlt   string
+	ResearchBackupSearchBaidu string
+	ResearchSearchAPI         string
+	ResearchSearchKey         string
+	SMSProvider               string
+	SMSAccessKey              string
+	SMSAccessSecret           string
+	SMSSignName               string
+	SMSTemplateCode           string
+	SMSSdkAppID               string
+	SMSRegion                 string
+	SMSAPIBase                string
+	WeChatOpenAppID           string
+	WeChatOpenSecret          string
+	WeChatOpenRedirect        string
+	WeChatComponentAppID      string
+	WeChatComponentSecret     string
+	WeChatComponentToken      string
+	WeChatComponentAESKey     string
+	WeChatComponentRedirect   string
+	TplAppID                  string
+	TplSecret                 string
+	TplID                     string
+	TplAPIBase                string
+	TplFields                 string
 	// RegisterVerify 只由配置中心写入。默认关闭，环境变量不能单独打开。
 	RegisterVerify bool
 }
@@ -112,79 +116,83 @@ func Load() Settings {
 		}
 	}
 	return Settings{
-		DatabaseURL:             getenv("DATABASE_URL", "sqlite:///./data/dev.db"),
-		MasterKey:               getenv("MASTER_KEY", "dev-master-key-change-me"),
-		JWTSecret:               getenv("JWT_SECRET", "dev-jwt-secret-change-me"),
-		AdminEmail:              strings.ToLower(getenv("ADMIN_EMAIL", "admin@example.com")),
-		AdminPassword:           getenv("ADMIN_PASSWORD", "admin123456"),
-		WeChatMode:              getenv("WECHAT_MODE", "mock"),
-		WeChatAPIBase:           getenv("WECHAT_API_BASE", "https://api.weixin.qq.com"),
-		LLMMode:                 getenv("LLM_MODE", "mock"),
-		PublicEgressIP:          os.Getenv("PUBLIC_EGRESS_IP"),
-		SchedulerEnabled:        envBool("SCHEDULER_ENABLED", true),
-		SchedulerInterval:       time.Duration(interval) * time.Second,
-		MaxConcurrency:          maxConc,
-		StaleTaskSeconds:        stale,
-		DBMaxOpen:               envInt("DB_MAX_OPEN_CONNS", 0),
-		DBMaxIdle:               envInt("DB_MAX_IDLE_CONNS", 0),
-		HTTPAddr:                addr,
-		StaticDir:               os.Getenv("STATIC_DIR"),
-		HTTPIdleConns:           envInt("HTTP_CLIENT_MAX_IDLE_CONNS", 256),
-		HTTPIdlePerHost:         envInt("HTTP_CLIENT_MAX_IDLE_PER_HOST", 64),
-		NotifyWebhookURL:        strings.TrimSpace(os.Getenv("NOTIFY_WEBHOOK_URL")),
-		PublicBaseURL:           strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/"),
-		SMTPHost:                strings.TrimSpace(os.Getenv("SMTP_HOST")),
-		SMTPPort:                envInt("SMTP_PORT", 587),
-		SMTPUser:                strings.TrimSpace(os.Getenv("SMTP_USER")),
-		SMTPPassword:            os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:                strings.TrimSpace(os.Getenv("SMTP_FROM")),
-		PaySandbox:              envBool("PAY_SANDBOX", false),
-		PublishDailyCap:         publishCap(),
-		WxPayMchID:              strings.TrimSpace(os.Getenv("WXPAY_MCH_ID")),
-		WxPayAppID:              strings.TrimSpace(os.Getenv("WXPAY_APP_ID")),
-		WxPayMchSerial:          strings.TrimSpace(os.Getenv("WXPAY_MCH_SERIAL")),
-		WxPayAPIv3Key:           strings.TrimSpace(os.Getenv("WXPAY_API_V3_KEY")),
-		WxPayPrivateKey:         loadPEM("WXPAY_PRIVATE_KEY", "WXPAY_PRIVATE_KEY_FILE"),
-		WxPayPlatformCert:       loadPEM("WXPAY_PLATFORM_CERT", "WXPAY_PLATFORM_CERT_FILE"),
-		WxPayNotifyURL:          strings.TrimSpace(os.Getenv("WXPAY_NOTIFY_URL")),
-		WxPayAPIBase:            getenv("WXPAY_API_BASE", "https://api.mch.weixin.qq.com"),
-		AlipayAppID:             strings.TrimSpace(os.Getenv("ALIPAY_APP_ID")),
-		AlipayPrivateKey:        loadPEM("ALIPAY_PRIVATE_KEY", "ALIPAY_PRIVATE_KEY_FILE"),
-		AlipayPublicKey:         loadPEM("ALIPAY_PUBLIC_KEY", "ALIPAY_PUBLIC_KEY_FILE"),
-		AlipayNotifyURL:         strings.TrimSpace(os.Getenv("ALIPAY_NOTIFY_URL")),
-		AlipayReturnURL:         strings.TrimSpace(os.Getenv("ALIPAY_RETURN_URL")),
-		AlipayGateway:           getenv("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do"),
-		PriceStandardMonth:      positiveOr("PAY_PRICE_STANDARD_MONTH", 3000),
-		PriceStandardYear:       positiveOr("PAY_PRICE_STANDARD_YEAR", 29900),
-		PricePremiumMonth:       positiveOr("PAY_PRICE_PREMIUM_MONTH", 9900),
-		PricePremiumYear:        positiveOr("PAY_PRICE_PREMIUM_YEAR", 99000),
-		PriceLifetime:           positiveOr("PAY_PRICE_LIFETIME", 300000),
-		PricePack:               positiveOr("PAY_PRICE_PACK", 1900),
-		PackArticles:            positiveOr("PAY_PACK_ARTICLES", 10),
-		ResearchTimeout:         researchTimeout(),
-		ResearchBackupModel:     getenv("RESEARCH_BACKUP_MODEL", "grok-4.7"),
-		ResearchBackupSearch:    getenv("RESEARCH_BACKUP_SEARCH", "https://html.duckduckgo.com/html/"),
-		SMSProvider:             strings.ToLower(strings.TrimSpace(os.Getenv("SMS_PROVIDER"))),
-		SMSAccessKey:            strings.TrimSpace(os.Getenv("SMS_ACCESS_KEY")),
-		SMSAccessSecret:         os.Getenv("SMS_ACCESS_SECRET"),
-		SMSSignName:             strings.TrimSpace(os.Getenv("SMS_SIGN_NAME")),
-		SMSTemplateCode:         strings.TrimSpace(os.Getenv("SMS_TEMPLATE_CODE")),
-		SMSSdkAppID:             strings.TrimSpace(os.Getenv("SMS_SDK_APP_ID")),
-		SMSRegion:               getenv("SMS_REGION", "ap-guangzhou"),
-		SMSAPIBase:              strings.TrimSpace(os.Getenv("SMS_API_BASE")),
-		WeChatOpenAppID:         strings.TrimSpace(os.Getenv("WECHAT_OPEN_APP_ID")),
-		WeChatOpenSecret:        os.Getenv("WECHAT_OPEN_APP_SECRET"),
-		WeChatOpenRedirect:      strings.TrimSpace(os.Getenv("WECHAT_OPEN_REDIRECT_URL")),
-		WeChatComponentAppID:    strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_APP_ID")),
-		WeChatComponentSecret:   os.Getenv("WECHAT_COMPONENT_APP_SECRET"),
-		WeChatComponentToken:    os.Getenv("WECHAT_COMPONENT_TOKEN"),
-		WeChatComponentAESKey:   strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_AES_KEY")),
-		WeChatComponentRedirect: strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_REDIRECT_URL")),
-		TplAppID:                strings.TrimSpace(os.Getenv("WECHAT_TPL_APP_ID")),
-		TplSecret:               os.Getenv("WECHAT_TPL_APP_SECRET"),
-		TplID:                   strings.TrimSpace(os.Getenv("WECHAT_TPL_ID")),
-		TplAPIBase:              getenv("WECHAT_TPL_API_BASE", "https://api.weixin.qq.com"),
-		TplFields:               getenv("WECHAT_TPL_FIELDS", "thing1,thing2"),
+		DatabaseURL:               getenv("DATABASE_URL", "sqlite:///./data/dev.db"),
+		MasterKey:                 getenv("MASTER_KEY", "dev-master-key-change-me"),
+		JWTSecret:                 getenv("JWT_SECRET", "dev-jwt-secret-change-me"),
+		AdminEmail:                strings.ToLower(getenv("ADMIN_EMAIL", "admin@example.com")),
+		AdminPassword:             getenv("ADMIN_PASSWORD", "admin123456"),
+		WeChatMode:                getenv("WECHAT_MODE", "mock"),
+		WeChatAPIBase:             getenv("WECHAT_API_BASE", "https://api.weixin.qq.com"),
+		LLMMode:                   getenv("LLM_MODE", "mock"),
+		PublicEgressIP:            os.Getenv("PUBLIC_EGRESS_IP"),
+		SchedulerEnabled:          envBool("SCHEDULER_ENABLED", true),
+		SchedulerInterval:         time.Duration(interval) * time.Second,
+		MaxConcurrency:            maxConc,
+		StaleTaskSeconds:          stale,
+		DBMaxOpen:                 envInt("DB_MAX_OPEN_CONNS", 0),
+		DBMaxIdle:                 envInt("DB_MAX_IDLE_CONNS", 0),
+		HTTPAddr:                  addr,
+		StaticDir:                 os.Getenv("STATIC_DIR"),
+		HTTPIdleConns:             envInt("HTTP_CLIENT_MAX_IDLE_CONNS", 256),
+		HTTPIdlePerHost:           envInt("HTTP_CLIENT_MAX_IDLE_PER_HOST", 64),
+		NotifyWebhookURL:          strings.TrimSpace(os.Getenv("NOTIFY_WEBHOOK_URL")),
+		PublicBaseURL:             strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/"),
+		SMTPHost:                  strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:                  envInt("SMTP_PORT", 587),
+		SMTPUser:                  strings.TrimSpace(os.Getenv("SMTP_USER")),
+		SMTPPassword:              os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                  strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		PaySandbox:                envBool("PAY_SANDBOX", false),
+		PublishDailyCap:           publishCap(),
+		WxPayMchID:                strings.TrimSpace(os.Getenv("WXPAY_MCH_ID")),
+		WxPayAppID:                strings.TrimSpace(os.Getenv("WXPAY_APP_ID")),
+		WxPayMchSerial:            strings.TrimSpace(os.Getenv("WXPAY_MCH_SERIAL")),
+		WxPayAPIv3Key:             strings.TrimSpace(os.Getenv("WXPAY_API_V3_KEY")),
+		WxPayPrivateKey:           loadPEM("WXPAY_PRIVATE_KEY", "WXPAY_PRIVATE_KEY_FILE"),
+		WxPayPlatformCert:         loadPEM("WXPAY_PLATFORM_CERT", "WXPAY_PLATFORM_CERT_FILE"),
+		WxPayNotifyURL:            strings.TrimSpace(os.Getenv("WXPAY_NOTIFY_URL")),
+		WxPayAPIBase:              getenv("WXPAY_API_BASE", "https://api.mch.weixin.qq.com"),
+		AlipayAppID:               strings.TrimSpace(os.Getenv("ALIPAY_APP_ID")),
+		AlipayPrivateKey:          loadPEM("ALIPAY_PRIVATE_KEY", "ALIPAY_PRIVATE_KEY_FILE"),
+		AlipayPublicKey:           loadPEM("ALIPAY_PUBLIC_KEY", "ALIPAY_PUBLIC_KEY_FILE"),
+		AlipayNotifyURL:           strings.TrimSpace(os.Getenv("ALIPAY_NOTIFY_URL")),
+		AlipayReturnURL:           strings.TrimSpace(os.Getenv("ALIPAY_RETURN_URL")),
+		AlipayGateway:             getenv("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do"),
+		PriceStandardMonth:        positiveOr("PAY_PRICE_STANDARD_MONTH", 3000),
+		PriceStandardYear:         positiveOr("PAY_PRICE_STANDARD_YEAR", 29900),
+		PricePremiumMonth:         positiveOr("PAY_PRICE_PREMIUM_MONTH", 9900),
+		PricePremiumYear:          positiveOr("PAY_PRICE_PREMIUM_YEAR", 99000),
+		PriceLifetime:             positiveOr("PAY_PRICE_LIFETIME", 300000),
+		PricePack:                 positiveOr("PAY_PRICE_PACK", 1900),
+		PackArticles:              positiveOr("PAY_PACK_ARTICLES", 10),
+		ResearchTimeout:           researchTimeout(),
+		ResearchBackupModel:       getenv("RESEARCH_BACKUP_MODEL", "grok-4.7"),
+		ResearchBackupSearch:      getenv("RESEARCH_BACKUP_SEARCH", "https://cn.bing.com/search"),
+		ResearchBackupSearchAlt:   getenv("RESEARCH_BACKUP_SEARCH_ALT", "https://www.sogou.com/web"),
+		ResearchBackupSearchBaidu: getenv("RESEARCH_BACKUP_SEARCH_BAIDU", "https://www.baidu.com/s"),
+		ResearchSearchAPI:         strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_API")),
+		ResearchSearchKey:         os.Getenv("RESEARCH_SEARCH_KEY"),
+		SMSProvider:               strings.ToLower(strings.TrimSpace(os.Getenv("SMS_PROVIDER"))),
+		SMSAccessKey:              strings.TrimSpace(os.Getenv("SMS_ACCESS_KEY")),
+		SMSAccessSecret:           os.Getenv("SMS_ACCESS_SECRET"),
+		SMSSignName:               strings.TrimSpace(os.Getenv("SMS_SIGN_NAME")),
+		SMSTemplateCode:           strings.TrimSpace(os.Getenv("SMS_TEMPLATE_CODE")),
+		SMSSdkAppID:               strings.TrimSpace(os.Getenv("SMS_SDK_APP_ID")),
+		SMSRegion:                 getenv("SMS_REGION", "ap-guangzhou"),
+		SMSAPIBase:                strings.TrimSpace(os.Getenv("SMS_API_BASE")),
+		WeChatOpenAppID:           strings.TrimSpace(os.Getenv("WECHAT_OPEN_APP_ID")),
+		WeChatOpenSecret:          os.Getenv("WECHAT_OPEN_APP_SECRET"),
+		WeChatOpenRedirect:        strings.TrimSpace(os.Getenv("WECHAT_OPEN_REDIRECT_URL")),
+		WeChatComponentAppID:      strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_APP_ID")),
+		WeChatComponentSecret:     os.Getenv("WECHAT_COMPONENT_APP_SECRET"),
+		WeChatComponentToken:      os.Getenv("WECHAT_COMPONENT_TOKEN"),
+		WeChatComponentAESKey:     strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_AES_KEY")),
+		WeChatComponentRedirect:   strings.TrimSpace(os.Getenv("WECHAT_COMPONENT_REDIRECT_URL")),
+		TplAppID:                  strings.TrimSpace(os.Getenv("WECHAT_TPL_APP_ID")),
+		TplSecret:                 os.Getenv("WECHAT_TPL_APP_SECRET"),
+		TplID:                     strings.TrimSpace(os.Getenv("WECHAT_TPL_ID")),
+		TplAPIBase:                getenv("WECHAT_TPL_API_BASE", "https://api.weixin.qq.com"),
+		TplFields:                 getenv("WECHAT_TPL_FIELDS", "thing1,thing2"),
 	}
 }
 

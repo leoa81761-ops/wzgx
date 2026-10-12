@@ -53,6 +53,10 @@ type Gateway struct {
 	ResearchTimeout     time.Duration
 	ResearchBackupModel string
 	BackupSearchURL     string
+	BackupSearchAlt     string
+	BackupSearchBaidu   string
+	SearchAPIURL        string
+	SearchAPIKey        string
 	CacheTTL            time.Duration
 	cacheMu             sync.Mutex
 	cache               map[string]cachedCompletion

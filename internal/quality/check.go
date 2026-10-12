@@ -72,25 +72,16 @@ func StructureOK(structure string, paragraphs []string) bool {
 				sourced = true
 			}
 		}
-		return sourced
+		return sourced && !repeatedOpener(paragraphs)
 	case "qa":
-		question, answer := false, false
-		for _, para := range paragraphs {
-			if strings.Contains(para, "？") || strings.Contains(para, "?") {
-				question = true
-			}
-			if strings.Contains(para, "答") {
-				answer = true
-			}
-		}
-		return question && answer
+		return qaPaired(paragraphs) && !repeatedOpener(paragraphs)
 	case "steps":
 		for _, para := range paragraphs {
 			if !numberedStep.MatchString(para) {
 				return false
 			}
 		}
-		return true
+		return !repeatedOpener(paragraphs)
 	default:
 		return true
 	}
@@ -118,7 +109,7 @@ func RepairDraft(structure string, draft map[string]any) map[string]any {
 		}
 		paras, _ := section["paragraphs"].([]any)
 		var next []any
-		for i, item := range paras {
+		for _, item := range paras {
 			text, _ := item.(string)
 			text = strings.TrimSpace(text)
 			if text == "" {
@@ -127,17 +118,16 @@ func RepairDraft(structure string, draft map[string]any) map[string]any {
 			switch kind {
 			case "news":
 				if !hasDate(text) {
-					text = "近日，" + text
+					text = dateWord(len(next)) + "，" + text
 				}
 				if hasSource && !citedMark.MatchString(text) {
 					text += " [1]"
 				}
 			case "qa":
-				if i == 0 && !strings.Contains(text, "？") && !strings.Contains(text, "?") {
-					text += "？"
-				}
-				if i > 0 && !strings.Contains(text, "答") {
-					text = "答：" + text
+				if len(next)%2 == 0 {
+					text = asQuestion(text)
+				} else {
+					text = asAnswer(text)
 				}
 			case "steps":
 				if !numberedStep.MatchString(text) {
@@ -146,7 +136,8 @@ func RepairDraft(structure string, draft map[string]any) map[string]any {
 			}
 			next = append(next, text)
 		}
-		if kind == "qa" && len(next) == 1 {
+		next = varyOpeners(next)
+		if kind == "qa" && len(next)%2 == 1 {
 			next = append(next, "答：按上面的问题，先做最小的一步。")
 		}
 		if next == nil {
@@ -178,6 +169,110 @@ func normalizeStructure(raw string) string {
 	default:
 		return "custom"
 	}
+}
+
+func qaPaired(paragraphs []string) bool {
+	pending := false
+	pairs := 0
+	for _, para := range paragraphs {
+		answer := strings.Contains(para, "答")
+		question := strings.Contains(para, "？") || strings.Contains(para, "?")
+		if answer && question {
+			return false
+		}
+		if answer {
+			if !pending {
+				return false
+			}
+			pending = false
+			pairs++
+			continue
+		}
+		if question {
+			if pending {
+				return false
+			}
+			trimmed := strings.TrimSpace(para)
+			if !strings.HasSuffix(trimmed, "？") && !strings.HasSuffix(trimmed, "?") {
+				return false
+			}
+			pending = true
+			continue
+		}
+		if pending {
+			return false
+		}
+	}
+	return pairs > 0 && !pending
+}
+
+func repeatedOpener(paragraphs []string) bool {
+	seen := map[string]bool{}
+	for _, para := range paragraphs {
+		key := leadingDate(para)
+		if key == "" {
+			continue
+		}
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+	}
+	return false
+}
+
+func leadingDate(text string) string {
+	text = strings.TrimSpace(text)
+	for _, word := range []string{"近日", "今天", "昨天", "本周", "上周"} {
+		if strings.HasPrefix(text, word) {
+			return word
+		}
+	}
+	return ""
+}
+
+func dateWord(index int) string {
+	words := []string{"近日", "今天", "昨天", "本周", "上周"}
+	return words[index%len(words)]
+}
+
+func asQuestion(text string) string {
+	text = strings.ReplaceAll(text, "?", "")
+	text = strings.ReplaceAll(text, "？", "")
+	text = strings.TrimSpace(strings.TrimPrefix(text, "答："))
+	text = strings.TrimSpace(strings.TrimPrefix(text, "答:"))
+	text = strings.TrimRight(text, "。")
+	return text + "？"
+}
+
+func asAnswer(text string) string {
+	text = strings.ReplaceAll(text, "?", "")
+	text = strings.ReplaceAll(text, "？", "")
+	text = strings.TrimSpace(text)
+	if !strings.Contains(text, "答") {
+		text = "答：" + text
+	}
+	return text
+}
+
+func varyOpeners(paras []any) []any {
+	seen := map[string]bool{}
+	var out []any
+	for _, item := range paras {
+		text, _ := item.(string)
+		if key := leadingDate(text); key != "" && seen[key] {
+			word := dateWord(len(out) + 1)
+			if word == key {
+				word = dateWord(len(out) + 2)
+			}
+			text = word + "，" + strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, key), "，"))
+		}
+		if key := leadingDate(text); key != "" {
+			seen[key] = true
+		}
+		out = append(out, text)
+	}
+	return out
 }
 
 func hasDate(text string) bool {

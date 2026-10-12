@@ -386,6 +386,29 @@ func serveSMTP(t *testing.T) (string, string, func() string) {
 	}
 }
 
+func TestSearchIntegrationProbe(t *testing.T) {
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("q") == "" {
+			t.Errorf("query %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`<li class="b_algo"><h2><a href="https://www.mohurd.gov.cn/a">综合布线验收</a></h2><p>公开说明。</p></li>`))
+	}))
+	defer search.Close()
+	app := openApp(t, config.Settings{})
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+	admin := postJSON(t, ts.URL+"/api/auth/login", "", map[string]any{"account": "admin@example.com", "password": "admin123456"})
+	token := admin.JSON["token"].(string)
+	saved := putJSON(t, ts.URL+"/api/admin/integrations/search", token, map[string]any{"fields": map[string]string{"primary_url": search.URL}})
+	if saved.StatusCode != 200 {
+		t.Fatal(saved.StatusCode, saved.Body)
+	}
+	probe := postJSON(t, ts.URL+"/api/admin/integrations/search/test", token, map[string]any{})
+	if probe.StatusCode != 200 || !strings.Contains(probe.Body, "连通成功") {
+		t.Fatal(probe.StatusCode, probe.Body)
+	}
+}
+
 func testPayMaterial(t *testing.T) (string, string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

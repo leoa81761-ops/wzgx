@@ -2,6 +2,8 @@ package editorial
 
 import (
 	"encoding/json"
+	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -945,6 +947,211 @@ func intOf(v any) int {
 	default:
 		return 0
 	}
+}
+
+var citeMark = regexp.MustCompile(`\[(\d+)\]`)
+
+// DedupeTables drops a later table that repeats an earlier one, including a close rephrase.
+func DedupeTables(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	var seen []string
+	for _, section := range sectionsOf(draft) {
+		table, _ := section["table"].(map[string]any)
+		if table == nil {
+			continue
+		}
+		key := tableKey(table)
+		if key == "" {
+			continue
+		}
+		dup := false
+		for _, prev := range seen {
+			if key == prev || ShingleSimilarity(key, prev, 3) >= 0.6 {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			delete(section, "table")
+			continue
+		}
+		seen = append(seen, key)
+	}
+	return draft
+}
+
+func tableKey(table map[string]any) string {
+	var b strings.Builder
+	for _, item := range stringList(table["headers"]) {
+		b.WriteString(compact(item))
+		b.WriteString("|")
+	}
+	for _, raw := range anyList(table["rows"]) {
+		cells, _ := raw.([]any)
+		for _, cell := range stringList(cells) {
+			b.WriteString(compact(cell))
+			b.WriteString("|")
+		}
+		b.WriteString(";")
+	}
+	return b.String()
+}
+
+// StripMeta removes sentences that talk about the draft itself.
+func StripMeta(draft map[string]any) map[string]any {
+	words := []string{"原稿", "改写", "上一版"}
+	if draft == nil {
+		return nil
+	}
+	draft["title"] = rewriteTabooText(textOf(draft["title"]), words)
+	draft["summary"] = rewriteTabooText(textOf(draft["summary"]), words)
+	draft["closing"] = rewriteTabooText(textOf(draft["closing"]), words)
+	for _, section := range sectionsOf(draft) {
+		section["heading"] = rewriteTabooText(textOf(section["heading"]), words)
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			paras = append(paras, rewriteTabooText(textOf(item), words))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
+// SupportCitations removes a citation whose sentence is not backed by that source's title or snippet.
+func SupportCitations(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	sources := anyList(draft["sources"])
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			paras = append(paras, supportCitationText(textOf(item), sources))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	if text := strings.TrimSpace(textOf(draft["closing"])); text != "" {
+		draft["closing"] = supportCitationText(text, sources)
+	}
+	return draft
+}
+
+func supportCitationText(text string, sources []any) string {
+	if !strings.Contains(text, "[") {
+		return text
+	}
+	parts := splitSentences(text)
+	var merged []string
+	for _, part := range parts {
+		bare := strings.TrimSpace(citeMark.ReplaceAllString(part, ""))
+		if bare == "" && len(merged) > 0 {
+			merged[len(merged)-1] += part
+			continue
+		}
+		merged = append(merged, part)
+	}
+	var kept []string
+	for _, part := range merged {
+		kept = append(kept, supportSentence(part, sources))
+	}
+	return strings.Join(kept, "")
+}
+
+func supportSentence(sentence string, sources []any) string {
+	marks := citeMark.FindAllStringSubmatch(sentence, -1)
+	if len(marks) == 0 {
+		return sentence
+	}
+	claim := citeMark.ReplaceAllString(sentence, "")
+	var keep []string
+	seen := map[string]bool{}
+	for _, mark := range marks {
+		if seen[mark[0]] {
+			continue
+		}
+		seen[mark[0]] = true
+		n, _ := strconv.Atoi(mark[1])
+		if citationSupported(claim, n, sources) {
+			keep = append(keep, mark[0])
+		}
+	}
+	return strings.TrimSpace(claim) + strings.Join(keep, "")
+}
+
+func citationSupported(claim string, n int, sources []any) bool {
+	if n < 1 || n > len(sources) {
+		return false
+	}
+	source, _ := sources[n-1].(map[string]any)
+	if source == nil {
+		return false
+	}
+	backing := citationSourceText(source)
+	if backing == "" || strings.TrimSpace(claim) == "" {
+		return false
+	}
+	if utf8.RuneCountInString(compact(claim)) < 12 {
+		return true
+	}
+	if ShingleSimilarity(claim, backing, 2) >= 0.18 {
+		return true
+	}
+	return sharesTerm(claim, backing)
+}
+
+func citationSourceText(source map[string]any) string {
+	title := strings.TrimSpace(textOf(source["title"]))
+	snippet := strings.TrimSpace(textOf(source["snippet"]))
+	if snippet == "" {
+		snippet = strings.TrimSpace(textOf(source["note"]))
+	}
+	return strings.TrimSpace(title + " " + snippet)
+}
+
+func sharesTerm(a, b string) bool {
+	seen := map[string]bool{}
+	for _, term := range hanTerms(a) {
+		seen[term] = true
+	}
+	for _, term := range hanTerms(b) {
+		if seen[term] {
+			return true
+		}
+	}
+	return false
+}
+
+func hanTerms(text string) []string {
+	var out []string
+	var buf []rune
+	flush := func() {
+		if len(buf) >= 2 {
+			out = append(out, string(buf))
+			if len(buf) <= 8 {
+				for i := 0; i+2 <= len(buf); i++ {
+					out = append(out, string(buf[i:i+2]))
+				}
+			}
+		}
+		buf = nil
+	}
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
 }
 
 func clone(draft map[string]any) map[string]any {

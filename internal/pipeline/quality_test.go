@@ -53,7 +53,7 @@ func TestExpandRetriesOnceWithTheShortfall(t *testing.T) {
 	out, _, _, still := fitBody(context.Background(), gw, []llm.Provider{{
 		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
 	}}, map[string]any{"word_target": 800}, draft, 800)
-	if calls != 2 || !sawShortfall || !still || content.BodyRunes(out) >= 800*85/100 {
+	if calls != 3 || !sawShortfall || !still || content.BodyRunes(out) >= 800*85/100 {
 		t.Fatalf("calls %d shortfall %v still %v runes %d", calls, sawShortfall, still, content.BodyRunes(out))
 	}
 }
@@ -109,7 +109,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 2 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 3 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }
@@ -263,7 +263,7 @@ func TestActiveColumnReplacesPackSubtopics(t *testing.T) {
 	at := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
 	choice, col, ok := ApplyColumnChoice(topics.Choice{Subtopic: "亲子阅读", Column: "避坑辟谣", Angle: "一个说法"}, at, []columns.Column{{
 		ID: 1, Name: "工程圈快报", Status: "active", Positioning: "行业消息",
-	}}, "weight", nil, "弱电智能化", "验收", nil)
+	}}, "weight", nil, "弱电智能化", "验收", nil, nil, nil)
 	if !ok || choice.Subtopic == "亲子阅读" || strings.Contains(choice.TopicTag, "亲子阅读") || strings.Contains(choice.TopicTag, "综合布线") || choice.Column != "工程圈快报" || col.Name != "工程圈快报" {
 		t.Fatal(choice, col, ok)
 	}

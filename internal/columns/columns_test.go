@@ -71,6 +71,19 @@ func TestWeekdayRotationUsesTheMappedColumn(t *testing.T) {
 	}
 }
 
+func TestLeastRecentColumnCountsFailuresAndSkipsOldNames(t *testing.T) {
+	active := []Column{
+		{ID: 1, Name: "工程圈快报", Status: "active", SortOrder: 1},
+		{ID: 2, Name: "方案拆解", Status: "active", SortOrder: 2},
+		{ID: 3, Name: "知识FAQ", Status: "active", SortOrder: 3},
+	}
+	recent := []string{"避坑辟谣", "方案拆解", "工程圈快报", "方案拆解"}
+	got, ok := Pick(active, "weight", 1, nil, recent)
+	if !ok || got.Name != "知识FAQ" {
+		t.Fatal(got, ok)
+	}
+}
+
 func TestNormalizeStructure(t *testing.T) {
 	if NormalizeStructure("news-brief") != "news" || NormalizeStructure("step-by-step") != "steps" || NormalizeStructure("Q&A") != "qa" || NormalizeStructure("别的") != "custom" {
 		t.Fatal("structure labels")

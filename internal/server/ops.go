@@ -266,8 +266,22 @@ func (a *App) planCalendar(w http.ResponseWriter, r *http.Request, user *model.U
 	} else if len(active) > 0 {
 		days := columns.ParseDays(extra.ColumnWeekdays)
 		hist := append([]topics.Coverage{}, history...)
+		uses, err := a.Store.RecentColumnUses(r.Context(), nil, plan.WxAccountID)
+		if err != nil {
+			return err
+		}
+		titles, err := a.Store.AccountTitles(r.Context(), nil, plan.WxAccountID, 20)
+		if err != nil {
+			return err
+		}
 		for i := range slots {
-			choice, _, ok := pipeline.ApplyColumnChoice(slots[i].Choice, slots[i].At, active, extra.ColumnRotation, days, plan.Direction, extra.Keywords, hist)
+			seen := append([]string{}, uses...)
+			for _, row := range hist[len(history):] {
+				if row.Column != "" {
+					seen = append(seen, row.Column)
+				}
+			}
+			choice, _, ok := pipeline.ApplyColumnChoice(slots[i].Choice, slots[i].At, active, extra.ColumnRotation, days, plan.Direction, extra.Keywords, hist, seen, titles)
 			if ok {
 				slots[i].Choice = choice
 			}

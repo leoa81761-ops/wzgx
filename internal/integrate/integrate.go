@@ -96,6 +96,13 @@ func Sections() []Section {
 		{Key: "notify", Title: "失败转发", Fields: []Field{
 			{Key: "webhook_url", Label: "Webhook 地址", Secret: true},
 		}},
+		{Key: "search", Title: "备用检索", Fields: []Field{
+			{Key: "primary_url", Label: "必应 HTML（国内默认可达）"},
+			{Key: "backup_url", Label: "搜狗 HTML"},
+			{Key: "baidu_url", Label: "百度 HTML"},
+			{Key: "api_url", Label: "可选接口，例如博查"},
+			{Key: "api_key", Label: "接口密钥", Secret: true},
+		}},
 	}
 }
 
@@ -299,6 +306,21 @@ func Apply(base config.Settings, docs map[string]Doc) config.Settings {
 	if v := set("public", "base_url"); v != "" {
 		out.PublicBaseURL = strings.TrimRight(v, "/")
 	}
+	if v := set("search", "primary_url"); v != "" {
+		out.ResearchBackupSearch = v
+	}
+	if v := set("search", "backup_url"); v != "" {
+		out.ResearchBackupSearchAlt = v
+	}
+	if v := set("search", "baidu_url"); v != "" {
+		out.ResearchBackupSearchBaidu = v
+	}
+	if v := set("search", "api_url"); v != "" {
+		out.ResearchSearchAPI = v
+	}
+	if v := set("search", "api_key"); v != "" {
+		out.ResearchSearchKey = v
+	}
 	out = WithCallbackDefaults(out)
 	if doc, ok := docs["register"]; ok {
 		if v, exists := doc.Plain["verify"]; exists {
@@ -397,6 +419,16 @@ func EnvValue(base config.Settings, section, key string) string {
 		return base.NotifyWebhookURL
 	case "public.base_url":
 		return base.PublicBaseURL
+	case "search.primary_url":
+		return base.ResearchBackupSearch
+	case "search.backup_url":
+		return base.ResearchBackupSearchAlt
+	case "search.baidu_url":
+		return base.ResearchBackupSearchBaidu
+	case "search.api_url":
+		return base.ResearchSearchAPI
+	case "search.api_key":
+		return base.ResearchSearchKey
 	default:
 		return ""
 	}
@@ -505,7 +537,8 @@ func validate(section, key, value string) error {
 			return fmt.Errorf("SMTP 主机不正确")
 		}
 	case "public.base_url", "wxpay.notify_url", "wxpay.api_base", "alipay.notify_url", "alipay.return_url", "alipay.gateway",
-		"wechat_open.redirect_url", "wechat_component.redirect_url", "wechat_tpl.api_base", "sms.api_base", "notify.webhook_url":
+		"wechat_open.redirect_url", "wechat_component.redirect_url", "wechat_tpl.api_base", "sms.api_base", "notify.webhook_url",
+		"search.primary_url", "search.backup_url", "search.baidu_url", "search.api_url":
 		if err := httpURL(value); err != nil {
 			return err
 		}
@@ -567,6 +600,8 @@ func Ready(section string, cfg config.Settings) bool {
 		return strings.TrimSpace(cfg.NotifyWebhookURL) != ""
 	case "public":
 		return strings.TrimSpace(cfg.PublicBaseURL) != ""
+	case "search":
+		return strings.TrimSpace(cfg.ResearchBackupSearch) != "" || (strings.TrimSpace(cfg.ResearchSearchAPI) != "" && strings.TrimSpace(cfg.ResearchSearchKey) != "")
 	default:
 		return false
 	}

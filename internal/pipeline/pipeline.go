@@ -37,7 +37,6 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/wechat"
 	"math/rand"
 	"net/http"
-	"net/url"
 	"regexp"
 )
 
@@ -76,6 +75,7 @@ type work struct {
 	ExistingMediaID   string
 	History           []topics.Coverage
 	RecentTitles      []string
+	ColumnUses        []string
 	ForeignTitles     []string
 	Vetoed            []string
 	SpecifiedTitle    string
@@ -206,7 +206,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 		if err != nil {
 			return err
 		}
-		titles, err := deps.Store.RecentTitles(ctx, tx, plan.ID, 20)
+		titles, err := deps.Store.AccountTitles(ctx, tx, account.ID, 20)
 		if err != nil {
 			return err
 		}
@@ -385,6 +385,14 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			return err
 		}
 		w.ActiveColumns = active
+		uses, err := deps.Store.RecentColumnUses(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
+		if uses == nil {
+			uses = []string{}
+		}
+		w.ColumnUses = uses
 		ok = true
 		return nil
 	})
@@ -485,6 +493,9 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	}
 	built, err := Build(ctx, deps.Gateway, in, sensitive, providers, policy, now)
 	if err != nil {
+		if built.Topic.Column != "" {
+			rememberColumn(ctx, deps, w, built.Topic)
+		}
 		return nil, &tracedError{err: err, trace: built.Trace}
 	}
 	if content.CopiedSpan(content.DraftText(built.Draft), content.SourceTexts(built.Draft)) {
@@ -500,7 +511,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 			note = joinNote(note, "无参考来源，未写入公众号草稿。")
 		}
 		if built.LengthShort {
-			note = joinNote(note, "篇幅不到目标的 85%，已再扩写一次，仍偏短，未写入公众号草稿。")
+			note = joinNote(note, "篇幅不到目标的 85%，已再扩写，仍偏短，未写入公众号草稿。")
 		}
 		if built.Uncited {
 			note = joinNote(note, "正文没有引用，未写入公众号草稿。")
@@ -561,6 +572,7 @@ type Input struct {
 	Tier           string
 	History        []topics.Coverage
 	RecentTitles   []string
+	ColumnUses     []string
 	ForeignTitles  []string
 	AccountID      int64
 	Locked         *topics.Choice
@@ -639,7 +651,7 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, ColumnUses: w.ColumnUses, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt}
 }
 
 // AppendSiblingCoverage keeps another account's recent angles out of this plan's rotation.
@@ -1244,11 +1256,13 @@ func splitWords(parts ...string) []string {
 }
 
 // ApplyColumnChoice replaces pack subtopics with the active column and the account theme.
-func ApplyColumnChoice(choice topics.Choice, at time.Time, active []columns.Column, rotation string, days map[int]int64, direction, keywords string, history []topics.Coverage) (topics.Choice, columns.Column, bool) {
-	var recent []string
-	for _, row := range history {
-		if row.Column != "" {
-			recent = append(recent, row.Column)
+func ApplyColumnChoice(choice topics.Choice, at time.Time, active []columns.Column, rotation string, days map[int]int64, direction, keywords string, history []topics.Coverage, uses, titles []string) (topics.Choice, columns.Column, bool) {
+	recent := uses
+	if recent == nil {
+		for _, row := range history {
+			if row.Column != "" {
+				recent = append(recent, row.Column)
+			}
 		}
 	}
 	col, ok := columns.Pick(active, rotation, columns.WeekdayOf(at), days, recent)
@@ -1260,7 +1274,7 @@ func ApplyColumnChoice(choice topics.Choice, at time.Time, active []columns.Colu
 		choice.Subtopic = subs[len(history)%len(subs)]
 	}
 	choice.Column = col.Name
-	choice.TopicTag = choice.Subtopic + "|" + choice.Column + "|" + choice.Angle
+	choice = topics.Diverge(choice, subs, topics.AngleOptions(choice.Angle), titles)
 	return choice, col, true
 }
 
@@ -1287,9 +1301,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.Locked != nil {
 		topic = *w.Locked
 	} else if len(w.ActiveColumns) > 0 {
-		topic, picked, usingColumn = ApplyColumnChoice(topic, runAt, w.ActiveColumns, w.ColumnRotation, w.ColumnWeekdays, w.Direction, w.Keywords, w.History)
+		topic, picked, usingColumn = ApplyColumnChoice(topic, runAt, w.ActiveColumns, w.ColumnRotation, w.ColumnWeekdays, w.Direction, w.Keywords, w.History, w.ColumnUses, w.RecentTitles)
 	} else {
 		topic = topics.AssignColumn(topic, w.PersonaColumns, w.History)
+		topic = topics.Diverge(topic, []string{topic.Subtopic}, topics.AngleOptions(topic.Angle), w.RecentTitles)
 	}
 	imageStyle := ""
 	if usingColumn {
@@ -1369,9 +1384,14 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	var trace []map[string]any
 	tokens := 0
+	fail := func(trace []map[string]any, stage string, completion llm.Completion, err error) (Built, error) {
+		built, failErr := stageFail(trace, stage, completion, err)
+		built.Topic = topic
+		return built, failErr
+	}
 	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
 	if err != nil {
-		return stageFail(trace, "topic", completion, err)
+		return fail(trace, "topic", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("topic", completion)...)
@@ -1379,6 +1399,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if topicTitle == "" {
 		topicTitle = clip(topic.Subtopic+"："+topic.Angle, 64)
 	}
+	base["topic_title"] = topicTitle
 	var researchSources []any
 	searched := false
 	if w.Tier != "free" && len(providers["research"]) > 0 {
@@ -1412,7 +1433,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	outlinePayload["topic_title"] = topicTitle
 	outline, completion, err := gateway.CompleteJSON(ctx, providers["outline"], llm.StageMessages("大纲", outlinePayload), llm.StageSchema("大纲"), validateOutline)
 	if err != nil {
-		return stageFail(trace, "outline", completion, err)
+		return fail(trace, "outline", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("outline", completion)...)
@@ -1420,7 +1441,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draftPayload["outline"] = outline
 	draft, completion, err := gateway.CompleteJSON(ctx, providers["draft"], llm.StageMessages("正文", draftPayload), llm.StageSchema("正文"), validateDraft)
 	if err != nil {
-		return stageFail(trace, "draft", completion, err)
+		return fail(trace, "draft", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("draft", completion)...)
@@ -1437,7 +1458,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
 	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
 	if err != nil {
-		return stageFail(trace, "review", completion, err)
+		return fail(trace, "review", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("review", completion)...)
@@ -1449,7 +1470,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		reviewPayload["issues"] = hits
 		reviewed, completion, err = gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
 		if err != nil {
-			return stageFail(trace, "review", completion, err)
+			return fail(trace, "review", completion, err)
 		}
 		tokens += completion.PromptTokens + completion.CompletionTokens
 		trace = append(trace, traceRows("review", completion)...)
@@ -1459,7 +1480,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if len(hits) > 0 {
 			message := "审核未通过，命中敏感词：" + strings.Join(hits, "、")
 			trace = append(trace, map[string]any{"stage": "audit", "ok": false, "error": clip(message, 300)})
-			return Built{Trace: trace}, &llm.Error{Message: message}
+			return Built{Trace: trace, Topic: topic}, &llm.Error{Message: message}
 		}
 	}
 	if w.Tier != "free" {
@@ -1471,6 +1492,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if !listedHaveURL(filtered) {
 			filtered = filterListed(merged, policy.Relaxed())
 		}
+		filtered = filterAnySources(filtered, topicText(base))
 		draft["sources"] = preferListed(filtered, sourcePreferMode(base))
 	}
 	if w.Tier == "free" {
@@ -1485,24 +1507,27 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	trace = append(trace, auditTrace...)
 	tokens += auditTokens
 	if err != nil {
-		return Built{Trace: trace}, err
+		return Built{Trace: trace, Topic: topic}, err
 	}
 	draft = audited
 	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
 	draft = editorial.RepairNearDuplicates(draft)
 	draft = editorial.DedupeBlocks(draft)
+	draft = editorial.DedupeTables(draft)
 	draft = editorial.StripAudience(draft, w.Audience)
 	draft = editorial.DropSummaryEcho(draft)
 	draft = editorial.RewriteTaboos(draft, w.Taboos)
+	draft = editorial.StripMeta(draft)
 	draft = editorial.StripForeignScenes(draft, w.ForeignTitles)
 	if usingColumn {
 		draft = quality.RepairDraft(picked.Structure, draft)
 	}
+	draft = editorial.SupportCitations(draft)
 	delete(draft, "_quality")
 	cited := citationMarks.MatchString(bodyPlain(draft))
 	if w.Tier != "free" && hadSources && !cited && strings.TrimSpace(w.CostNote) == "" {
 		added, citeTokens, citeTrace := addCitations(ctx, gateway, providers, draft, base)
-		draft = added
+		draft = editorial.SupportCitations(added)
 		tokens += citeTokens
 		trace = append(trace, citeTrace...)
 		cited = citationMarks.MatchString(bodyPlain(draft))
@@ -1560,7 +1585,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
 	if err != nil {
-		return Built{Trace: trace}, err
+		return Built{Trace: trace, Topic: topic}, err
 	}
 	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, Searched: searched}, nil
 }
@@ -2317,10 +2342,26 @@ func retryResearch(completion llm.Completion, err error) bool {
 }
 
 func backupWebSearch(ctx context.Context, gateway *llm.Gateway, payload map[string]any) ([]map[string]any, error) {
-	if gateway == nil || strings.TrimSpace(gateway.BackupSearchURL) == "" {
+	if gateway == nil {
 		return nil, nil
 	}
-	return llm.SearchWeb(ctx, gateway.Client, gateway.BackupSearchURL, topicText(payload))
+	return llm.SearchChain(ctx, gateway.Client, searchTargets(gateway), topicText(payload))
+}
+
+func searchTargets(gateway *llm.Gateway) []llm.SearchTarget {
+	if gateway == nil {
+		return nil
+	}
+	var out []llm.SearchTarget
+	if strings.TrimSpace(gateway.SearchAPIURL) != "" && strings.TrimSpace(gateway.SearchAPIKey) != "" {
+		out = append(out, llm.SearchTarget{URL: gateway.SearchAPIURL, APIKey: gateway.SearchAPIKey})
+	}
+	for _, raw := range []string{gateway.BackupSearchURL, gateway.BackupSearchAlt, gateway.BackupSearchBaidu} {
+		if strings.TrimSpace(raw) != "" {
+			out = append(out, llm.SearchTarget{URL: raw})
+		}
+	}
+	return out
 }
 
 func topicText(payload map[string]any) string {
@@ -2374,6 +2415,22 @@ func backupResearchProviders(providers []llm.Provider, backupModel, failedModel 
 	clone.Model = model
 	clone.Name = strings.TrimSpace(base.Name + " 补救")
 	return []llm.Provider{clone}
+}
+
+func filterAnySources(sources []any, topic string) []any {
+	maps := make([]map[string]any, 0, len(sources))
+	for _, raw := range sources {
+		source, _ := raw.(map[string]any)
+		if source != nil {
+			maps = append(maps, source)
+		}
+	}
+	kept, _ := filterSourceQuality(maps, topic)
+	out := make([]any, len(kept))
+	for i := range kept {
+		out[i] = kept[i]
+	}
+	return out
 }
 
 func preferMaps(sources []map[string]any, payload map[string]any) []map[string]any {
@@ -2444,7 +2501,8 @@ func filterSourceQuality(sources []map[string]any, topic string) (kept []map[str
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "PPT模板或文库"})
 			continue
 		}
-		if len(terms) > 0 && title != "" && !relevantSource(title+" "+raw, terms) && !authorityHost(raw) {
+		blob := strings.TrimSpace(title + " " + str(source["snippet"]) + " " + str(source["note"]))
+		if len(terms) > 0 && !relevantSource(blob, terms) {
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "与选题无关"})
 			continue
 		}
@@ -2479,20 +2537,6 @@ func topicTerms(topic string) []string {
 func relevantSource(text string, terms []string) bool {
 	for _, term := range terms {
 		if strings.Contains(text, term) {
-			return true
-		}
-	}
-	return false
-}
-
-func authorityHost(raw string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
-	for _, domain := range []string{"gov.cn", "people.com.cn", "xinhuanet.com", "news.cn", "thepaper.cn"} {
-		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}
 	}
@@ -2647,13 +2691,14 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 		return draft, 0, nil, false
 	}
 	low := target * 85 / 100
+	floor := target * 95 / 100
 	high := target * 130 / 100
 	goal := target * 105 / 100
 	var trace []map[string]any
 	tokens := 0
 	stillShort := false
-	if content.BodyRunes(draft) < low {
-		for pass := 0; pass < 2 && content.BodyRunes(draft) < goal; pass++ {
+	if content.BodyRunes(draft) < floor {
+		for pass := 0; pass < 3 && content.BodyRunes(draft) < floor; pass++ {
 			before := content.BodyRunes(draft)
 			shortfall := goal - before
 			if shortfall < 1 {
@@ -2710,6 +2755,22 @@ func loadSourcePolicy(ctx context.Context, st *store.Store, q db.Q) (content.Sou
 		return content.DefaultSourcePolicy(), nil
 	}
 	return content.PolicyFromParams(row.ExtraParams, true), nil
+}
+
+func rememberColumn(ctx context.Context, deps Deps, w *work, topic topics.Choice) {
+	if w == nil || deps.Store == nil || strings.TrimSpace(topic.Column) == "" {
+		return
+	}
+	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
+		article, err := deps.Store.GetArticleByTask(ctx, tx, w.TaskID)
+		if err != nil || article == nil {
+			return err
+		}
+		article.ColumnType = topic.Column
+		article.Subtopic = topic.Subtopic
+		article.TopicTag = topic.TopicTag
+		return deps.Store.UpdateArticle(ctx, tx, article)
+	})
 }
 
 func stageFail(trace []map[string]any, stage string, completion llm.Completion, err error) (Built, error) {

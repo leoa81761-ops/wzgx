@@ -35,8 +35,16 @@ func TestRankLeavesTitlesUnchanged(t *testing.T) {
 	}
 	outside := Score(short, nil, nil, "")
 	inside := Score(mid, nil, nil, "")
-	if inside-outside > 12 {
-		t.Fatal("length bonus is too large", inside, outside)
+	if inside <= outside {
+		t.Fatal("a hooked title should outrank a flat one", inside, outside)
+	}
+	shortHook := "先核这三处线"
+	if Score(mid, nil, nil, "")-Score(shortHook, nil, nil, "") > 12 {
+		t.Fatal("length bonus is too large", Score(mid, nil, nil, ""), Score(shortHook, nil, nil, ""))
+	}
+	flat := "验收按顺序做完就行"
+	if Score(flat, nil, nil, "") >= Score(mid, nil, nil, "") {
+		t.Fatal("flat declarative title should lose", Score(flat, nil, nil, ""), Score(mid, nil, nil, ""))
 	}
 	keyword := Score("为什么验收总是过不了这一关呢", nil, nil, "")
 	concrete := Score("验收现场还有 3 处线槽没盖", nil, nil, "")

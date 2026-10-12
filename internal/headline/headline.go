@@ -78,8 +78,8 @@ func RankScored(candidates []Scored, summary, body string, redLines, recent []st
 	return chosen, alts
 }
 
-// Score ranks one title. Length outside 18–28 runes is a mild penalty.
-// A digit or other concrete number is preferred. Keyword and emotion lists are not rewarded.
+// Score ranks one title. Length outside 14–28 runes is a mild penalty.
+// A hook (number, conflict, question, or benefit) is preferred. A flat declarative title is penalized.
 // Clickbait, red lines, duplicates, titles over 30 runes, and descriptive sentences score zero and are dropped.
 // Model self-scores are not added here.
 func Score(title string, redLines, recent []string, prefer string) int {
@@ -94,19 +94,90 @@ func Score(title string, redLines, recent []string, prefer string) int {
 	}
 	score := 20
 	n := utf8.RuneCountInString(title)
-	if n < 18 || n > 28 {
+	if n < 14 || n > 28 {
 		score -= 6
 	}
-	if hasDigit(title) {
-		score += 4
+	hook := titleHook(title)
+	if hook == 0 {
+		score -= 6
+	} else {
+		score += hook
 	}
-	if strings.TrimSpace(prefer) == "number" && hasDigit(title) {
+	if strings.TrimSpace(prefer) == "number" && hasNumber(title) {
 		score += 4
 	}
 	if score < 1 {
 		return 1
 	}
 	return score
+}
+
+func titleHook(title string) int {
+	hook := 0
+	if hasNumber(title) {
+		hook = 6
+	}
+	if hook < 4 && (questionTitle(title) || conflictTitle(title) || benefitTitle(title)) {
+		hook = 4
+	}
+	return hook
+}
+
+func questionTitle(title string) bool {
+	if strings.Contains(title, "？") || strings.Contains(title, "?") {
+		return true
+	}
+	for _, word := range []string{"为什么", "怎么", "如何", "吗", "呢"} {
+		if strings.Contains(title, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func conflictTitle(title string) bool {
+	for _, word := range []string{"但是", "却", "过不了", "失败", "别再", "不要", "反而"} {
+		if strings.Contains(title, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func benefitTitle(title string) bool {
+	for _, word := range []string{"省下", "少走", "更快", "更省", "划算", "能少"} {
+		if strings.Contains(title, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNumber(title string) bool {
+	if hasDigit(title) {
+		return true
+	}
+	runes := []rune(title)
+	measures := "件处步个条次种项台根把张"
+	for i, r := range runes {
+		if !chineseNumeral(r) || i+1 >= len(runes) || !strings.ContainsRune(measures, runes[i+1]) {
+			continue
+		}
+		if r == '一' && i > 0 && (runes[i-1] == '这' || runes[i-1] == '那') {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func chineseNumeral(r rune) bool {
+	switch r {
+	case '一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '两':
+		return true
+	default:
+		return false
+	}
 }
 
 // descriptiveSentence is a narrative line, not a title: over 30 runes, a sentence ending,
