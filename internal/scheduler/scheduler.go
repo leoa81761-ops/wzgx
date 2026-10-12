@@ -151,6 +151,9 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 	if _, err := r.Deps.Store.PurgeArticleBodies(ctx, cutoff); err != nil {
 		log.Printf("清理 30 天前的正文失败: %v", err)
 	}
+	if err := r.pullStats(ctx, now); err != nil {
+		log.Printf("拉取认证号数据失败: %v", err)
+	}
 	return claimed, nil
 }
 

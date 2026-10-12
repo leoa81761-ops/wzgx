@@ -16,6 +16,8 @@
         <template v-else>
           <router-link to="/tutorial">绑定教程</router-link>
           <router-link to="/pricing">定价</router-link>
+          <router-link to="/examples">示例</router-link>
+          <router-link to="/about">关于</router-link>
           <router-link to="/help">帮助</router-link>
           <router-link to="/login">登录</router-link>
           <router-link class="btn" to="/register">注册</router-link>
@@ -33,6 +35,8 @@
         <router-link to="/legal/membership">会员与退款</router-link>
         <router-link to="/legal/content_rules">内容规范</router-link>
         <router-link to="/tutorial">绑定教程</router-link>
+        <router-link to="/examples">示例文章</router-link>
+        <router-link to="/about">关于我们</router-link>
         <router-link to="/help">帮助中心</router-link>
         <router-link to="/pricing">定价</router-link>
         <router-link to="/complaint">投诉</router-link>

@@ -13,6 +13,9 @@ import ArticleDetail from "./views/ArticleDetail.vue";
 import Membership from "./views/Membership.vue";
 import Admin from "./views/Admin.vue";
 import Help from "./views/Help.vue";
+import Examples from "./views/Examples.vue";
+import About from "./views/About.vue";
+import Stats from "./views/Stats.vue";
 import Pricing from "./views/Pricing.vue";
 import Complaint from "./views/Complaint.vue";
 import Inbox from "./views/Inbox.vue";
@@ -27,11 +30,14 @@ const router = createRouter({
     { path: "/legal/:docType", component: Legal },
     { path: "/tutorial", component: Tutorial },
     { path: "/help", component: Help },
+    { path: "/examples", component: Examples },
+    { path: "/about", component: About },
     { path: "/pricing", component: Pricing },
     { path: "/complaint", component: Complaint },
     { path: "/reconsent", component: Reconsent, meta: { auth: true } },
     { path: "/app", component: Dashboard, meta: { auth: true } },
     { path: "/app/accounts", component: Accounts, meta: { auth: true } },
+    { path: "/app/stats/:id", component: Stats, meta: { auth: true } },
     { path: "/app/plans", component: Plans, meta: { auth: true } },
     { path: "/app/articles", component: Articles, meta: { auth: true } },
     { path: "/app/articles/:id", component: ArticleDetail, meta: { auth: true } },

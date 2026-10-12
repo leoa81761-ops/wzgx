@@ -57,6 +57,11 @@ type Settings struct {
 	PriceLifetime       int
 	ResearchTimeout     time.Duration
 	ResearchBackupModel string
+	TplAppID            string
+	TplSecret           string
+	TplID               string
+	TplAPIBase          string
+	TplFields           string
 }
 
 func Load() Settings {
@@ -133,7 +138,17 @@ func Load() Settings {
 		PriceLifetime:       positiveOr("PAY_PRICE_LIFETIME", 300000),
 		ResearchTimeout:     researchTimeout(),
 		ResearchBackupModel: getenv("RESEARCH_BACKUP_MODEL", "grok-chat-fast"),
+		TplAppID:            strings.TrimSpace(os.Getenv("WECHAT_TPL_APP_ID")),
+		TplSecret:           os.Getenv("WECHAT_TPL_APP_SECRET"),
+		TplID:               strings.TrimSpace(os.Getenv("WECHAT_TPL_ID")),
+		TplAPIBase:          getenv("WECHAT_TPL_API_BASE", "https://api.weixin.qq.com"),
+		TplFields:           getenv("WECHAT_TPL_FIELDS", "thing1,thing2"),
 	}
+}
+
+// TemplateEnabled 在服务号模板消息三项都配齐时才为真。缺任意一项就不发。
+func (s Settings) TemplateEnabled() bool {
+	return strings.TrimSpace(s.TplAppID) != "" && strings.TrimSpace(s.TplSecret) != "" && strings.TrimSpace(s.TplID) != ""
 }
 
 func researchTimeout() time.Duration {

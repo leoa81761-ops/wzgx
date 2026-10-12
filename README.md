@@ -79,6 +79,17 @@
 
 价格默认是普通版月 30 元 / 年 299 元，高级版月 99 元 / 年 990 元，买断 3000 元，单位在环境变量里是分。可选覆盖：`PAY_PRICE_STANDARD_MONTH`、`PAY_PRICE_STANDARD_YEAR`、`PAY_PRICE_PREMIUM_MONTH`、`PAY_PRICE_PREMIUM_YEAR`、`PAY_PRICE_LIFETIME`。
 
+## 认证号数据、图表和模板消息
+
+- 认证号在同意「读取统计」之后，可以拉取前一天的发表内容阅读、分享和新增关注。接口是 `/datacube/getarticleread`、`/datacube/getarticleshare`、`/datacube/getusersummary`。北京时间 8 点后定时任务会错峰拉一次，已经有记录的日期不重复拉。未认证号不调用这些接口，可以手工填写阅读数。
+- 周报只复述已经保存的数字。样本少于 3 天时不调整选题。高级版和买断版在某个子方向的发布或弃用反馈达到 3 条后，才会提高或降低该子方向的权重，写作计划里可以撤销。
+- 稿件章节里如果自带图表数字，会画成柱状图上传到微信，正文同时写出这些数字。阅读页用同样的数字画柱。
+- 推送新草稿前会查询草稿箱开关和总数。开关关闭，或总数达到 `draft_box_cap`（默认 1000，官方总数接口没有公布硬上限）时先不写，稍后重试。开关接口若已废弃，按已开启处理。
+- 稿件进入草稿箱的通知会写明：本产品不调用群发，订阅号每天 1 次、服务号每月 4 次。
+- 服务号模板消息要同时配置 `WECHAT_TPL_APP_ID`、`WECHAT_TPL_APP_SECRET`、`WECHAT_TPL_ID`。可选 `WECHAT_TPL_API_BASE`、`WECHAT_TPL_FIELDS`（默认 `thing1,thing2`，内容截成 20 字）。缺任意一项就不发。用户保存自己的 OpenID 后，站内通知会再发一条模板消息。
+- 配置中心「实测」页记录模板在浅色和暗色下的检查结果。两类都有通过记录才显示已实测。
+- 示例文章在 `/examples`，关于我们在 `/about`。多架构镜像用 `scripts/release-images.sh`，需要本机 Docker buildx。
+
 ## 没有实现（相对开发书）
 
 这些留在后面，代码里没有假装已经可用：

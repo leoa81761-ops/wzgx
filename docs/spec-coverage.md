@@ -19,7 +19,7 @@
 | 设定方向后定期生成并写入草稿箱 | done |
 | 免费 / 普通 / 高级 / 买断 | done |
 | 范围内：用户、绑定、方向、定时、草稿、认证号发布、表格图片、会员支付、后台 | done，支付见 needs-external-credentials |
-| 认证号数据分析（P2，7.11） | 未做 |
+| 认证号数据分析（P2，7.11） | done。同意后拉取发表内容阅读、分享和新增关注；未认证号手工填写。定时在北京时间 8 点后错峰执行 |
 | 自动群发、小程序、视频号 / 小红书、自动抓取他人图片 | 范围外 |
 | 个人号只推草稿，企业认证号可自动发布 | done |
 
@@ -33,7 +33,7 @@
 | 精细设置：关键词、读者、风格、模板、篇幅、禁用词、固定开头结尾 | 方向、风格、模板、篇幅 done；禁用词走全局敏感词；固定开头结尾 未做 |
 | 推送周期：每日 / 每周、时段、每号每日一批、按账号类型推荐 | 每日 / 每周和时段 done；同日多篇分别进草稿，合并多图文由用户在公众号助手完成 |
 | 文章管理：记录、状态、预览、重写、失败原因 | done |
-| 入草稿后站内信 / 服务通知 | 站内通知 done；邮件 needs-external-credentials（`SMTP_*`）；服务号模板消息 未做 |
+| 入草稿后站内信 / 服务通知 | 站内通知 done；邮件 needs-external-credentials（`SMTP_*`）；服务号模板消息 needs-external-credentials（`WECHAT_TPL_*`，没配就不发） |
 | 会员中心：等级、额度、开通续费、订单 | done；在线支付 needs-external-credentials |
 | 立即生成、指定题目、暂停 / 恢复、否决选题 | done |
 | 邀请链接与奖励额度 | added。会员页展示链接、计数和规则；无效邀请码不影响注册 |
@@ -79,13 +79,13 @@
 | P2 个人风格学习、事实核查加强、原创度 | 事实核对 done；范文风格画像与原创度 未做 |
 | P2 多账号 | 高级档可绑多个号 done |
 | P2 第三方平台授权 | 未做（登录分支，needs-external-credentials） |
-| P2 数据图表、授权引用图片 | 未做；自动抓图保持禁止 |
+| P2 数据图表、授权引用图片 | 数据图表 done：稿件里已有的数字画成柱状图再上传。授权引用图片 未做。自动抓图保持禁止 |
 
 ## 3.5 页面与法律
 
 | 要求 | 状态 |
 | --- | --- |
-| 落地页、功能、定价、帮助、教程、投诉 | done。示例文章墙、关于我们独立页 未做；`page_about` 可发布文本 |
+| 落地页、功能、定价、帮助、教程、投诉 | done。示例文章在 `/examples`，关于我们在 `/about`。示例页标明是示例。`page_about` 仍可发布补充文本 |
 | 邀请落地页 | added。`/register?invite=` 带上邀请码，规则在会员页和邀请规则草案 |
 | 找回账号 / 换绑手机 | 未做 |
 | 六类法律文本 | done（草案） |
@@ -93,7 +93,7 @@
 | 注册主动勾选，consent_log 含版本、时间、IP、设备 | done |
 | 条款重大变更重新同意 | added |
 | 单独同意：绑号、自动发布 | done |
-| 单独同意：读他人草稿标题、数据分析、设备指纹、修改差异学风格 | 未做（对应功能未做） |
+| 单独同意：读他人草稿标题、数据分析、设备指纹、修改差异学风格 | 数据分析 done：同意后才拉取认证号统计。草稿标题、设备指纹、修改差异学风格 未做 |
 | 注销删凭证、导出 | done |
 | 仅限成年人 | done（注册声明） |
 | 宣传页不写绝对化承诺 | done |
@@ -109,7 +109,7 @@
 | 模型按档位路由 | done |
 | 检索：免费无、普通基础、高级完整 | 免费不检索 done；普通和高级都走已配置的检索路由，没有再拆「基础 / 完整」两套深度 |
 | 来源强制标注 | 付费档有检索时强制；免费不写具体来源 done |
-| 认证号周报 / 自动调权重 | 未做 |
+| 认证号周报 / 自动调权重 | done。周报只复述已保存的数字。高级版和买断版在反馈样本够 3 条时调整子方向权重，可撤销。样本不足不调整 |
 | 配图档位 | done |
 | 风格学习仅高级 | 未做 |
 | 风格与模板档位 | done |
@@ -131,13 +131,13 @@
 | 图片不长期入库 | done |
 | 批量接口 | 未做（免费版走夜间，仍是单次调用） |
 | Go + Vue、SKIP LOCKED、敏感词、封面压缩 | done |
-| Docker / compose、amd64 与 arm64 | 仓库有 Dockerfile 与 compose 的，以仓库文件为准；多架构发布 未做 |
+| Docker / compose、amd64 与 arm64 | done。`scripts/release-images.sh` 用 buildx 分别打 linux/amd64 和 linux/arm64。没有 Docker 时脚本直接失败 |
 | 健康检查、stdout 日志 | done |
 | 5.6 提示词缓存、选题批量、检索缓存 24 小时 | 未做 |
 | 正文 30 天清理 | added |
 | 5.8 表：user、wx_account、writing_plan、article_task、article、article_source、quota、order、quota_ledger、topic_coverage、vertical_pack、style、layout、legal_doc、consent_log、complaint、publish、service_config、plan_config、entitlement、feedback、audit_log | done |
 | content_calendar 独立表 | 用规则预告，没有单独的月表 |
-| mp_stats、ops_report | 未做 |
+| mp_stats、ops_report | done。统计进 `mp_stats`，周报进 `ops_report` |
 | referral | added |
 | image_asset | 配图直接进 HTML，没有独立素材表 |
 | prompt_version 表 | 版本号常量，没有 A/B 表 |
@@ -155,11 +155,11 @@
 | AppID / AppSecret、加密、解绑删除 | done |
 | 绑定检测与唯一性、解绑 30 天 | done |
 | 草稿失败改为复制 HTML | done |
-| 手动发布提醒里的群发次数说明 | 帮助页说明 done；每条通知逐条附次数 未做 |
+| 手动发布提醒里的群发次数说明 | done。进入草稿箱的通知写明订阅号每天 1 次、服务号每月 4 次，并说明本产品不调用群发 |
 | 开放平台第三方扫码授权 | 未做，needs-external-credentials |
 | 读他人草稿标题须同意 | 未做 |
-| token 失效暂停、草稿箱满、限频重试、内容检查重写 | 授权失效会标失败并通知 done；草稿箱开关与满员的专门探测 未做 |
-| 服务号模板消息 | 未做，needs-external-credentials |
+| token 失效暂停、草稿箱满、限频重试、内容检查重写 | 授权失效会标失败并通知 done。推送前查询草稿箱开关和总数，关闭或达到 `draft_box_cap`（默认 1000）时等待并通知，多次仍不可用就暂停计划 |
+| 服务号模板消息 | needs-external-credentials。`WECHAT_TPL_APP_ID`、`WECHAT_TPL_APP_SECRET`、`WECHAT_TPL_ID` 缺一就不发 |
 | 8.7 自动发布 | done（未经真实认证号实测） |
 
 ## 7 内容
@@ -178,12 +178,12 @@
 | 内容日历、90 天去重、风险分级 | done |
 | 垂类规则包 | done |
 | 表格、配图、失败兜底封面 | done |
-| 数据图表、用户素材库 | 未做 |
+| 数据图表、用户素材库 | 数据图表 done。用户素材库 未做 |
 | 7.10 授权引用图片 | 未做；自动抓图保持关闭 |
-| 7.11 认证号数据 | 未做，needs-external-credentials（认证号统计权限） |
+| 7.11 认证号数据 | needs-external-credentials（认证号统计权限）。代码会调用发表内容数据接口；无权限或未同意时不写入 0 当作真实阅读量 |
 | 7.12 热点多源 | added。多源去重，gov.cn 和两个来源以上优先。普通版取第一条，高级和买断取最高分。免费版不用热点 |
 | 7.13 风格库、模板、站内预览、超长降级 | done |
-| 试写 200 字、按栏目换风格、模板实测记录 | 未做 |
+| 试写 200 字、按栏目换风格、模板实测记录 | 模板实测记录 done：配置中心记下机型、浅色或暗色、通过或未通过。试写和按栏目 未做 |
 
 ## 8 业务规则
 
@@ -226,6 +226,7 @@
 | 邮件 | `SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASSWORD`、`SMTP_FROM` |
 | 失败转发 | `NOTIFY_WEBHOOK_URL` |
 | 真实模型 / 微信 | 配置中心或 `LLM_*`、`WX_APP_ID`、`WX_APP_SECRET` |
+| 服务号模板消息 | `WECHAT_TPL_APP_ID`、`WECHAT_TPL_APP_SECRET`、`WECHAT_TPL_ID`；可选 `WECHAT_TPL_API_BASE`、`WECHAT_TPL_FIELDS` |
 | 短信登录 | 未做，下一支会列 `SMS_*` |
 | 微信扫码登录 / 开放平台授权 | 未做，下一支会列 `WECHAT_OPEN_*` |
 

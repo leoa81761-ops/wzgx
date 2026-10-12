@@ -125,6 +125,8 @@ type Client interface {
 	GetDraft(ctx context.Context, mediaID string) (map[string]any, error)
 	DeleteDraft(ctx context.Context, mediaID string) error
 	DraftCount(ctx context.Context) (int, error)
+	DraftSwitch(ctx context.Context) (open bool, supported bool, err error)
+	Datacube(ctx context.Context, path, begin, end string) (map[string]any, error)
 	ProbePublish(ctx context.Context) (bool, string, error)
 	SubmitPublish(ctx context.Context, mediaID string) (string, error)
 	GetPublish(ctx context.Context, publishID string) (PublishState, error)
@@ -146,12 +148,15 @@ type PermissionReport struct {
 }
 
 type mockBox struct {
-	mu        sync.Mutex
-	materials map[string]int
-	drafts    map[string]map[string]any
-	images    map[string]string
-	publishes map[string]PublishState
-	token     string
+	mu           sync.Mutex
+	materials    map[string]int
+	drafts       map[string]map[string]any
+	images       map[string]string
+	publishes    map[string]PublishState
+	token        string
+	switchClosed bool
+	forcedCount  int
+	datacube     map[string]map[string]any
 }
 
 var (
@@ -264,7 +269,34 @@ func (c *MockClient) DraftCount(context.Context) (int, error) {
 	}
 	c.box.mu.Lock()
 	defer c.box.mu.Unlock()
+	if c.box.forcedCount > 0 {
+		return c.box.forcedCount, nil
+	}
 	return len(c.box.drafts), nil
+}
+
+func (c *MockClient) DraftSwitch(context.Context) (bool, bool, error) {
+	if _, err := c.GetToken(context.Background()); err != nil {
+		return false, true, err
+	}
+	c.box.mu.Lock()
+	defer c.box.mu.Unlock()
+	return !c.box.switchClosed, true, nil
+}
+
+func (c *MockClient) Datacube(_ context.Context, path, _, _ string) (map[string]any, error) {
+	if _, err := c.GetToken(context.Background()); err != nil {
+		return nil, err
+	}
+	c.box.mu.Lock()
+	defer c.box.mu.Unlock()
+	if c.box.datacube == nil {
+		return map[string]any{"list": []any{}}, nil
+	}
+	if row, ok := c.box.datacube[path]; ok {
+		return row, nil
+	}
+	return map[string]any{"list": []any{}}, nil
 }
 
 func (c *MockClient) ProbePublish(context.Context) (bool, string, error) {
@@ -493,6 +525,32 @@ func (c *LiveClient) GetPublish(ctx context.Context, publishID string) (PublishS
 		}
 	}
 	return state, nil
+}
+
+func (c *LiveClient) DraftSwitch(ctx context.Context) (bool, bool, error) {
+	token, err := c.token(ctx, false)
+	if err != nil {
+		return false, true, err
+	}
+	data, err := c.do(ctx, http.MethodPost, "/cgi-bin/draft/switch", map[string]string{"access_token": token, "checkonly": "1"}, nil)
+	if err != nil {
+		var wx *Error
+		if errors.As(err, &wx) && (wx.Code == 40066 || strings.Contains(wx.Message, "废弃") || strings.Contains(wx.Message, "not exist")) {
+			return true, false, nil
+		}
+		return false, true, err
+	}
+	if intOf(data["is_open"]) == 0 {
+		return false, true, nil
+	}
+	return true, true, nil
+}
+
+func (c *LiveClient) Datacube(ctx context.Context, path, begin, end string) (map[string]any, error) {
+	if !strings.HasPrefix(path, "/datacube/") {
+		return nil, &Error{Message: "未知的数据接口"}
+	}
+	return c.request(ctx, http.MethodPost, path, map[string]any{"begin_date": begin, "end_date": end}, true)
 }
 
 func (c *LiveClient) DraftCount(ctx context.Context) (int, error) {
@@ -744,6 +802,33 @@ func CheckPermissions(ctx context.Context, client Client, cover []byte) Permissi
 		checks = append(checks, map[string]any{"name": "draft_cleanup", "ok": true, "detail": "检测草稿已删除"})
 	}
 	return PermissionReport{OK: true, AuthFailed: false, CanDraft: true, CanPublish: canPublish, DeliveryMode: "draft", Checks: checks}
+}
+
+// SetMockDraftClosed 让模拟公众号的草稿箱开关读成关闭。
+func SetMockDraftClosed(appID string, closed bool) {
+	box := newMock(appID, "mock-secret", "").box
+	box.mu.Lock()
+	box.switchClosed = closed
+	box.mu.Unlock()
+}
+
+// SetMockDraftCount 让模拟环境的草稿总数接口返回固定数字。
+func SetMockDraftCount(appID string, n int) {
+	box := newMock(appID, "mock-secret", "").box
+	box.mu.Lock()
+	box.forcedCount = n
+	box.mu.Unlock()
+}
+
+// SetMockDatacube 写入模拟的发表内容或用户分析响应。path 用 /datacube/ 开头。
+func SetMockDatacube(appID, path string, payload map[string]any) {
+	box := newMock(appID, "mock-secret", "").box
+	box.mu.Lock()
+	if box.datacube == nil {
+		box.datacube = map[string]map[string]any{}
+	}
+	box.datacube[path] = payload
+	box.mu.Unlock()
 }
 
 // MockPublishCount 返回模拟环境里已经提交过的发布单数量，测试用来确认没有重复提交。

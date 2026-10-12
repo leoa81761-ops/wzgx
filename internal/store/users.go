@@ -135,6 +135,10 @@ func (s *Store) DeleteUserCascade(ctx context.Context, q db.Q, userID int64) err
 		q = s.DB
 	}
 	stmts := []string{
+		`DELETE FROM topic_weight WHERE plan_id IN (SELECT id FROM writing_plan WHERE user_id = ?)`,
+		`DELETE FROM mp_stats WHERE account_id IN (SELECT id FROM wx_account WHERE user_id = ?)`,
+		`DELETE FROM ops_report WHERE account_id IN (SELECT id FROM wx_account WHERE user_id = ?)`,
+		`DELETE FROM tpl_bind WHERE user_id = ?`,
 		`DELETE FROM topic_lock WHERE task_id IN (SELECT id FROM article_task WHERE user_id = ?)`,
 		`DELETE FROM topic_proposal WHERE plan_id IN (SELECT id FROM writing_plan WHERE user_id = ?)`,
 		`DELETE FROM referral WHERE inviter_id = ?`,

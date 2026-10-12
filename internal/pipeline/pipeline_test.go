@@ -1023,6 +1023,10 @@ func TestRegenCreatesDraftWhenMediaIDInvalid(t *testing.T) {
 			_, _ = w.Write([]byte(`{"media_id":"thumb-` + strconv.Itoa(thumbN) + `"}`))
 		case strings.HasSuffix(r.URL.Path, "/uploadimg"):
 			_, _ = w.Write([]byte(`{"url":"https://mmbiz.qpic.cn/demo"}`))
+		case strings.HasSuffix(r.URL.Path, "/draft/switch"):
+			_, _ = w.Write([]byte(`{"errcode":0,"is_open":1}`))
+		case strings.HasSuffix(r.URL.Path, "/draft/count"):
+			_, _ = w.Write([]byte(`{"total_count":1}`))
 		case strings.HasSuffix(r.URL.Path, "/draft/update"):
 			updates++
 			var payload map[string]any
@@ -1132,6 +1136,10 @@ func TestAddRetriesWhenThumbInvalid(t *testing.T) {
 			_, _ = w.Write([]byte(`{"media_id":"thumb-` + strconv.Itoa(thumbs) + `"}`))
 		case strings.HasSuffix(r.URL.Path, "/uploadimg"):
 			_, _ = w.Write([]byte(`{"url":"https://mmbiz.qpic.cn/demo"}`))
+		case strings.HasSuffix(r.URL.Path, "/draft/switch"):
+			_, _ = w.Write([]byte(`{"errcode":0,"is_open":1}`))
+		case strings.HasSuffix(r.URL.Path, "/draft/count"):
+			_, _ = w.Write([]byte(`{"total_count":1}`))
 		case strings.HasSuffix(r.URL.Path, "/draft/add"):
 			adds++
 			if adds == 1 {

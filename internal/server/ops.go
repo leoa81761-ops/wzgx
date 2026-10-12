@@ -200,7 +200,12 @@ func (a *App) planCalendar(w http.ResponseWriter, r *http.Request, user *model.U
 		return err
 	}
 	pack := vertical.Match(plan.Direction, packs)
-	slots, err := topics.ProjectTree(vertical.Subtopics(pack), plan.Direction, tier, plan.ScheduleType, plan.Weekdays, plan.TimeWindow, history, now, count, vetoes)
+	weights, err := a.Store.ListTopicWeights(r.Context(), nil, plan.ID)
+	if err != nil {
+		return err
+	}
+	tree := topics.ExpandTree(vertical.Subtopics(pack), plan.Direction, tier, weights)
+	slots, err := topics.ProjectTree(tree, plan.Direction, tier, plan.ScheduleType, plan.Weekdays, plan.TimeWindow, history, now, count, vetoes)
 	if err != nil {
 		return bad(err.Error())
 	}

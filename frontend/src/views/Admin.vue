@@ -449,6 +449,31 @@
         <p v-if="hotPreview" class="muted">{{ hotPreview }}</p>
       </article>
     </section>
+
+    <section v-if="tab === 'checks'" class="card stack">
+      <h2>模板实测记录</h2>
+      <p class="muted">每个模板在浅色和暗色都留下一条通过记录后，才显示为已实测。这里只保存记录，不代替你在微信里打开稿件看过。</p>
+      <label>模板标识<input v-model="checkForm.layout_key" /></label>
+      <label>机型<input v-model="checkForm.device" placeholder="例如 iPhone" /></label>
+      <label>主题
+        <select v-model="checkForm.theme">
+          <option value="light">浅色</option>
+          <option value="dark">暗色</option>
+        </select>
+      </label>
+      <label>结果
+        <select v-model="checkForm.result">
+          <option value="pass">通过</option>
+          <option value="fail">未通过</option>
+        </select>
+      </label>
+      <label>备注<input v-model="checkForm.note" /></label>
+      <div class="row">
+        <button class="btn" type="button" @click="saveCheck">保存记录</button>
+        <button class="btn-ghost" type="button" @click="loadChecks">刷新</button>
+      </div>
+      <p v-for="row in checks" :key="row.id" class="muted">{{ row.layout_key }} · {{ row.device }} · {{ row.theme === 'dark' ? '暗色' : '浅色' }} · {{ row.result === 'pass' ? '通过' : '未通过' }} · {{ row.note }}</p>
+    </section>
   </div>
 </template>
 
@@ -471,8 +496,11 @@ const tabs = [
   { key: "legal", label: "协议" },
   { key: "invite", label: "邀请" },
   { key: "hot", label: "热点" },
+  { key: "checks", label: "实测" },
 ];
 const tab = ref("models");
+const checks = ref([]);
+const checkForm = reactive({ layout_key: "simple", device: "", theme: "light", result: "pass", note: "" });
 const error = ref("");
 const message = ref("");
 const users = ref([]);
@@ -636,6 +664,21 @@ async function publishLegal() {
   }
 }
 
+async function loadChecks() {
+  error.value = "";
+  checks.value = await api("/api/admin/layout-checks");
+}
+async function saveCheck() {
+  error.value = "";
+  message.value = "";
+  try {
+    const saved = await api("/api/admin/layout-checks", { method: "POST", body: checkForm });
+    message.value = saved.measured ? "浅色和暗色都已有通过记录" : "已记下。浅色和暗色都通过后才算实测完成";
+    await loadChecks();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
 async function loadConsents() {
   error.value = "";
   try {
