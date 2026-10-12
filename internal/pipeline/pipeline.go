@@ -43,34 +43,35 @@ type Deps struct {
 }
 
 type work struct {
-	TaskID          int64
-	UserID          int64
-	Tier            string
-	PlanID          int64
-	Direction       string
-	StyleKey        string
-	TemplateKey     string
-	WordTarget      int
-	ScheduleType    string
-	Weekdays        []int
-	TimeWindow      string
-	AccountID       int64
-	AppID           string
-	AppSecret       string
-	DeliveryMode    string
-	Trigger         string
-	ScheduleDate    string
-	RetryCount      int
-	RegenArticleID  *int64
-	Locked          *topics.Choice
-	ExistingMediaID string
-	History         []topics.Coverage
-	RecentTitles    []string
-	Vetoed          []string
-	SpecifiedTitle  string
-	Pack            store.VerticalPack
-	StyleName       string
-	StyleHint       string
+	TaskID            int64
+	UserID            int64
+	Tier              string
+	PlanID            int64
+	Direction         string
+	StyleKey          string
+	TemplateKey       string
+	WordTarget        int
+	ScheduleType      string
+	Weekdays          []int
+	TimeWindow        string
+	AccountID         int64
+	AppID             string
+	AppSecret         string
+	AuthorizerRefresh string
+	DeliveryMode      string
+	Trigger           string
+	ScheduleDate      string
+	RetryCount        int
+	RegenArticleID    *int64
+	Locked            *topics.Choice
+	ExistingMediaID   string
+	History           []topics.Coverage
+	RecentTitles      []string
+	Vetoed            []string
+	SpecifiedTitle    string
+	Pack              store.VerticalPack
+	StyleName         string
+	StyleHint         string
 }
 
 type Built struct {
@@ -247,6 +248,19 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 				return err
 			}
 		}
+		refresh := ""
+		if secret == "" {
+			enc, err := deps.Store.AuthorizerRefresh(ctx, tx, account.ID)
+			if err != nil {
+				return err
+			}
+			if enc != "" {
+				refresh, err = security.DecryptSecret(deps.Settings.MasterKey, enc)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		tier, _ := quota.Membership(user, now)
 		if article == nil {
 			article, err = deps.Store.GetArticleByTask(ctx, tx, task.ID)
@@ -276,7 +290,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			TaskID: task.ID, UserID: user.ID, Tier: tier, PlanID: plan.ID, Direction: plan.Direction,
 			StyleKey: plan.StyleKey, TemplateKey: plan.TemplateKey, WordTarget: plan.WordTarget,
 			ScheduleType: plan.ScheduleType, Weekdays: plan.Weekdays, TimeWindow: plan.TimeWindow,
-			AccountID: account.ID, AppID: account.AppID, AppSecret: secret, DeliveryMode: account.DeliveryMode,
+			AccountID: account.ID, AppID: account.AppID, AppSecret: secret, AuthorizerRefresh: refresh, DeliveryMode: account.DeliveryMode,
 			Trigger: task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
 			History: history, RecentTitles: titles, Vetoed: vetoed, SpecifiedTitle: pinned, Pack: pack,
@@ -642,6 +656,14 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Searched: searched}, nil
 }
 
+func wechatClient(deps Deps, appID, secret, refresh, mode, base string) wechat.Client {
+	if refresh != "" && deps.Settings.WeChatComponentEnabled() && mode != "mock" && !strings.HasPrefix(appID, "wx_mock") {
+		ticket, _ := deps.Store.GetSetting(context.Background(), nil, "wechat_component_ticket")
+		return wechat.NewAuthorizer(appID, refresh, deps.Settings.WeChatComponentAppID, deps.Settings.WeChatComponentSecret, ticket, base, deps.HTTP, deps.Tokens)
+	}
+	return wechat.Build(appID, secret, mode, base, deps.HTTP, deps.Tokens)
+}
+
 func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
 	level := risk.Grade(w.Direction, article.Draft)
 	if hold, note := risk.ShouldHold(level, w.Tier, len(asList(article.Draft["sources"])) > 0); hold {
@@ -658,7 +680,7 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 	if base == "" {
 		base = "https://api.weixin.qq.com"
 	}
-	client := wechat.Build(w.AppID, w.AppSecret, mode, base, deps.HTTP, deps.Tokens)
+	client := wechatClient(deps, w.AppID, w.AppSecret, w.AuthorizerRefresh, mode, base)
 	html := article.HTML
 	outHTML := html
 	aiCover, inlineN := catalog.ImageAllowance(w.Tier)

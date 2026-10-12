@@ -6,6 +6,8 @@
       <p v-if="error" class="banner">{{ error }}</p>
       <p v-if="message" class="banner ok">{{ message }}</p>
       <p v-if="mode === 'mock'" class="banner info">当前是模拟模式，填写任意 AppID 即可完成检测，不会请求微信。</p>
+      <button v-if="componentOn" class="btn-ghost" type="button" @click="componentBind">使用微信开放平台授权</button>
+      <p v-if="componentOn" class="muted">授权完成后仍可以用下面的 AppID 和 AppSecret 绑定其他号。</p>
       <label>显示名称<input v-model="form.name" required placeholder="例如：周末厨房" /></label>
       <label>AppID<input v-model="form.app_id" required placeholder="wx_mock_demo" /></label>
       <label>AppSecret<input v-model="form.app_secret" type="password" required /></label>
@@ -55,13 +57,16 @@
 
 <script setup>
 import { onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { api } from "../api";
 
+const route = useRoute();
 const accounts = ref([]);
 const error = ref("");
 const message = ref("");
 const loading = ref(false);
 const mode = ref("");
+const componentOn = ref(false);
 const form = reactive({
   name: "",
   app_id: "",
@@ -76,6 +81,18 @@ async function load() {
   accounts.value = await api("/api/accounts");
   const meta = await api("/api/meta");
   mode.value = meta.wechat_mode;
+  const options = await api("/api/auth/options");
+  componentOn.value = !!options.wechat_component;
+}
+
+async function componentBind() {
+  error.value = "";
+  try {
+    const data = await api("/api/accounts/component/start", { method: "POST", body: {} });
+    window.location.href = data.url;
+  } catch (err) {
+    error.value = err.message;
+  }
 }
 
 async function submit() {
@@ -113,5 +130,9 @@ async function unbind(account) {
   await load();
 }
 
-onMounted(load);
+onMounted(async () => {
+  if (route.query.bound === "1") message.value = "已通过微信授权绑定";
+  if (typeof route.query.error === "string" && route.query.error) error.value = route.query.error;
+  await load();
+});
 </script>

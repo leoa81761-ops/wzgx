@@ -573,18 +573,11 @@ func (a *App) recheckAccount(w http.ResponseWriter, r *http.Request, user *model
 		if err != nil {
 			return bad(err.Error())
 		}
-	} else {
-		return bad("请重新填写 AppSecret")
 	}
-	wx, err := a.Cache.WeChat(r.Context(), nil)
+	client, err := a.accountWeChatClient(r.Context(), account, secret)
 	if err != nil {
 		return err
 	}
-	mode := "live"
-	if wx.Mode == "mock" || strings.HasPrefix(account.AppID, "wx_mock") {
-		mode = "mock"
-	}
-	client := wechat.Build(account.AppID, secret, mode, wx.Base, a.HTTP, a.Tokens)
 	report := wechat.CheckPermissions(r.Context(), client, cover.CoverPNG("simple"))
 	var payload map[string]any
 	var failed error

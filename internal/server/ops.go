@@ -105,22 +105,20 @@ func (a *App) rereadDraft(w http.ResponseWriter, r *http.Request, user *model.Us
 		if err != nil {
 			return err
 		}
-		if account == nil || account.SecretEncrypted == "" {
+		if account == nil {
 			return bad("公众号凭证不可用，无法回读草稿")
 		}
-		secret, err := security.DecryptSecret(a.Cfg.MasterKey, account.SecretEncrypted)
-		if err != nil {
-			return bad(err.Error())
+		secret := ""
+		if account.SecretEncrypted != "" {
+			secret, err = security.DecryptSecret(a.Cfg.MasterKey, account.SecretEncrypted)
+			if err != nil {
+				return bad(err.Error())
+			}
 		}
-		wx, err := a.Cache.WeChat(r.Context(), nil)
+		client, err := a.accountWeChatClient(r.Context(), account, secret)
 		if err != nil {
 			return err
 		}
-		mode := "live"
-		if wx.Mode == "mock" || strings.HasPrefix(account.AppID, "wx_mock") {
-			mode = "mock"
-		}
-		client := wechat.Build(account.AppID, secret, mode, wx.Base, a.HTTP, a.Tokens)
 		raw, err := client.GetDraft(r.Context(), article.DraftMediaID)
 		if err != nil {
 			if !wechat.MissingDraft(err) {
