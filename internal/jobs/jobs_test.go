@@ -127,6 +127,31 @@ func accountOf(t *testing.T, st *store.Store, plan *model.WritingPlan) *model.Wx
 	return account
 }
 
+func TestOpenTasksAreUniquePerPlan(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC)
+	user, plans := seedTwo(t, st, "premium", now)
+	plan := plans[0]
+	account := accountOf(t, st, plan)
+	day := schedule.ShanghaiDay(now)
+	first := &model.ArticleTask{
+		PlanID: plan.ID, UserID: user.ID, WxAccountID: account.ID, IdempotencyKey: "open-a",
+		TriggerType: "manual", ScheduleDate: day, RunAt: now, Status: "running", CreatedAt: now,
+	}
+	if err := st.InsertTask(ctx, nil, first); err != nil {
+		t.Fatal(err)
+	}
+	second := &model.ArticleTask{
+		PlanID: plan.ID, UserID: user.ID, WxAccountID: account.ID, IdempotencyKey: "open-b",
+		TriggerType: "manual", ScheduleDate: day, RunAt: now, Status: "pending", CreatedAt: now,
+	}
+	err := st.InsertTask(ctx, nil, second)
+	if err == nil || !db.IsUnique(err) || !planOpenConflict(err) {
+		t.Fatal(err)
+	}
+}
+
 func openStore(t *testing.T) *store.Store {
 	t.Helper()
 	database, err := db.Open("sqlite://"+filepath.Join(t.TempDir(), "t.db"), 4, 2)

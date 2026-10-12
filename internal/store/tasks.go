@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
@@ -130,4 +131,23 @@ func (s *Store) ClaimOne(ctx context.Context, tx *db.Tx, now string) (int64, boo
 		return 0, false, nil
 	}
 	return id, true, nil
+}
+
+// LockUserQuota 在当前事务里按用户串行化建任务和占额度，避免并发请求越过每日上限。
+// Postgres 用事务级 advisory lock，提交或回滚时自动释放；SQLite 写事务本身串行，不需要。
+func (s *Store) LockUserQuota(ctx context.Context, q db.Q, userID int64) error {
+	if s.DB.Dialect != "postgres" {
+		return nil
+	}
+	if q == nil {
+		return fmt.Errorf("postgres 额度锁定必须在事务里")
+	}
+	rows, err := q.Query(ctx, `SELECT pg_advisory_xact_lock(7301, CAST(? AS INTEGER))`, userID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+	}
+	return rows.Err()
 }

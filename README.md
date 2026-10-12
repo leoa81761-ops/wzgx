@@ -310,6 +310,15 @@ go test ./...
 
 覆盖：写作流水线与主题去重、调度幂等和额度暂停、每日/每月额度与失败退回、微信客户端（模拟，以及用假 HTTP 核对 `stable_token`、永久素材、`uploadimg`、草稿新增/更新/读取的请求形状）、两种模型协议的流式请求和回退顺序、注册同意到「立即生成」进入草稿箱的接口流程、IP 白名单错误不会把账号标成授权失效。
 
+并发额度测试连真实 Postgres：10 个立即生成同时打到每日 5 篇的用户上，成功的任务必须正好 5 个。没设置 `POSTGRES_TEST_URL` 时这条会跳过。
+
+```bash
+docker run --rm -d --name gonghao-pg-test \
+  -e POSTGRES_USER=gonghao -e POSTGRES_PASSWORD=gonghao -e POSTGRES_DB=gonghao \
+  -p 5432:5432 postgres:16-alpine
+POSTGRES_TEST_URL=postgres://gonghao:gonghao@127.0.0.1:5432/gonghao?sslmode=disable go test ./...
+```
+
 ## 还没做
 
 1. 用真实连通测试，在个人订阅号草稿箱里核对一篇稿。认证号自动发布要等有发布权限的号再试。

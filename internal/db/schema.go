@@ -91,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_task_status_run ON article_task(status, run_at);
 CREATE INDEX IF NOT EXISTS idx_task_user ON article_task(user_id);
 CREATE INDEX IF NOT EXISTS idx_task_plan ON article_task(plan_id);
 CREATE INDEX IF NOT EXISTS idx_task_account_day ON article_task(wx_account_id, schedule_date);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_article_task_plan_open ON article_task(plan_id) WHERE status IN ('pending', 'running');
 
 CREATE TABLE IF NOT EXISTS article (
   id {{PK}},

@@ -194,6 +194,14 @@ func IsUnique(err error) bool {
 	return false
 }
 
+func ConstraintName(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ConstraintName
+	}
+	return ""
+}
+
 func ParseURL(raw string) (dialect, dsn string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

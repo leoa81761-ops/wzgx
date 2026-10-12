@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
@@ -14,6 +15,9 @@ import (
 )
 
 func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan *model.WritingPlan, account *model.WxAccount, trigger string, now time.Time, regen *model.Article) (*model.ArticleTask, error) {
+	if err := st.LockUserQuota(ctx, q, user.ID); err != nil {
+		return nil, err
+	}
 	if account.BindStatus != "active" {
 		return nil, &quota.Error{Message: "公众号当前不可用，请重新检测或重新绑定"}
 	}
@@ -69,6 +73,9 @@ func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan
 		Priority: quota.Priority(tier, trigger), StartedAt: started, CreatedAt: now,
 	}
 	if err := st.InsertTask(ctx, q, task); err != nil {
+		if planOpenConflict(err) {
+			return nil, &quota.Error{Message: "这个写作方向正在生成，请稍后再试"}
+		}
 		return nil, err
 	}
 	note := "立即生成"
@@ -81,6 +88,17 @@ func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan
 		return nil, err
 	}
 	return task, nil
+}
+
+func planOpenConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	if db.ConstraintName(err) == "uq_article_task_plan_open" {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "uq_article_task_plan_open") || strings.Contains(msg, "article_task.plan_id")
 }
 
 func randHex() string {

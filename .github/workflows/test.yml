@@ -1,0 +1,38 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gonghao
+          POSTGRES_PASSWORD: gonghao
+          POSTGRES_DB: gonghao
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gonghao -d gonghao"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+      - name: Go tests
+        run: go test ./...
+        env:
+          POSTGRES_TEST_URL: postgres://gonghao:gonghao@127.0.0.1:5432/gonghao?sslmode=disable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Frontend build
+        working-directory: frontend
+        run: npm ci && npm run build
