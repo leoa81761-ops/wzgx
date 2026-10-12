@@ -30,29 +30,12 @@
         </select>
       </label>
       <label v-if="directionChoice === '__custom'">自定义方向<input v-model="customDirection" maxlength="40" /></label>
-      <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房" /></label>
-      <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
-      <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔" /></label>
-      <div class="stack">
-        <span>风格</span>
-        <button v-for="style in styleChoices" :key="style.key" type="button" class="choice" :class="{ active: form.style_key === style.key }" @click="form.style_key = style.key">
-          <strong>{{ style.name }}</strong>
-          <div class="muted">{{ style.description }}</div>
-        </button>
-      </div>
-      <div class="stack">
-        <span>排版模板</span>
-        <div class="row">
-          <button v-for="item in templateChoices" :key="item.key" type="button" class="choice" :class="{ active: form.template_key === item.key }" @click="form.template_key = item.key">
-            {{ item.name }}
-          </button>
-        </div>
-      </div>
-      <label>目标篇幅
-        <select v-model.number="form.word_target">
-          <option v-for="words in wordOptions" :key="words" :value="words">{{ words }} 字以内</option>
+      <label>风格
+        <select v-model="form.style_key">
+          <option v-for="style in styleChoices" :key="style.key" :value="style.key">{{ style.name }}</option>
         </select>
       </label>
+      <p v-if="selectedStyle" class="muted">{{ selectedStyle.description }}</p>
       <label>每天几篇<input v-model.number="form.daily_count" type="number" min="1" :max="quota.daily_limit || 1" /></label>
       <label>周期
         <select v-model="form.schedule_type">
@@ -65,6 +48,21 @@
           <input type="checkbox" :value="day.value" v-model="form.weekdays" /> {{ day.label }}
         </label>
       </div>
+      <details class="stack">
+        <summary>更多设置</summary>
+        <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房" /></label>
+        <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
+        <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔" /></label>
+        <label>排版
+          <select v-model="form.template_key">
+            <option v-for="item in templateChoices" :key="item.key" :value="item.key">{{ item.name }}</option>
+          </select>
+        </label>
+      <label>目标篇幅
+        <select v-model.number="form.word_target">
+          <option v-for="words in wordOptions" :key="words" :value="words">{{ words }} 字以内</option>
+        </select>
+      </label>
       <label>时段
         <select v-model="form.time_window" :disabled="quota.tier === 'free'">
           <option v-for="item in windows" :key="item.key" :value="item.key">{{ item.label }}</option>
@@ -96,6 +94,7 @@
           <option value="asset">优先我的素材</option>
         </select>
       </label>
+      </details>
       <button class="btn" :disabled="saving">{{ saving ? "保存中…" : "保存这个号的设置" }}</button>
     </form>
   </div>
@@ -147,6 +146,7 @@ function tierRank(tier) {
 
 const styleChoices = computed(() => styles.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
 const templateChoices = computed(() => templates.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
+const selectedStyle = computed(() => styleChoices.value.find((item) => item.key === form.style_key));
 const wordOptions = computed(() => {
   const max = quota.value.max_words || 1000;
   return [800, 1000, 1500, 3000].filter((item) => item <= max || item === form.word_target);

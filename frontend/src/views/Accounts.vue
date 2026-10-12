@@ -41,7 +41,8 @@
         </div>
         <p class="muted">{{ account.app_id }} · {{ account.type_label }}</p>
         <p>
-          <router-link :to="'/app/plans?account=' + account.id">这个号的写作计划</router-link>
+          <router-link :to="'/app/start?account=' + account.id">按步骤开始</router-link>
+          · <router-link :to="'/app/plans?account=' + account.id">这个号的写作计划</router-link>
           · <router-link :to="'/app/stats/' + account.id">阅读数据与周报</router-link>
         </p>
         <ul>

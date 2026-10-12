@@ -6,6 +6,7 @@ import Register from "./views/Register.vue";
 import Legal from "./views/Legal.vue";
 import Tutorial from "./views/Tutorial.vue";
 import Dashboard from "./views/Dashboard.vue";
+import Start from "./views/Start.vue";
 import Accounts from "./views/Accounts.vue";
 import Plans from "./views/Plans.vue";
 import PlanDetail from "./views/PlanDetail.vue";
@@ -37,6 +38,7 @@ const router = createRouter({
     { path: "/complaint", component: Complaint },
     { path: "/reconsent", component: Reconsent, meta: { auth: true } },
     { path: "/app", component: Dashboard, meta: { auth: true } },
+    { path: "/app/start", component: Start, meta: { auth: true } },
     { path: "/app/accounts", component: Accounts, meta: { auth: true } },
     { path: "/app/stats/:id", component: Stats, meta: { auth: true } },
     { path: "/app/plans", component: Plans, meta: { auth: true } },

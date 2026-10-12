@@ -19,26 +19,12 @@
         </select>
       </label>
       <label v-if="directionChoice === '__custom'">自定义方向<input v-model="customDirection" placeholder="例如：城市徒步" /></label>
-      <div class="stack">
-        <span>风格</span>
-        <button v-for="style in styleChoices" :key="style.key" type="button" class="choice" :class="{ active: form.style_key === style.key }" @click="form.style_key = style.key">
-          <strong>{{ style.name }}</strong>
-          <div class="muted">{{ style.description }}</div>
-        </button>
-      </div>
-      <div class="stack">
-        <span>排版模板</span>
-        <div class="row">
-          <button v-for="item in templateChoices" :key="item.key" type="button" class="choice" :class="{ active: form.template_key === item.key }" @click="form.template_key = item.key">
-            {{ item.name }}
-          </button>
-        </div>
-      </div>
-      <label>目标篇幅
-        <select v-model.number="form.word_target">
-          <option v-for="words in wordOptions" :key="words" :value="words">{{ words }} 字以内</option>
+      <label>风格
+        <select v-model="form.style_key">
+          <option v-for="style in styleChoices" :key="style.key" :value="style.key">{{ style.name }}</option>
         </select>
       </label>
+      <p v-if="selectedStyle" class="muted">{{ selectedStyle.description }}</p>
       <label>这个方向每天几篇
         <input v-model.number="form.daily_count" type="number" min="1" :max="quota.daily_limit || 1" />
       </label>
@@ -53,18 +39,28 @@
           <input type="checkbox" :value="day.value" v-model="form.weekdays" /> {{ day.label }}
         </label>
       </div>
-      <label>固定开头<input v-model="form.opening" maxlength="200" placeholder="例如：关注后回复「目录」可看往期" /></label>
-      <label>固定结尾<input v-model="form.ending" maxlength="200" placeholder="例如：觉得有用就转给同事" /></label>
-      <label>栏目名<input v-model="form.column_name" placeholder="留空则整号用上面的风格" /></label>
-      <label>该栏目风格<input v-model="form.column_style" placeholder="例如 plain，只在这一栏切换" /></label>
-      <label>时段
-        <select v-model="form.time_window" :disabled="quota.tier === 'free'">
-          <option v-for="item in windows" :key="item.key" :value="item.key">{{ item.label }}</option>
-        </select>
-      </label>
       <details class="stack">
-        <summary>这个号单独的设置</summary>
-        <p class="muted">这些内容只写进当前选中的公众号，不会套到其他号上。</p>
+        <summary>更多设置</summary>
+        <p class="muted">排版、篇幅、时段、开头结尾和这个号自己的关键词都收在这里。留空也不影响保存。</p>
+        <label>排版
+          <select v-model="form.template_key">
+            <option v-for="item in templateChoices" :key="item.key" :value="item.key">{{ item.name }}</option>
+          </select>
+        </label>
+        <label>目标篇幅
+          <select v-model.number="form.word_target">
+            <option v-for="words in wordOptions" :key="words" :value="words">{{ words }} 字以内</option>
+          </select>
+        </label>
+        <label>时段
+          <select v-model="form.time_window" :disabled="quota.tier === 'free'">
+            <option v-for="item in windows" :key="item.key" :value="item.key">{{ item.label }}</option>
+          </select>
+        </label>
+        <label>固定开头<input v-model="form.opening" maxlength="200" placeholder="例如：关注后回复「目录」可看往期" /></label>
+        <label>固定结尾<input v-model="form.ending" maxlength="200" placeholder="例如：觉得有用就转给同事" /></label>
+        <label>栏目名<input v-model="form.column_name" placeholder="留空则整号用上面的风格" /></label>
+        <label>该栏目风格<input v-model="form.column_style" placeholder="例如 plain，只在这一栏切换" /></label>
         <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房,弱电" /></label>
         <label>读者<input v-model="form.audience" maxlength="80" placeholder="例如：物业工程负责人" /></label>
         <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔，这篇里不要出现" /></label>
@@ -116,6 +112,10 @@
         </div>
         <p v-if="plan.status !== 'active'" class="muted">已暂停，不会按点自动写。立即生成一篇只写这一次，不会把计划改成运行中。{{ plan.pause_reason ? "原因：" + plan.pause_reason : "" }}</p>
         <p>{{ plan.style_name }} · {{ plan.template_name }} · {{ plan.schedule_label }} · {{ plan.window_label }} · 每天 {{ plan.daily_count || 1 }} 篇</p>
+        <p class="muted">{{ plan.status === "active" ? "下次生成：" + formatTime(plan.next_run_at) : "启动后才会按点生成。已排定的时间：" + formatTime(plan.next_run_at) }}</p>
+        <details>
+          <summary>更多</summary>
+          <div class="stack">
         <p v-if="plan.audience || plan.keywords || plan.vertical_key" class="muted">
           <span v-if="plan.audience">读者 {{ plan.audience }}</span>
           <span v-if="plan.keywords"> · 关键词 {{ plan.keywords }}</span>
@@ -125,7 +125,6 @@
           <input v-model.number="dailyCounts[plan.id]" type="number" min="1" :max="quota.daily_limit || 1" />
         </label>
         <button class="btn-ghost" type="button" @click="saveDaily(plan)">保存篇数</button>
-        <p class="muted">{{ plan.status === "active" ? "下次生成：" + formatTime(plan.next_run_at) : "启动后才会按点生成。已排定的时间：" + formatTime(plan.next_run_at) }}</p>
         <label v-if="quota.tier === 'premium' || quota.tier === 'lifetime' || plan.confirm_mode" class="check">
           <input :checked="plan.confirm_mode" type="checkbox" @change="setConfirm(plan, $event.target.checked)" />
           <span>选题确认：提前推送下一篇选题，24 小时内可以采用或换一个，超时按这个选题写。</span>
@@ -172,6 +171,8 @@
           <p v-if="plan.auto_publish" class="muted">已开启，审阅窗口 {{ plan.delay_minutes }} 分钟。</p>
         </div>
         <p v-else class="muted">这个公众号只写入草稿箱。自动发布只对企业认证号开放，并且默认关闭。</p>
+          </div>
+        </details>
       </article>
       </section>
       <p v-if="!accounts.length" class="muted">先绑定公众号，再为每个号单独建计划。</p>
@@ -253,6 +254,7 @@ function tierRank(tier) {
 
 const styleChoices = computed(() => styles.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
 const templateChoices = computed(() => templates.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
+const selectedStyle = computed(() => styleChoices.value.find((item) => item.key === form.style_key));
 
 async function load() {
   const [meta, quotaData, accountData, planData] = await Promise.all([
