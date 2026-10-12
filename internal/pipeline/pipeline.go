@@ -977,7 +977,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	var dropped []map[string]any
 	relaxed := false
 	if err1 == nil {
-		notes, sources, dropped, relaxed = takeSources(first.Content, policy)
+		notes, sources, dropped, relaxed = takeSources(first.Content, first.ResearchSources, policy)
 		if sourcesHaveURL(sources) {
 			sources = preferMaps(sources, payload)
 			stampSourceTrace(&first, sources, dropped, relaxed)
@@ -997,7 +997,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		CompletionTokens: first.CompletionTokens + second.CompletionTokens,
 	}
 	if err2 == nil {
-		notes2, sources2, dropped2, relaxed2 := takeSources(second.Content, policy)
+		notes2, sources2, dropped2, relaxed2 := takeSources(second.Content, second.ResearchSources, policy)
 		dropped = append(dropped, dropped2...)
 		merged.ProviderID = second.ProviderID
 		merged.ProviderName = second.ProviderName
@@ -1037,35 +1037,40 @@ func backupResearchProviders(providers []llm.Provider, backupModel string) []llm
 	if len(providers) == 0 {
 		return nil
 	}
-	var fast, rest []llm.Provider
-	hasBackup := false
+	model := strings.TrimSpace(backupModel)
+	if model == "" {
+		model = "grok-chat-fast"
+	}
+	var matched []llm.Provider
 	for _, provider := range providers {
-		name := strings.ToLower(provider.Model)
-		if strings.Contains(name, "grok-4") || strings.EqualFold(provider.Protocol, "responses") {
-			hasBackup = true
+		if strings.EqualFold(provider.Model, model) {
+			matched = append(matched, provider)
 		}
-		if strings.Contains(name, "chat-fast") {
-			fast = append(fast, provider)
-			continue
-		}
-		rest = append(rest, provider)
 	}
-	if !hasBackup {
-		base := providers[0]
-		if len(fast) > 0 {
-			base = fast[0]
+	if len(matched) == 0 && strings.Contains(strings.ToLower(model), "chat-fast") {
+		for _, provider := range providers {
+			if strings.Contains(strings.ToLower(provider.Model), "chat-fast") {
+				matched = append(matched, provider)
+			}
 		}
-		model := strings.TrimSpace(backupModel)
-		if model == "" {
-			model = "grok-4.7"
-		}
-		clone := base
-		clone.Protocol = "responses"
-		clone.Model = model
-		clone.Name = strings.TrimSpace(base.Name + " 补救")
-		rest = append([]llm.Provider{clone}, rest...)
 	}
-	return append(rest, fast...)
+	if len(matched) > 0 {
+		return matched
+	}
+	base := providers[0]
+	for _, provider := range providers {
+		if provider.Protocol == "" || provider.Protocol == "openai" {
+			base = provider
+			break
+		}
+	}
+	clone := base
+	if clone.Protocol != "" && clone.Protocol != "openai" {
+		clone.Protocol = "openai"
+	}
+	clone.Model = model
+	clone.Name = strings.TrimSpace(base.Name + " 补救")
+	return []llm.Provider{clone}
 }
 
 func preferMaps(sources []map[string]any, payload map[string]any) []map[string]any {
@@ -1098,8 +1103,9 @@ func preferListed(sources []any, mode string) []any {
 	return out
 }
 
-func takeSources(content string, policy content.SourcePolicy) (string, []map[string]any, []map[string]any, bool) {
-	notes, raw := llm.InterpretResearch(content)
+func takeSources(content string, cited []map[string]any, policy content.SourcePolicy) (string, []map[string]any, []map[string]any, bool) {
+	notes, _ := llm.InterpretResearch(content)
+	raw := cited
 	kept, dropped := policy.Split(raw)
 	if len(raw) == 0 {
 		dropped = append(dropped, map[string]any{"reason": "没有解析到来源"})

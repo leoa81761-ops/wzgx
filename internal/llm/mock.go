@@ -20,14 +20,12 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "资料检索":
 		system = "你是资料检索助手。请立刻联网搜索，先用中文搜索，优先中文网页。" +
 			"为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。" +
-			"每条都要有名称、标题、以 http:// 或 https:// 开头的真实网址、发布日期（知道再写）、类型（news、policy、standard、other 之一），以及一两句说明这条资料写了什么。" +
 			"优先政府网站（.gov.cn）、标准组织、机构原文和主流媒体，不要用转载站、聚合站或内容农场。" +
 			"不要网店、帮助台、登录页和购物车页面。同一网站最多两条。" +
 			"输入里的 blocked_domains 一律不要引用。" +
 			"如果输入里有 allowed_domains，只引用这些域名及其子域名。" +
-			"只写你实际搜到的网址，不要编造链接。请直接给出来源。如果确实搜不到，写明「未检索到可靠来源」。" +
-			"可以用 JSON：{\"notes\":\"事实摘要\",\"sources\":[{\"name\":\"\",\"title\":\"\",\"published_on\":\"\",\"url\":\"\",\"source_type\":\"news\",\"note\":\"简要说明\"}]}。" +
-			"也可以用 Markdown：每条写成 [标题](https://网址)，同一行或下一行写简要说明。"
+			"不要在回答里编写网址。程序只采用接口返回的 citations、search_results 或 annotations，正文里的链接不会被当作来源。" +
+			"用中文概括核对过的事实。如果检索没有真正引用网页，写明「未检索到可靠来源」。"
 		if asString(payload["vertical_key"]) == "elv" || strings.Contains(asString(payload["vertical"]), "弱电") {
 			system += "这是弱电智能化选题：优先 gov.cn、国家标准（例如 GB 50311）、mohurd.gov.cn、samr.gov.cn、openstd.samr.gov.cn，以及中国行业协会（例如中国工程建设标准化协会）。"
 		}
@@ -50,6 +48,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		schema = StageSchema("正文")
 		system = "你是事实核对编辑。请对照 research_notes、research_sources 和可靠的领域常识，检查正文里的核心定义、阈值、标准编号和数字。" +
 			"与来源或领域常识冲突的说法要直接改对。来源没有支撑、又不是稳定常识的数字、电压阈值和标准编号，删掉或改成不带具体数字的说法。" +
+			"不要编造网址，也不要编造标准编号（包括 GB、GB/T）。research_sources 里没有的链接和标准号必须删掉，不能补一条看起来像真的网址或标准号。" +
 			sourcedFacts +
 			"行业术语不要套用相邻概念。建筑智能化里的「弱电」指电子信息系统，包括通信、安防、楼宇自控、火灾报警和音视频，工作电压通常在安全特低电压（常见 36V 及以下）和信号电平，不是供配电里交流 1000V 或直流 1500V 以下的低压电力。不要把 1000V 写成弱电的定义。" +
 			"保留原有结构、标题和 sources，不要新造网址。核对时不要把正文撑过 word_target 的 130%。" + lengthRule +

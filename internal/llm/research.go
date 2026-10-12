@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/url"
 	"regexp"
@@ -8,12 +9,9 @@ import (
 	"unicode/utf8"
 )
 
-var (
-	markdownLink = regexp.MustCompile(`\[([^\]\n]{1,120})\]\((https?://[^)\s]+)\)`)
-	bareURL      = regexp.MustCompile(`https?://[^\s)\]>"'\\,，。；]+`)
-)
+var bareURL = regexp.MustCompile(`https?://[^\s)\]>"'\\,，。；]+`)
 
-// InterpretResearch 从检索模型的输出里取出事实和来源。模型可能返回 JSON，也可能返回 Markdown。
+// InterpretResearch 只取出检索说明。正文、Markdown 和模型自己写的 sources 里的网址一律不当来源。
 func InterpretResearch(text string) (string, []map[string]any) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -21,87 +19,86 @@ func InterpretResearch(text string) (string, []map[string]any) {
 	}
 	if data, err := ParseJSONContent(text); err == nil {
 		notes := clipRunes(strings.TrimSpace(asString(data["notes"])), 1500)
-		sources := sourcesFromList(data["sources"])
-		sources = appendSources(sources, sourcesFromList(data["citations"]))
-		sources = appendSources(sources, sourcesFromList(data["search_results"]))
-		if notes == "" && len(sources) == 0 {
+		if notes == "" {
 			if summary := strings.TrimSpace(asString(data["summary"])); summary != "" {
 				notes = clipRunes(summary, 1500)
 			}
 		}
-		sources = appendSources(sources, sourcesFromMarkdown(text))
-		if notes != "" {
-			sources = appendSources(sources, sourcesFromMarkdown(notes))
-		}
-		return notes, sources
+		return notes, nil
 	}
-	return clipRunes(text, 1500), sourcesFromMarkdown(text)
+	return clipRunes(text, 1500), nil
 }
 
-// AttachResearchCitations 把联网响应里正文以外的网址补进文本。
-// grok-chat-fast 常把网址放在 citations、search_results 或 annotations，message.content 本身没有链接。
-func AttachResearchCitations(text string, raw []byte) string {
-	rows := citationRows(raw)
-	if len(rows) == 0 {
-		return text
-	}
-	var b strings.Builder
-	b.WriteString(text)
-	added := 0
+// StructuredResearchSources 只采用接口返回的引用。
+// 接受 citations、search_results、annotations；Responses 还要 num_sources_used > 0 才采信 url 注释。
+// 流式响应里的引用出现在最后一块时同样算数。模型正文里的链接不算。
+func StructuredResearchSources(raw []byte) []map[string]any {
+	rows := trustedCitationRows(raw)
+	var out []map[string]any
+	seen := map[string]bool{}
 	for _, row := range rows {
 		rawURL := row["url"]
-		if rawURL == "" || strings.Contains(text, rawURL) {
+		if rawURL == "" || seen[rawURL] {
 			continue
 		}
-		title := strings.TrimSpace(row["title"])
-		if title == "" {
-			title = "来源"
+		seen[rawURL] = true
+		item := normalizeSource(row["name"], row["title"], "", rawURL, "other", "")
+		if item == nil {
+			continue
 		}
-		title = strings.NewReplacer("[", "", "]", "", "\n", " ", "\r", " ").Replace(title)
-		title = clipRunes(title, 80)
-		b.WriteString("\n[")
-		b.WriteString(title)
-		b.WriteString("](")
-		b.WriteString(rawURL)
-		b.WriteString(")")
-		added++
-		if added >= 8 {
+		out = append(out, item)
+		if len(out) >= 8 {
 			break
 		}
 	}
-	if added == 0 {
-		return text
-	}
-	return b.String()
-}
-
-func citationRows(raw []byte) []map[string]string {
-	if !isJSON(raw) {
-		return nil
-	}
-	var data map[string]any
-	if json.Unmarshal(raw, &data) != nil {
-		return nil
-	}
-	var out []map[string]string
-	collectCitationNodes(data, &out, 0)
 	return out
 }
 
-func collectCitationNodes(v any, out *[]map[string]string, depth int) {
+func trustedCitationRows(raw []byte) []map[string]string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []map[string]string
+	if isJSON(raw) {
+		var data map[string]any
+		if json.Unmarshal(raw, &data) != nil {
+			return nil
+		}
+		collectTrustedCitations(data, &out, 0)
+		return out
+	}
+	_ = eachSSE(raw, func(data []byte) error {
+		if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+			return nil
+		}
+		var chunk map[string]any
+		if json.Unmarshal(data, &chunk) != nil {
+			return nil
+		}
+		collectTrustedCitations(chunk, &out, 0)
+		return nil
+	})
+	return out
+}
+
+func collectTrustedCitations(v any, out *[]map[string]string, depth int) {
 	if depth > 8 || len(*out) >= 16 {
 		return
 	}
 	switch node := v.(type) {
 	case map[string]any:
-		for _, key := range []string{"citations", "search_results", "searchResults", "annotations", "references", "web_search_results"} {
+		if used, ok := sourcesUsed(node); ok && used <= 0 {
+			return
+		}
+		for _, key := range []string{"citations", "search_results", "searchResults", "annotations", "web_search_results"} {
 			if child, ok := node[key]; ok {
 				appendCitationList(child, out)
 			}
 		}
 		for _, key := range []string{"choices", "message", "output", "response", "content", "delta"} {
 			if child, ok := node[key]; ok {
-				collectCitationNodes(child, out, depth+1)
+				collectTrustedCitations(child, out, depth+1)
 			}
 		}
 	case []any:
@@ -109,8 +106,41 @@ func collectCitationNodes(v any, out *[]map[string]string, depth int) {
 			if len(*out) >= 16 {
 				return
 			}
-			collectCitationNodes(item, out, depth+1)
+			collectTrustedCitations(item, out, depth+1)
 		}
+	}
+}
+
+func sourcesUsed(node map[string]any) (int, bool) {
+	if n, ok := numberAt(node["num_sources_used"]); ok {
+		return n, true
+	}
+	usage, _ := node["usage"].(map[string]any)
+	if usage == nil {
+		return 0, false
+	}
+	if n, ok := numberAt(usage["num_sources_used"]); ok {
+		return n, true
+	}
+	return 0, false
+}
+
+func numberAt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	default:
+		return 0, false
 	}
 }
 
@@ -197,119 +227,6 @@ func firstHTTP(s string) string {
 		}
 	}
 	return strings.TrimRight(s, ".,;，。；)>\"'")
-}
-
-func sourcesHaveURL(sources []map[string]any) bool {
-	for _, source := range sources {
-		if asString(source["url"]) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func sourcesFromList(raw any) []map[string]any {
-	list, _ := raw.([]any)
-	var out []map[string]any
-	seen := map[string]bool{}
-	for _, item := range list {
-		var row map[string]any
-		switch source := item.(type) {
-		case string:
-			rawURL := source
-			if urls := bareURL.FindAllString(source, 1); len(urls) > 0 {
-				rawURL = urls[0]
-			}
-			row = normalizeSource("", "", "", rawURL, "other", "")
-		case map[string]any:
-			rawURL, nestedTitle := citationURL(source)
-			name := asString(source["name"])
-			title := asString(source["title"])
-			if title == "" {
-				title = nestedTitle
-			}
-			row = normalizeSource(name, title, asString(source["published_on"]), rawURL, asString(source["source_type"]), asString(source["note"]))
-		}
-		if row == nil {
-			continue
-		}
-		key := asString(row["url"]) + "|" + asString(row["title"])
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, row)
-		if len(out) >= 8 {
-			break
-		}
-	}
-	return out
-}
-
-func sourcesFromMarkdown(text string) []map[string]any {
-	var out []map[string]any
-	seen := map[string]bool{}
-	add := func(name, title, rawURL, note string) {
-		row := normalizeSource(name, title, "", rawURL, "other", note)
-		if row == nil {
-			return
-		}
-		key := asString(row["url"])
-		if key == "" || seen[key] {
-			return
-		}
-		seen[key] = true
-		out = append(out, row)
-	}
-	for _, match := range markdownLink.FindAllStringSubmatchIndex(text, 8) {
-		if len(out) >= 8 || len(match) < 6 {
-			break
-		}
-		title := strings.TrimSpace(text[match[2]:match[3]])
-		rawURL := text[match[4]:match[5]]
-		rest := text[match[1]:]
-		if nl := strings.IndexAny(rest, "\r\n"); nl >= 0 {
-			rest = rest[:nl]
-		}
-		rest = strings.TrimSpace(rest)
-		note := ""
-		if rest != "" && !strings.Contains(rest, "http") && utf8.RuneCountInString(rest) <= 200 {
-			note = rest
-		}
-		add("", title, rawURL, note)
-	}
-	if len(out) == 0 {
-		for _, match := range bareURL.FindAllString(text, 8) {
-			if len(out) >= 8 {
-				break
-			}
-			add("", "", match, "")
-		}
-	}
-	return out
-}
-
-func appendSources(base, extra []map[string]any) []map[string]any {
-	seen := map[string]bool{}
-	for _, row := range base {
-		if url := asString(row["url"]); url != "" {
-			seen[url] = true
-		}
-	}
-	for _, row := range extra {
-		url := asString(row["url"])
-		if url != "" && seen[url] {
-			continue
-		}
-		if url != "" {
-			seen[url] = true
-		}
-		base = append(base, row)
-		if len(base) >= 8 {
-			break
-		}
-	}
-	return base
 }
 
 func normalizeSource(name, title, published, rawURL, sourceType, note string) map[string]any {

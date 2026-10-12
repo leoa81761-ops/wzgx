@@ -132,7 +132,7 @@ func Load() Settings {
 		PricePremiumYear:    positiveOr("PAY_PRICE_PREMIUM_YEAR", 99000),
 		PriceLifetime:       positiveOr("PAY_PRICE_LIFETIME", 300000),
 		ResearchTimeout:     researchTimeout(),
-		ResearchBackupModel: getenv("RESEARCH_BACKUP_MODEL", "grok-4.7"),
+		ResearchBackupModel: getenv("RESEARCH_BACKUP_MODEL", "grok-chat-fast"),
 	}
 }
 
