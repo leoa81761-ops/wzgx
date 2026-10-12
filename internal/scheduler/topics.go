@@ -182,7 +182,11 @@ func (r *Runner) SuggestTopic(ctx context.Context, q db.Q, plan *model.WritingPl
 		if err != nil {
 			return topics.Choice{}, "", err
 		}
-		choice, _, _ = pipeline.ApplyColumnChoice(choice, now, active, extra.ColumnRotation, columns.ParseDays(extra.ColumnWeekdays), plan.Direction, extra.Keywords, history, uses, titles)
+		covered, err := r.Deps.Store.AccountTopicLines(ctx, q, plan.WxAccountID, 20)
+		if err != nil {
+			return topics.Choice{}, "", err
+		}
+		choice, _, _ = pipeline.ApplyColumnChoice(choice, now, active, extra.ColumnRotation, columns.ParseDays(extra.ColumnWeekdays), plan.Direction, extra.Keywords, history, uses, titles, covered)
 	}
 	title := choice.Subtopic + " / " + choice.Column + " / " + choice.Angle
 	return choice, title, nil

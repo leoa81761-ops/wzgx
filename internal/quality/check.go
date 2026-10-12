@@ -2,7 +2,6 @@ package quality
 
 import (
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -87,65 +86,15 @@ func StructureOK(structure string, paragraphs []string) bool {
 	}
 }
 
-// RepairDraft rewrites paragraphs so a news, Q&A, or steps column matches its template.
-// It does not invent a source mark when the draft has no sources.
+// RepairDraft does not insert questions, date words, filler answers, or citation marks.
+// A column that misses its structure is rewritten by the model and checked again.
 func RepairDraft(structure string, draft map[string]any) map[string]any {
-	if draft == nil {
-		return nil
-	}
-	kind := normalizeStructure(structure)
-	if kind != "news" && kind != "qa" && kind != "steps" {
-		return draft
-	}
-	hasSource := false
-	if sources, _ := draft["sources"].([]any); len(sources) > 0 {
-		hasSource = true
-	}
-	sections, _ := draft["sections"].([]any)
-	for _, raw := range sections {
-		section, _ := raw.(map[string]any)
-		if section == nil {
-			continue
-		}
-		paras, _ := section["paragraphs"].([]any)
-		var next []any
-		for _, item := range paras {
-			text, _ := item.(string)
-			text = strings.TrimSpace(text)
-			if text == "" {
-				continue
-			}
-			switch kind {
-			case "news":
-				if !hasDate(text) {
-					text = dateWord(len(next)) + "，" + text
-				}
-				if hasSource && !citedMark.MatchString(text) {
-					text += " [1]"
-				}
-			case "qa":
-				if len(next)%2 == 0 {
-					text = asQuestion(text)
-				} else {
-					text = asAnswer(text)
-				}
-			case "steps":
-				if !numberedStep.MatchString(text) {
-					text = strconv.Itoa(len(next)+1) + ". " + text
-				}
-			}
-			next = append(next, text)
-		}
-		next = varyOpeners(next)
-		if kind == "qa" && len(next)%2 == 1 {
-			next = append(next, "答：按上面的问题，先做最小的一步。")
-		}
-		if next == nil {
-			next = []any{}
-		}
-		section["paragraphs"] = next
-	}
 	return draft
+}
+
+// DatedText reports a date in a source title, snippet, or sentence.
+func DatedText(text string) bool {
+	return hasDate(text)
 }
 
 func nonempty(paragraphs []string) []string {
@@ -229,50 +178,6 @@ func leadingDate(text string) string {
 		}
 	}
 	return ""
-}
-
-func dateWord(index int) string {
-	words := []string{"近日", "今天", "昨天", "本周", "上周"}
-	return words[index%len(words)]
-}
-
-func asQuestion(text string) string {
-	text = strings.ReplaceAll(text, "?", "")
-	text = strings.ReplaceAll(text, "？", "")
-	text = strings.TrimSpace(strings.TrimPrefix(text, "答："))
-	text = strings.TrimSpace(strings.TrimPrefix(text, "答:"))
-	text = strings.TrimRight(text, "。")
-	return text + "？"
-}
-
-func asAnswer(text string) string {
-	text = strings.ReplaceAll(text, "?", "")
-	text = strings.ReplaceAll(text, "？", "")
-	text = strings.TrimSpace(text)
-	if !strings.Contains(text, "答") {
-		text = "答：" + text
-	}
-	return text
-}
-
-func varyOpeners(paras []any) []any {
-	seen := map[string]bool{}
-	var out []any
-	for _, item := range paras {
-		text, _ := item.(string)
-		if key := leadingDate(text); key != "" && seen[key] {
-			word := dateWord(len(out) + 1)
-			if word == key {
-				word = dateWord(len(out) + 2)
-			}
-			text = word + "，" + strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, key), "，"))
-		}
-		if key := leadingDate(text); key != "" {
-			seen[key] = true
-		}
-		out = append(out, text)
-	}
-	return out
 }
 
 func hasDate(text string) bool {

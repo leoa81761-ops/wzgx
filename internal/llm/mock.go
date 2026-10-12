@@ -13,6 +13,8 @@ const lengthRule = "正文字数统计各小节的小标题、段落、列表、
 
 const sourcedFacts = "不得编造来源里没有的阈值、电压、标准编号或统计数字。没有来源支撑时写成定性说明，不要写具体数字。"
 
+const namedSourceRule = "不要写出 research_sources 或 sources 里没有出现的机构名、标准号或文件名。来源名单里没有的部委、协会、学会、GB、GB/T 和书名号标题都不要写。"
+
 const citationRule = "用到 research_sources 里的事实时，在句末用 [1]、[2] 这种序号标出对应来源，序号从 1 开始，对应 sources 的顺序。没有用到的来源不要写进 sources。没有来源时不要编造 [n]。"
 
 const anecdoteRule = "事例只能来自已经给出的来源，或者明确写成假设，例如「比如……假设」。不要编造读者的生活，不要编造别人的原话。"
@@ -33,6 +35,24 @@ func columnRule(payload map[string]any) string {
 		return ""
 	}
 	return "column_positioning 是栏目定位的全文，要整段遵守，不要只取前几个字。"
+}
+
+func motifRule(payload map[string]any) string {
+	var motifs []string
+	switch items := payload["avoid_motifs"].(type) {
+	case []string:
+		motifs = items
+	case []any:
+		for _, item := range items {
+			if text := strings.TrimSpace(asString(item)); text != "" {
+				motifs = append(motifs, text)
+			}
+		}
+	}
+	if len(motifs) == 0 {
+		return ""
+	}
+	return "不要再用这些已经写过的意象：" + strings.Join(motifs, "、") + "。"
 }
 
 func voiceRule(payload map[string]any) string {
@@ -87,7 +107,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"目标大约是 word_target 的 105%（输入里的 expand_goal）。写到 100% 到 110% 就停，不要为了凑到 130% 而注水。" +
 			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
-			sourcedFacts + anecdoteRule +
+			sourcedFacts + namedSourceRule + anecdoteRule +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
 		schema = StageSchema("正文")
@@ -130,12 +150,21 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是公众号编辑。正文里同一句式或意象反复出现。请改写重复的说法，保留事实、数字和 [n] 引用，不要新增材料或网址。" +
 			readerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "栏目结构":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
+			"news 或快报：每段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
+			"qa 或问答：每个「答」紧跟一个以问号结尾的问题，答案里不要再出现问号。" +
+			"steps 或拆解：每段都要有序号。" +
+			"不要在句首机械地加「近日」，不要补空泛的「答：」，不要给没有来源的句子加 [1]。" +
+			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "事实核对":
 		schema = StageSchema("正文")
 		system = "你是事实核对编辑。请对照 research_notes、research_sources 和可靠的领域常识，检查正文里的核心定义、阈值、标准编号和数字。" +
 			"与来源或领域常识冲突的说法要直接改对。来源没有支撑、又不是稳定常识的数字、电压阈值和标准编号，删掉或改成不带具体数字的说法。" +
 			"不要编造网址，也不要编造标准编号（包括 GB、GB/T）。research_sources 里没有的链接和标准号必须删掉，不能补一条看起来像真的网址或标准号。" +
-			sourcedFacts +
+			sourcedFacts + namedSourceRule +
 			"保留原有结构、标题和 sources，不要新造网址。核对时不要把正文撑过 word_target 的 130%。" + lengthRule
 		if elvContext(payload) {
 			system += "行业术语不要套用相邻概念。建筑智能化里的「弱电」指电子信息系统，包括通信、安防、楼宇自控、火灾报警和音视频，工作电压通常在安全特低电压（常见 36V 及以下）和信号电平，不是供配电里交流 1000V 或直流 1500V 以下的低压电力。不要把 1000V 写成弱电的定义。"
@@ -149,9 +178,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "正文" || stageLabel == "审核" {
-			system += lengthRule + citationRule + anecdoteRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
+			system += lengthRule + citationRule + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 		}
-		system += readerRule
+		system += readerRule + motifRule(payload)
 		if stageLabel == "审核" {
 			system += "如果同一句式、意象或口头禅反复出现，在返回的正文里改写掉，并把 quality.motif 标为 true；没有反复就标 false。" +
 				"quality.hook 是开头 1 到 5 分，4 分及以上表示开头已经够具体，不必再改。quality.headings 和 quality.closing 表示小标题和结尾是否已经够用。"
@@ -179,6 +208,14 @@ func mockComplete(provider Provider, messages []map[string]string) (Completion, 
 	stage := asString(payload["环节"])
 	if stage == "" {
 		stage = "正文"
+	}
+	if stage == "栏目结构" && provider.ExtraParams != nil && provider.ExtraParams["_mock_structure_fail"] == true {
+		data := mockDraftCopy(payload)
+		content, _ := json.Marshal(data)
+		return Completion{
+			Content: string(content), PromptTokens: 120, CompletionTokens: 180,
+			ProviderID: provider.ID, ProviderName: provider.Name, Protocol: provider.Protocol, Model: provider.Model,
+		}, nil
 	}
 	data := MockForStage(stage, payload)
 	if stage == "开头比较" {
@@ -268,6 +305,8 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		return mockTitleChoice(payload)
 	case "意象改写":
 		return mockDraftCopy(payload)
+	case "栏目结构":
+		return mockStructured(payload)
 	default:
 		return draftFromPayload(payload)
 	}
@@ -364,6 +403,36 @@ func mockTitles(payload map[string]any) map[string]any {
 		out[i] = map[string]any{"title": line, "hook": 4, "concrete": 4, "consistent": 5, "persona": 4}
 	}
 	return map[string]any{"titles": out}
+}
+
+func mockStructured(payload map[string]any) map[string]any {
+	draft := mockDraftCopy(payload)
+	if draft == nil {
+		draft = draftFromPayload(payload)
+	}
+	if asString(draft["title"]) == "" {
+		draft["title"] = "验收先看这一步"
+	}
+	kind := strings.ToLower(asString(payload["column_structure"]))
+	sections, _ := draft["sections"].([]any)
+	if len(sections) == 0 {
+		return draft
+	}
+	section, _ := sections[0].(map[string]any)
+	if section == nil {
+		return draft
+	}
+	switch kind {
+	case "news", "news-brief", "快报":
+		section["paragraphs"] = []any{"2024年10月12日，综合布线验收有一条公开说明。[1]", "10月11日，另一条记录写的是现场编号。[1]"}
+	case "qa", "q&a", "faq", "问答":
+		section["paragraphs"] = []any{"验收要先看哪一项？", "答：先对照图纸核对编号。"}
+	case "steps", "step-by-step", "breakdown", "拆解":
+		section["paragraphs"] = []any{"1. 先看现场。", "2. 再核对编号。"}
+	}
+	sections[0] = section
+	draft["sections"] = sections
+	return draft
 }
 
 func mockPolish(payload map[string]any) map[string]any {

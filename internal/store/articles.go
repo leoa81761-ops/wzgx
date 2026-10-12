@@ -90,6 +90,38 @@ func (s *Store) AccountTitles(ctx context.Context, q db.Q, accountID int64, limi
 	return titles, rows.Err()
 }
 
+// AccountTopicLines returns recent subtopics and angles for one account, across its plans.
+func (s *Store) AccountTopicLines(ctx context.Context, q db.Q, accountID int64, limit int) ([]string, error) {
+	if q == nil {
+		q = s.DB
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	rows, err := q.Query(ctx, `SELECT subtopic, topic_tag FROM article WHERE wx_account_id = ? AND (subtopic != '' OR topic_tag != '') ORDER BY id DESC LIMIT ?`, accountID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var subtopic, tag string
+		if err := rows.Scan(&subtopic, &tag); err != nil {
+			return nil, err
+		}
+		if text := strings.TrimSpace(subtopic); text != "" {
+			out = append(out, text)
+		}
+		parts := strings.Split(tag, "|")
+		if len(parts) == 3 {
+			if text := strings.TrimSpace(parts[2]); text != "" {
+				out = append(out, text)
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) RecentColumnUses(ctx context.Context, q db.Q, accountID int64) ([]string, error) {
 	if q == nil {
 		q = s.DB

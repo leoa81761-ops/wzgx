@@ -16,13 +16,16 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/leoa81761-ops/wzgx/internal/columns"
 	"github.com/leoa81761-ops/wzgx/internal/config"
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
+	"github.com/leoa81761-ops/wzgx/internal/quality"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
 	"github.com/leoa81761-ops/wzgx/internal/runtime"
 	"github.com/leoa81761-ops/wzgx/internal/security"
@@ -1716,7 +1719,7 @@ func traceStage(rows []map[string]any, stage string) map[string]any {
 }
 
 func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
-	_, kept, dropped, _ := takeSources("笔记", []map[string]any{
+	_, kept, dropped, _ := takeSources(t.Context(), nil, "笔记", []map[string]any{
 		{"title": "综合布线验收", "name": "住建部", "url": "https://www.mohurd.gov.cn/a"},
 		{"title": "PPT模板下载", "name": "模板", "url": "https://www.1ppt.com/moban/1"},
 		{"title": "奶奶养生茶", "name": "茶", "url": "https://example.com/tea"},
@@ -1724,15 +1727,128 @@ func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
 		{"title": "奶奶养生茶", "url": "https://www.gov.cn/tea"},
 		{"title": "", "url": "https://www.gov.cn/zhengce/untitled"},
 	}, content.DefaultSourcePolicy(), "弱电 验收")
-	if len(kept) != 2 {
+	if len(kept) != 4 {
 		t.Fatal(kept)
 	}
 	seen := map[string]bool{}
 	for _, row := range kept {
 		seen[str(row["url"])] = true
 	}
-	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] || seen["https://www.gov.cn/tea"] || seen["https://www.gov.cn/zhengce/untitled"] {
+	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || !seen["https://www.gov.cn/tea"] || !seen["https://www.gov.cn/zhengce/untitled"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] {
 		t.Fatal(kept, dropped)
+	}
+}
+
+func TestUntitledSourcesUseFetchedTitle(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/std":
+			_, _ = w.Write([]byte(`<html><head><title>布线施工记录</title><meta name="description" content="弱电验收要看的公开说明"></head><body>page</body></html>`))
+		case "/plain":
+			_, _ = w.Write([]byte(`<html><head><meta property="og:description" content="综合布线的条文说明"><title></title></head></html>`))
+		default:
+			_, _ = w.Write([]byte(`<html><head><title>奶奶养生茶</title><meta name="description" content="周末喝茶转圈"></head></html>`))
+		}
+	}))
+	defer page.Close()
+	_, kept, dropped, _ := takeSources(t.Context(), page.Client(), "笔记", []map[string]any{
+		{"url": page.URL + "/std"},
+		{"url": page.URL + "/plain"},
+		{"url": page.URL + "/tea"},
+		{"title": "GB 50311 综合布线", "url": "https://www.bzfyw.com/std/50311"},
+		{"title": "GB 50311 条文", "url": "https://bbs.co188.com/thread/1"},
+		{"title": "标准全文", "url": "https://www.biaozhun.org/gb/50311"},
+	}, content.DefaultSourcePolicy(), "弱电智能化综合布线验收 GB 50311")
+	seen := map[string]bool{}
+	for _, row := range kept {
+		seen[str(row["url"])] = true
+		if strings.HasSuffix(str(row["url"]), "/std") && (str(row["title"]) != "布线施工记录" || !strings.Contains(str(row["snippet"]), "弱电验收")) {
+			t.Fatal(row)
+		}
+	}
+	if !seen[page.URL+"/std"] || !seen[page.URL+"/plain"] || seen[page.URL+"/tea"] || !seen["https://www.bzfyw.com/std/50311"] || !seen["https://bbs.co188.com/thread/1"] || !seen["https://www.biaozhun.org/gb/50311"] {
+		t.Fatal(kept, dropped)
+	}
+}
+
+func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
+	var query string
+	var searches int
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		searches++
+		query = r.URL.Query().Get("q")
+		_, _ = w.Write([]byte(`{"results":[{"title":"综合布线验收的另一条说明","url":"https://www.mohurd.gov.cn/gongkai/backup"},{"title":"弱电验收记录","url":"https://www.gov.cn/zhengce/backup"}]}`))
+	}))
+	defer search.Close()
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><head><title>综合布线验收说明</title><meta name="description" content="弱电验收的公开说明"></head></html>`))
+	}))
+	defer page.Close()
+	var researchCalls int
+	research := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		researchCalls++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到一条公开说明。"}}],"citations":[{"url":"` + page.URL + `/std"}]}`))
+	}))
+	defer research.Close()
+	gateway := llm.NewGateway(false, research.Client())
+	gateway.BackupSearchURL = search.URL
+	gateway.BackupSearchAlt = search.URL
+	gateway.ResearchTimeout = 5 * time.Second
+	gateway.MaxAttempts = 1
+	providers := []llm.Provider{{
+		Name: "检索", Protocol: "openai", BaseURL: research.URL + "/v1", Model: "grok-4", Timeout: 5 * time.Second,
+	}}
+	notes, sources, _, err := fetchResearch(t.Context(), gateway, providers, map[string]any{
+		"topic_title": "综合布线验收", "direction": "弱电智能化", "keywords": "验收",
+	}, content.DefaultSourcePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if researchCalls != 1 || searches == 0 {
+		t.Fatalf("research %d searches %d notes %s", researchCalls, searches, notes)
+	}
+	if !strings.Contains(query, "综合布线验收") || utf8.RuneCountInString(query) > 32 {
+		t.Fatal(query)
+	}
+	seen := map[string]bool{}
+	for _, raw := range sources {
+		source, _ := raw.(map[string]any)
+		seen[str(source["url"])] = true
+	}
+	if !seen[page.URL+"/std"] || !seen["https://www.mohurd.gov.cn/gongkai/backup"] {
+		t.Fatal(seen)
+	}
+}
+
+func TestStructureRewriteHoldsWhenTheModelMisses(t *testing.T) {
+	gateway := llm.NewGateway(true, nil)
+	draft := map[string]any{
+		"title":    "验收先看这一步",
+		"sections": []any{map[string]any{"paragraphs": []any{"综合布线验收有一条说明。", "另一条消息没有日期。"}}},
+	}
+	providers := map[string][]llm.Provider{"draft": {{
+		Name: "结构", Protocol: "openai", BaseURL: "mock://", Model: "grok-4",
+		ExtraParams: map[string]any{"_mock_structure_fail": true},
+	}}}
+	kept, _, trace, held := rewriteColumnStructure(t.Context(), gateway, providers, draft, map[string]any{}, "news", "")
+	if !held || kept["sections"].([]any)[0].(map[string]any)["paragraphs"].([]any)[0] != "综合布线验收有一条说明。" {
+		t.Fatal(held, kept, trace)
+	}
+	fixed, _, _, held := rewriteColumnStructure(t.Context(), gateway, map[string][]llm.Provider{"draft": {{
+		Name: "结构", Protocol: "openai", BaseURL: "mock://", Model: "grok-4",
+	}}}, draft, map[string]any{}, "news", "")
+	if held || !quality.StructureOK("news", draftParagraphs(fixed)) {
+		t.Fatal(held, draftParagraphs(fixed))
+	}
+	alt, ok := columns.PickNonNews([]columns.Column{
+		{ID: 1, Name: "工程圈快报", Structure: "news", Status: "active"},
+		{ID: 2, Name: "知识FAQ", Structure: "qa", Status: "active"},
+	}, columns.Column{ID: 1, Name: "工程圈快报", Structure: "news"}, nil)
+	if !ok || alt.Name != "知识FAQ" {
+		t.Fatal(alt, ok)
+	}
+	if sourcesDated([]any{map[string]any{"title": "综合布线说明"}}) || !sourcesDated([]any{map[string]any{"title": "2024年10月的布线新闻"}}) {
+		t.Fatal("dated")
 	}
 }
 

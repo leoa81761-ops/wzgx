@@ -788,6 +788,107 @@ func RewriteTaboos(draft map[string]any, taboos string) map[string]any {
 	return draft
 }
 
+var (
+	orgName  = regexp.MustCompile(`[\p{Han}]{2,8}(?:委员会|协会|学会|研究院)`)
+	orgBu    = regexp.MustCompile(`[\p{Han}]{2,6}部`)
+	stdNum   = regexp.MustCompile(`GB\s*/?\s*T?\s*\d+(?:[.\-]\d+)*`)
+	bookName = regexp.MustCompile(`《[^》]{2,40}》`)
+	orgStop  = map[string]bool{"俱乐部": true}
+)
+
+// StripUnsourcedNames drops sentences that name an institution, standard, or document missing from sources.
+func StripUnsourcedNames(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	blob := sourceNameBlob(draft)
+	rewrite := func(text string) string {
+		names := unsourcedNames(text, blob)
+		if len(names) == 0 {
+			return text
+		}
+		return rewriteTabooText(text, names)
+	}
+	if text := rewrite(textOf(draft["title"])); text != textOf(draft["title"]) {
+		draft["title"] = text
+	}
+	if text := rewrite(textOf(draft["summary"])); text != textOf(draft["summary"]) {
+		draft["summary"] = text
+	}
+	if text := rewrite(textOf(draft["closing"])); text != textOf(draft["closing"]) {
+		draft["closing"] = text
+	}
+	for _, section := range sectionsOf(draft) {
+		if text := rewrite(textOf(section["heading"])); text != textOf(section["heading"]) {
+			section["heading"] = text
+		}
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			paras = append(paras, rewrite(textOf(item)))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
+func sourceNameBlob(draft map[string]any) string {
+	var b strings.Builder
+	for _, raw := range anyList(draft["sources"]) {
+		source, _ := raw.(map[string]any)
+		if source == nil {
+			continue
+		}
+		for _, key := range []string{"title", "name", "snippet", "note", "url"} {
+			b.WriteString(textOf(source[key]))
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func unsourcedNames(text, blob string) []string {
+	compactBlob := strings.ReplaceAll(blob, " ", "")
+	var out []string
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, match := range orgName.FindAllString(text, -1) {
+		if !strings.Contains(blob, match) {
+			add(match)
+		}
+	}
+	for _, match := range orgBu.FindAllString(text, -1) {
+		if orgStop[match] || strings.Contains(blob, match) {
+			continue
+		}
+		add(match)
+	}
+	for _, match := range stdNum.FindAllString(text, -1) {
+		compact := strings.ReplaceAll(match, " ", "")
+		if strings.Contains(blob, match) || strings.Contains(compactBlob, compact) {
+			continue
+		}
+		add(match)
+	}
+	for _, match := range bookName.FindAllString(text, -1) {
+		inner := strings.Trim(match, "《》")
+		if strings.Contains(blob, match) || strings.Contains(blob, inner) {
+			continue
+		}
+		add(match)
+	}
+	return out
+}
+
 func tabooWords(text string) []string {
 	var out []string
 	seen := map[string]bool{}

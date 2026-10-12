@@ -203,6 +203,25 @@ func NormalizeStructure(raw string) string {
 	}
 }
 
+// PickNonNews chooses another active column when a news brief has no dated sources.
+func PickNonNews(active []Column, current Column, recent []string) (Column, bool) {
+	var pool []Column
+	currentName := strings.TrimSpace(current.Name)
+	for _, col := range active {
+		if current.ID != 0 && col.ID == current.ID {
+			continue
+		}
+		if strings.TrimSpace(col.Name) == currentName {
+			continue
+		}
+		if NormalizeStructure(col.Structure) == "news" {
+			continue
+		}
+		pool = append(pool, col)
+	}
+	return Pick(pool, "", 0, nil, recent)
+}
+
 // Pick chooses the column for one run. Weekday mode uses the plan map.
 // Otherwise it picks the least-recently-used active column. Names that are not active are ignored.
 func Pick(active []Column, mode string, weekday int, days map[int]int64, recent []string) (Column, bool) {
