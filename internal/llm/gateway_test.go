@@ -14,7 +14,7 @@ import (
 func TestFactCheckPromptForbidsInventedThresholds(t *testing.T) {
 	fact := StageMessages("事实核对", map[string]any{"draft": map[string]any{"title": "弱电"}})
 	system := fact[0]["content"]
-	if !strings.Contains(system, "弱电") || !strings.Contains(system, "1000V") || !strings.Contains(system, "阈值") || !strings.Contains(system, "research_sources") {
+	if !strings.Contains(system, "弱电") || !strings.Contains(system, "1000V") || !strings.Contains(system, "阈值") || !strings.Contains(system, "research_sources") || !strings.Contains(system, "不要编造网址") || !strings.Contains(system, "不要编造标准编号") {
 		t.Fatal(system)
 	}
 	draft := StageMessages("正文", map[string]any{"word_target": 1500})
@@ -390,47 +390,76 @@ func TestCompleteResearchUsesConfiguredTimeout(t *testing.T) {
 	}
 }
 
-func TestResearchResponsesUsesWebSearch(t *testing.T) {
+func TestResearchChatFastStreamsAndKeepsFinalCitations(t *testing.T) {
 	var seen map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/responses") {
-			t.Errorf("path %s", r.URL.Path)
-		}
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &seen)
-		_, _ = w.Write([]byte(`{"output_text":"参见 https://www.gov.cn/zhengce"}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"参见 https://made-up.invalid/gb\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{}}],\"citations\":[\"https://www.gov.cn/zhengce\"]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
 	gw := NewGateway(false, srv.Client())
+	gw.ResearchTimeout = 150 * time.Second
 	result, err := gw.CompleteResearch(context.Background(), []Provider{{
-		Name: "补救", Protocol: "responses", BaseURL: srv.URL + "/v1", Model: "grok-4.7", Timeout: 5 * time.Second,
+		Name: "检索", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 30 * time.Second,
 	}}, StageMessages("资料检索", map[string]any{"topic_title": "弱电"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seen["model"] != "grok-4.7" || seen["stream"] != false {
+	if seen["stream"] != true || seen["model"] != "grok-chat-fast" {
 		t.Fatalf("%#v", seen)
 	}
-	tools, _ := seen["tools"].([]any)
-	tool, _ := tools[0].(map[string]any)
-	if len(tools) != 1 || tool["type"] != "web_search" {
+	if _, ok := seen["tools"]; ok {
 		t.Fatalf("tools %#v", seen["tools"])
 	}
-	if !strings.Contains(result.Content, "gov.cn") {
-		t.Fatal(result.Content)
+	if len(result.ResearchSources) != 1 || result.ResearchSources[0]["url"] != "https://www.gov.cn/zhengce" {
+		t.Fatalf("%#v", result.ResearchSources)
 	}
-	seen = nil
-	gw = NewGateway(false, srv.Client())
-	_, err = gw.CompleteResearch(context.Background(), []Provider{{
-		Name: "已有工具", Protocol: "responses", BaseURL: srv.URL + "/v1", Model: "grok-4.7", Timeout: 5 * time.Second,
-		ExtraParams: map[string]any{"tools": []any{map[string]any{"type": "file_search"}}},
-	}}, StageMessages("资料检索", map[string]any{}))
+	if strings.Contains(asString(result.ResearchSources[0]["url"]), "made-up") {
+		t.Fatal(result.ResearchSources)
+	}
+}
+
+func TestResearchNonStreamingCapsAt110Seconds(t *testing.T) {
+	stream, timeout := researchTransport(Provider{Protocol: "openai", Model: "grok-chat-fast"}, 150*time.Second)
+	if !stream || timeout != 150*time.Second {
+		t.Fatalf("chat-fast %v %s", stream, timeout)
+	}
+	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "grok-4.7"}, 150*time.Second)
+	if stream || timeout != 110*time.Second {
+		t.Fatalf("grok-4.7 %v %s", stream, timeout)
+	}
+	stream, timeout = researchTransport(Provider{Protocol: "responses", Model: "grok-4.7"}, 90*time.Second)
+	if stream || timeout != 90*time.Second {
+		t.Fatalf("short %v %s", stream, timeout)
+	}
+}
+
+func TestResearchResponsesDoesNotAddWebSearch(t *testing.T) {
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &seen)
+		_, _ = w.Write([]byte(`{"output_text":"参见 https://www.mohurd.gov.cn/fake","usage":{"num_sources_used":0}}`))
+	}))
+	defer srv.Close()
+	gw := NewGateway(false, srv.Client())
+	result, err := gw.CompleteResearch(context.Background(), []Provider{{
+		Name: "推理", Protocol: "responses", BaseURL: srv.URL + "/v1", Model: "grok-4.7", Timeout: 5 * time.Second,
+	}}, StageMessages("资料检索", map[string]any{"topic_title": "弱电"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	tools, _ = seen["tools"].([]any)
-	tool, _ = tools[0].(map[string]any)
-	if len(tools) != 1 || tool["type"] != "file_search" {
-		t.Fatalf("existing tools overwritten: %#v", seen["tools"])
+	if seen["stream"] != false {
+		t.Fatalf("non chat-fast should not stream: %#v", seen["stream"])
+	}
+	if _, ok := seen["tools"]; ok {
+		t.Fatalf("tools %#v", seen["tools"])
+	}
+	if len(result.ResearchSources) != 0 {
+		t.Fatalf("%#v", result.ResearchSources)
 	}
 }

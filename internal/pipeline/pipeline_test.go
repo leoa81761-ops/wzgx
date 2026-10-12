@@ -156,7 +156,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 			data = map[string]any{"title": "远程协作的一件小事", "angle": "今天就能做"}
 		case "资料检索":
 			researchCalls++
-			if req["stream"] != false {
+			if req["stream"] != true {
 				t.Errorf("research stream %#v", req["stream"])
 			}
 			if _, ok := req["response_format"]; ok {
@@ -170,7 +170,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 					t.Errorf("research prompt %s", system)
 				}
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [人社部](https://www.example.com/notice)。"}}]}`))
+			writeCited(w, "参见 [编造](https://made-up.invalid/gb)。", "https://www.example.com/notice")
 			return
 		case "大纲":
 			data = map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"}
@@ -207,7 +207,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 		t.Fatal("empty tag")
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "example点com") {
+	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "example点com") || strings.Contains(articles[0].BodyHTML, "made-up") {
 		html := ""
 		if len(articles) > 0 {
 			html = articles[0].BodyHTML
@@ -251,7 +251,7 @@ func TestResearchRetriesWhenEmpty(t *testing.T) {
 				writeChoice(w, map[string]any{"notes": "", "sources": []any{}})
 				return
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [人社部](https://www.example.com/notice) 近期通知。"}}]}`))
+			writeCited(w, "参见近期通知，正文不写网址。", "https://www.example.com/notice")
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -371,36 +371,39 @@ func TestResearchStopsAfterOneRetry(t *testing.T) {
 	}
 }
 
-func TestBackupResearchCallsGrokResponses(t *testing.T) {
-	var chatCalls, responseCalls int
+func TestBackupResearchRetriesChatFast(t *testing.T) {
+	var researchCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
 		_ = json.Unmarshal(raw, &req)
 		if strings.Contains(r.URL.Path, "/responses") {
-			responseCalls++
-			if req["model"] != "grok-4.7" {
-				t.Errorf("model %#v", req["model"])
-			}
-			tools, _ := req["tools"].([]any)
-			tool, _ := tools[0].(map[string]any)
-			if len(tools) != 1 || tool["type"] != "web_search" {
-				t.Errorf("tools %#v", req["tools"])
-			}
-			input, _ := req["input"].([]any)
-			blob, _ := json.Marshal(input)
-			if !strings.Contains(string(blob), "补救检索") {
-				t.Errorf("short prompt %s", blob)
-			}
-			_, _ = w.Write([]byte(`{"output_text":"参见 [住建部](https://www.mohurd.gov.cn/gongkai/1)。"}`))
-			return
+			t.Errorf("backup should stay on chat completions: %s", r.URL.Path)
 		}
 		switch stageOf(req) {
 		case "选题":
 			writeChoice(w, map[string]any{"title": "补救检索成功", "angle": "今天就能做"})
 		case "资料检索":
-			chatCalls++
-			writeChoice(w, map[string]any{"notes": "", "sources": []any{}})
+			researchCalls++
+			if req["stream"] != true || req["model"] != "grok-chat-fast" {
+				t.Errorf("stream %#v model %#v", req["stream"], req["model"])
+			}
+			if _, ok := req["tools"]; ok {
+				t.Errorf("research should not send web_search: %#v", req["tools"])
+			}
+			msgs, _ := req["messages"].([]any)
+			blob, _ := json.Marshal(msgs)
+			if researchCalls == 1 {
+				if strings.Contains(string(blob), "这是补救检索") {
+					t.Error("first pass should not be the short query")
+				}
+				writeCited(w, "参见 [编造](https://www.mohurd.gov.cn/fake)。")
+				return
+			}
+			if !strings.Contains(string(blob), "这是补救检索") {
+				t.Errorf("short prompt %s", blob)
+			}
+			writeCited(w, "住建部有公开说明。", "https://www.mohurd.gov.cn/gongkai/1")
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -412,14 +415,14 @@ func TestBackupResearchCallsGrokResponses(t *testing.T) {
 	ctx := context.Background()
 	user, account, plan := seedPaid(t, st, "backup@example.com", srv.URL)
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if chatCalls != 1 || responseCalls != 1 {
-		t.Fatalf("chat %d responses %d", chatCalls, responseCalls)
+	if researchCalls != 2 {
+		t.Fatalf("research calls %d", researchCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if !strings.Contains(articles[0].BodyHTML, "mohurd点gov点cn") || strings.Contains(articles[0].DeliveryNote, "无参考来源") {
+	if !strings.Contains(articles[0].BodyHTML, "mohurd点gov点cn") || strings.Contains(articles[0].BodyHTML, "fake") || strings.Contains(articles[0].DeliveryNote, "无参考来源") {
 		t.Fatal(articles[0].BodyHTML, articles[0].DeliveryNote)
 	}
 	notes, _, err := st.ListNotifications(ctx, user.ID, 20)
@@ -475,18 +478,22 @@ func TestExpandTrimStopsNearOneHundredFive(t *testing.T) {
 	}
 }
 
-func TestBackupResearchKeepsExistingGrok4(t *testing.T) {
+func TestBackupResearchUsesChatFast(t *testing.T) {
 	providers := []llm.Provider{
-		{Name: "快", Protocol: "openai", Model: "grok-chat-fast"},
 		{Name: "推理", Protocol: "openai", Model: "grok-4.7"},
+		{Name: "快", Protocol: "openai", Model: "grok-chat-fast"},
 	}
-	out := backupResearchProviders(providers, "grok-4.7")
-	if len(out) != 2 || out[0].Model != "grok-4.7" || out[0].Protocol != "openai" || out[1].Model != "grok-chat-fast" {
+	out := backupResearchProviders(providers, "grok-chat-fast")
+	if len(out) != 1 || out[0].Model != "grok-chat-fast" || out[0].Protocol != "openai" {
 		t.Fatalf("%#v", out)
 	}
 	only := backupResearchProviders([]llm.Provider{{Name: "快", Protocol: "openai", Model: "grok-chat-fast"}}, "")
-	if len(only) != 2 || only[0].Protocol != "responses" || only[0].Model != "grok-4.7" || !strings.Contains(only[0].Name, "补救") || only[1].Protocol != "openai" {
+	if len(only) != 1 || only[0].Model != "grok-chat-fast" || only[0].Protocol != "openai" {
 		t.Fatalf("%#v", only)
+	}
+	custom := backupResearchProviders([]llm.Provider{{Name: "快", Protocol: "openai", Model: "grok-chat-fast", BaseURL: "https://x/v1"}}, "grok-4.7")
+	if len(custom) != 1 || custom[0].Protocol != "openai" || custom[0].Model != "grok-4.7" || custom[0].BaseURL != "https://x/v1" {
+		t.Fatalf("%#v", custom)
 	}
 }
 
@@ -509,10 +516,10 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 				t.Errorf("payload should list blocked domains: %s", content)
 			}
 			if researchCalls == 1 {
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [西陆](https://www.xilu.com/news/1)。"}}]}`))
+				writeCited(w, "转载站。", "https://www.xilu.com/news/1")
 				return
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [国务院](https://www.gov.cn/zhengce/2024)。"}}]}`))
+			writeCited(w, "官方页面。", "https://www.gov.cn/zhengce/2024")
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -594,7 +601,7 @@ func TestResearchRelaxesAllowlist(t *testing.T) {
 			writeChoice(w, map[string]any{"title": "允许名单外的来源", "angle": "今天就能做"})
 		case "资料检索":
 			researchCalls++
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [媒体](https://news.example.com/a)。"}}]}`))
+			writeCited(w, "参见 [媒体](https://news.example.com/a)。", "https://news.example.com/a")
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -635,10 +642,10 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 		case "资料检索":
 			researchCalls++
 			if researchCalls == 1 {
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [西陆](https://www.xilu.com/news/1)。"}}]}`))
+				writeCited(w, "转载。", "https://www.xilu.com/news/1")
 				return
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [媒体](https://news.example.com/a)。"}}]}`))
+			writeCited(w, "媒体。", "https://news.example.com/a")
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -933,7 +940,7 @@ func TestResearchPrefersChatFast(t *testing.T) {
 		_ = json.Unmarshal(raw, &req)
 		if stageOf(req) == "资料检索" {
 			researchModels = append(researchModels, req["model"].(string))
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"参见 [国务院](https://www.gov.cn/zhengce/2024)。"}}]}`))
+			writeCited(w, "官方说明。", "https://www.gov.cn/zhengce/2024")
 			return
 		}
 		switch stageOf(req) {
@@ -1330,6 +1337,21 @@ func seedPlan(t *testing.T, st *store.Store, email string) (*model.User, *model.
 		t.Fatal(err)
 	}
 	return user, account, plan
+}
+
+func writeCited(w http.ResponseWriter, content string, citations ...string) {
+	payload := map[string]any{
+		"choices": []any{map[string]any{"message": map[string]any{"content": content}}},
+	}
+	if len(citations) > 0 {
+		list := make([]any, len(citations))
+		for i, item := range citations {
+			list[i] = item
+		}
+		payload["citations"] = list
+	}
+	raw, _ := json.Marshal(payload)
+	_, _ = w.Write(raw)
 }
 
 func writeChoice(w http.ResponseWriter, data map[string]any) {

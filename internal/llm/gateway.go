@@ -41,6 +41,7 @@ type Completion struct {
 	Model            string
 	ReasoningEffort  string
 	Attempts         []map[string]any
+	ResearchSources  []map[string]any
 }
 
 type Gateway struct {
@@ -120,6 +121,7 @@ func AnthropicURL(base string) string {
 type callLimit struct {
 	timeout  time.Duration
 	attempts int
+	research bool
 }
 
 func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messages []map[string]string, schema *Schema, validate func(map[string]any) (map[string]any, error)) (map[string]any, Completion, error) {
@@ -174,8 +176,30 @@ func (g *Gateway) CompleteFirst(ctx context.Context, providers []Provider, messa
 }
 
 // CompleteResearch 默认等 150 秒，并且这一次调用内部不再重试。资料检索自己还会做一次更短的补救检索。
+// grok-chat-fast 走流式，避免 Cloudflare 把没有字节的请求在大约 120 秒切断。不能流式的模型把等待压到 110 秒。
 func (g *Gateway) CompleteResearch(ctx context.Context, providers []Provider, messages []map[string]string) (Completion, error) {
-	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: g.researchTimeout(), attempts: 1})
+	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: g.researchTimeout(), attempts: 1, research: true})
+}
+
+func researchTransport(provider Provider, configured time.Duration) (bool, time.Duration) {
+	if configured <= 0 {
+		configured = 150 * time.Second
+	}
+	if researchCanStream(provider) {
+		return true, configured
+	}
+	if configured > 110*time.Second {
+		configured = 110 * time.Second
+	}
+	return false, configured
+}
+
+func researchCanStream(provider Provider) bool {
+	if provider.Protocol == "anthropic" || provider.Protocol == "responses" {
+		return false
+	}
+	name := strings.ToLower(provider.Model)
+	return strings.Contains(name, "chat-fast") || strings.Contains(name, "non-reasoning")
 }
 
 func (g *Gateway) researchTimeout() time.Duration {
@@ -249,7 +273,12 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 				}
 			}
 		}
-		completion, status, err := g.call(ctx, provider, messages, schema, stream, limit.timeout, effort, protocol)
+		callStream := stream
+		callTimeout := limit.timeout
+		if limit.research {
+			callStream, callTimeout = researchTransport(provider, limit.timeout)
+		}
+		completion, status, err := g.call(ctx, provider, messages, schema, callStream, callTimeout, effort, protocol)
 		if err == nil {
 			completion.Attempts = failed
 			completion.ReasoningEffort = effort
@@ -431,17 +460,14 @@ func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []
 		return Completion{}, status, err
 	}
 	text, prompt, completion, err := readOpenAI(raw)
-	if stageFromMessages(messages) == "资料检索" {
-		cited := AttachResearchCitations(text, raw)
-		if strings.TrimSpace(cited) != "" && cited != text {
-			text = cited
-			err = nil
-		}
-	}
 	if err != nil {
 		return Completion{}, status, err
 	}
-	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "openai", Model: provider.Model, ReasoningEffort: effort}, status, nil
+	var cited []map[string]any
+	if stageFromMessages(messages) == "资料检索" {
+		cited = StructuredResearchSources(raw)
+	}
+	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "openai", Model: provider.Model, ReasoningEffort: effort, ResearchSources: cited}, status, nil
 }
 
 func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages []map[string]string, stream bool, effort string) (Completion, int, error) {
@@ -499,11 +525,6 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 	body["stream"] = stream
 	applyEffort(body, effort)
 	delete(body, "messages")
-	if stageFromMessages(messages) == "资料检索" {
-		if _, exists := body["tools"]; !exists {
-			body["tools"] = []any{map[string]any{"type": "web_search"}}
-		}
-	}
 	if schema != nil && schema.Body != nil {
 		if _, exists := body["text"]; !exists {
 			body["text"] = map[string]any{
@@ -521,17 +542,14 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 		return Completion{}, status, err
 	}
 	text, prompt, completion, err := readResponses(raw)
-	if stageFromMessages(messages) == "资料检索" {
-		cited := AttachResearchCitations(text, raw)
-		if strings.TrimSpace(cited) != "" && cited != text {
-			text = cited
-			err = nil
-		}
-	}
 	if err != nil {
 		return Completion{}, status, err
 	}
-	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "responses", Model: provider.Model, ReasoningEffort: effort}, status, nil
+	var cited []map[string]any
+	if stageFromMessages(messages) == "资料检索" {
+		cited = StructuredResearchSources(raw)
+	}
+	return Completion{Content: text, PromptTokens: prompt, CompletionTokens: completion, ProviderID: provider.ID, ProviderName: provider.Name, Protocol: "responses", Model: provider.Model, ReasoningEffort: effort, ResearchSources: cited}, status, nil
 }
 
 func openAIHeaders(provider Provider) map[string]string {

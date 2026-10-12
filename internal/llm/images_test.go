@@ -70,47 +70,50 @@ func TestGenerateCoverURLAndBase64(t *testing.T) {
 	}
 }
 
-func TestInterpretResearchMarkdown(t *testing.T) {
+func TestInterpretResearchIgnoresFreeTextURLs(t *testing.T) {
 	notes, sources := InterpretResearch("远程办公的通知见 [人社部](https://www.example.com/notice)。")
-	if notes == "" || len(sources) != 1 || sources[0]["url"] != "https://www.example.com/notice" {
+	if notes == "" || len(sources) != 0 {
 		t.Fatalf("%q %#v", notes, sources)
 	}
 	notes, sources = InterpretResearch(`{"notes":"只有这一条","sources":[{"name":"甲","title":"乙","url":"https://a.example/x","published_on":"2026-01-02","source_type":"news","note":"说明了办公安排"}]}`)
-	if notes != "只有这一条" || len(sources) != 1 || sources[0]["source_type"] != "news" || sources[0]["note"] != "说明了办公安排" {
+	if notes != "只有这一条" || len(sources) != 0 {
 		t.Fatalf("%q %#v", notes, sources)
 	}
-	_, sources = InterpretResearch(`{"notes":"见 https://www.example.com/policy","sources":[]}`)
-	if len(sources) != 1 || sources[0]["url"] != "https://www.example.com/policy" {
-		t.Fatalf("%#v", sources)
-	}
-	_, sources = InterpretResearch(`{"notes":"链接","sources":["https://news.example/item"]}`)
-	if len(sources) != 1 || sources[0]["url"] != "https://news.example/item" {
-		t.Fatalf("%#v", sources)
-	}
-	_, sources = InterpretResearch(`{"notes":"正文没有链接","sources":[],"citations":["https://www.gov.cn/zhengce"]}`)
-	if len(sources) != 1 || sources[0]["url"] != "https://www.gov.cn/zhengce" {
-		t.Fatalf("%#v", sources)
+	_, sources = InterpretResearch(`{"notes":"见 https://www.example.com/policy","sources":[],"citations":["https://www.gov.cn/zhengce"]}`)
+	if len(sources) != 0 {
+		t.Fatalf("model JSON citations are not API citations: %#v", sources)
 	}
 }
 
-func TestAttachResearchCitations(t *testing.T) {
-	chat := []byte(`{"choices":[{"message":{"content":"弱电是电子信息系统。"}}],"citations":["https://www.gov.cn/zhengce/2024/elv",{"url":"https://openstd.samr.gov.cn/std/1","title":"标准"}]}`)
-	text := AttachResearchCitations("弱电是电子信息系统。", chat)
-	_, sources := InterpretResearch(text)
+func TestStructuredResearchSources(t *testing.T) {
+	chat := []byte(`{"choices":[{"message":{"content":"弱电是电子信息系统。参见 https://made-up.invalid/gb"}}],"citations":["https://www.gov.cn/zhengce/2024/elv",{"url":"https://openstd.samr.gov.cn/std/1","title":"标准"}]}`)
+	sources := StructuredResearchSources(chat)
 	if len(sources) != 2 || sources[0]["url"] != "https://www.gov.cn/zhengce/2024/elv" || sources[1]["title"] != "标准" {
 		t.Fatalf("%#v", sources)
 	}
-	responses := []byte(`{"output_text":"说明一下。","output":[{"type":"message","content":[{"type":"output_text","text":"说明一下。","annotations":[{"type":"url_citation","url_citation":{"url":"https://www.miit.gov.cn/a","title":"工信部"}}]}]}]}`)
-	text = AttachResearchCitations("说明一下。", responses)
-	_, sources = InterpretResearch(text)
+	for _, source := range sources {
+		if strings.Contains(asString(source["url"]), "made-up") {
+			t.Fatal(sources)
+		}
+	}
+	unused := []byte(`{"output_text":"参见 https://www.mohurd.gov.cn/fake","usage":{"num_sources_used":0,"num_server_side_tools_used":0},"output":[{"type":"message","content":[{"type":"output_text","text":"参见 https://www.mohurd.gov.cn/fake","annotations":[{"type":"url_citation","url_citation":{"url":"https://www.mohurd.gov.cn/fake","title":"假的"}}]}]}]}`)
+	if got := StructuredResearchSources(unused); len(got) != 0 {
+		t.Fatalf("unused tool %#v", got)
+	}
+	used := []byte(`{"output_text":"说明一下。","usage":{"num_sources_used":1},"output":[{"type":"message","content":[{"type":"output_text","text":"说明一下。","annotations":[{"type":"url_citation","url_citation":{"url":"https://www.miit.gov.cn/a","title":"工信部"}}]}]}]}`)
+	sources = StructuredResearchSources(used)
 	if len(sources) != 1 || sources[0]["url"] != "https://www.miit.gov.cn/a" || sources[0]["title"] != "工信部" {
 		t.Fatalf("%#v", sources)
 	}
 	search := []byte(`{"choices":[{"message":{"content":"只有说明","annotations":[{"type":"url_citation","url":"https://www.mem.gov.cn/gk/1","title":"应急管理部"}]}}],"search_results":[{"title":"重复","url":"https://www.mem.gov.cn/gk/1"}]}`)
-	text = AttachResearchCitations("只有说明", search)
-	_, sources = InterpretResearch(text)
+	sources = StructuredResearchSources(search)
 	if len(sources) != 1 || sources[0]["url"] != "https://www.mem.gov.cn/gk/1" {
 		t.Fatalf("%#v", sources)
+	}
+	stream := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"参见 https://fake.example/made-up\"}}]}\n\ndata: {\"choices\":[{\"delta\":{}}],\"citations\":[\"https://www.gov.cn/zhengce\"]}\n\ndata: [DONE]\n\n")
+	sources = StructuredResearchSources(stream)
+	if len(sources) != 1 || sources[0]["url"] != "https://www.gov.cn/zhengce" {
+		t.Fatalf("stream %#v", sources)
 	}
 }
 
