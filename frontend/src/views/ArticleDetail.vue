@@ -35,7 +35,7 @@
     <p v-if="copied" class="banner ok">已复制</p>
     <div v-if="article.alt_titles?.length" class="card">
       <strong>备选标题</strong>
-      <p v-for="title in article.alt_titles" :key="title">{{ title }}</p>
+      <p v-for="(item, index) in article.alt_titles" :key="index">{{ altLabel(item) }}</p>
     </div>
     <div class="phone" :class="{ dark }">
       <iframe title="文章预览" :srcdoc="frame"></iframe>
@@ -60,6 +60,18 @@ const templates = ref([]);
 const previewTemplate = ref("");
 
 let pollTimer = 0;
+
+function altLabel(item) {
+  if (item && typeof item === "object") {
+    const title = item.title || item.text || "";
+    const scores = ["hook", "concrete", "consistent", "persona"]
+      .filter((key) => item[key] !== undefined && item[key] !== null && item[key] !== "")
+      .map((key) => `${key} ${item[key]}`)
+      .join(" · ");
+    return scores ? `${title}（${scores}）` : title;
+  }
+  return item;
+}
 
 const frame = computed(() => {
   const html = article.value?.body_html || "";

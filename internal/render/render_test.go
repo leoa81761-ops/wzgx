@@ -20,10 +20,10 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 	if !strings.Contains(html, "style=") || strings.Contains(html, "class=") || strings.Contains(html, "<b>") {
 		t.Fatalf("style/escape mismatch: %s", html)
 	}
-	if !strings.Contains(html, "参考来源") || strings.Contains(html, "www.example.com") {
-		t.Fatalf("source rewrite mismatch: %s", html)
+	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "示例媒体") || !strings.Contains(html, "一条报道") {
+		t.Fatalf("source line mismatch: %s", html)
 	}
-	if !strings.Contains(html, "www点example点com/a点b") {
+	if strings.Contains(html, "www.example.com") || strings.Contains(html, "www点example点com") || strings.Contains(html, "点") {
 		t.Fatal(html)
 	}
 	if !strings.Contains(html, "#1f6a4d") {

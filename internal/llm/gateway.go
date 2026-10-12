@@ -327,6 +327,10 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 			break
 		}
 		if idleCut(status, err) {
+			if grokStreamInternal(provider.Model, err) {
+				stream = false
+				limit.timeout = fasterTimeout(limit.timeout, provider.Timeout)
+			}
 			if !retriedIdle && try+1 < attempts && canDegrade(effort, protocol, provider) {
 				retriedIdle = true
 				effort, protocol = degrade(effort, protocol, provider)
@@ -478,6 +482,25 @@ func degrade(effort, protocol string, provider Provider) (string, string) {
 		protocol = "responses"
 	}
 	return effort, protocol
+}
+
+func grokStreamInternal(model string, err error) bool {
+	if err == nil || !strings.Contains(strings.ToLower(model), "grok-4.7") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "internal_error")
+}
+
+// fasterTimeout caps the next grok-4.7 attempt after a stream INTERNAL_ERROR.
+func fasterTimeout(current, providerTimeout time.Duration) time.Duration {
+	if current <= 0 {
+		current = providerTimeout
+	}
+	const cap = 20 * time.Second
+	if current <= 0 || current > cap {
+		return cap
+	}
+	return current
 }
 
 func idleCut(status int, err error) bool {

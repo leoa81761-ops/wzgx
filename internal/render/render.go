@@ -292,27 +292,38 @@ func InjectImage(htmlText, imageURL string) string {
 }
 
 func sourceLine(index int, source map[string]any) string {
-	name := asString(source["name"])
-	title := asString(source["title"])
-	date := asString(source["published_on"])
-	url := DisplayURL(asString(source["url"]))
+	if n := citeNumber(source["cite"]); n > 0 {
+		index = n
+	}
+	name := strings.TrimSpace(asString(source["name"]))
+	note := strings.TrimSpace(asString(source["note"]))
+	if note == "" {
+		note = strings.TrimSpace(asString(source["title"]))
+	}
+	if utf8.RuneCountInString(note) > 40 {
+		note = string([]rune(note)[:40])
+	}
 	bits := []string{"[" + itoa(index) + "]"}
 	if name != "" {
 		bits = append(bits, name)
 	}
-	if title != "" {
-		bits = append(bits, "《"+title+"》")
-	}
-	if date != "" {
-		bits = append(bits, date)
-	}
-	if note := strings.TrimSpace(asString(source["note"])); note != "" {
+	if note != "" && note != name {
 		bits = append(bits, note)
 	}
-	if url != "" {
-		bits = append(bits, url)
-	}
 	return strings.Join(bits, " ")
+}
+
+func citeNumber(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
 }
 
 func asString(v any) string {

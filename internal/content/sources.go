@@ -11,6 +11,7 @@ var DefaultBlockedDomains = []string{
 	"xilu.com", "fyun.com", "huanancj.com",
 	"bzko.com", "yuanlin8.com", "bbs.co188.com", "ireader.com",
 	"abook.qq.com", "gcs66.com", "bzfyw.com", "baijiantest.com",
+	"netkao.com", "netkao.cn", "biaozhun.org", "51cps.net",
 }
 
 type SourcePolicy struct {

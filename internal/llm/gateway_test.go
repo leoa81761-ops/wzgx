@@ -17,9 +17,25 @@ func TestFactCheckPromptForbidsInventedThresholds(t *testing.T) {
 	if !strings.Contains(system, "弱电") || !strings.Contains(system, "1000V") || !strings.Contains(system, "阈值") || !strings.Contains(system, "research_sources") || !strings.Contains(system, "不要编造网址") || !strings.Contains(system, "不要编造标准编号") {
 		t.Fatal(system)
 	}
-	draft := StageMessages("正文", map[string]any{"word_target": 1500})
-	if !strings.Contains(draft[0]["content"], "阈值") || !strings.Contains(draft[0]["content"], "标准编号") {
+	home := StageMessages("事实核对", map[string]any{"vertical_key": "family", "direction": "家庭生活", "draft": map[string]any{"title": "周末收纳"}})
+	if strings.Contains(home[0]["content"], "1000V") || strings.Contains(home[0]["content"], "弱电") {
+		t.Fatal(home[0]["content"])
+	}
+	draft := StageMessages("正文", map[string]any{"word_target": 1500, "vertical_key": "elv", "direction": "弱电智能化"})
+	if !strings.Contains(draft[0]["content"], "阈值") || !strings.Contains(draft[0]["content"], "标准编号") || !strings.Contains(draft[0]["content"], "[1]") || !strings.Contains(draft[0]["content"], "假设") || !strings.Contains(draft[0]["content"], "我在现场见过") {
 		t.Fatal(draft[0]["content"])
+	}
+	polish := StageMessages("结构润色", map[string]any{"vertical_key": "family", "direction": "家庭生活"})
+	if !strings.Contains(polish[0]["content"], "40") || !strings.Contains(polish[0]["content"], "假设") || strings.Contains(polish[0]["content"], "我在现场见过") {
+		t.Fatal(polish[0]["content"])
+	}
+	review := StageMessages("审核", map[string]any{"direction": "职场成长"})
+	if !strings.Contains(review[0]["content"], "反复") || !strings.Contains(review[0]["content"], "quality.motif") {
+		t.Fatal(review[0]["content"])
+	}
+	titles := StageMessages("标题", map[string]any{"summary": "两个人的周末"})
+	if !strings.Contains(titles[0]["content"], "consistent") || !strings.Contains(titles[0]["content"], "具体场景") {
+		t.Fatal(titles[0]["content"])
 	}
 }
 
@@ -337,6 +353,48 @@ func TestIdleCutRetriesWithResponses(t *testing.T) {
 	}
 	if completion.Protocol != "responses" || completion.ReasoningEffort != "low" {
 		t.Fatalf("%#v", completion)
+	}
+}
+
+func TestGrokInternalErrorFallsBackFaster(t *testing.T) {
+	if fasterTimeout(90*time.Second, 0) != 20*time.Second {
+		t.Fatal(fasterTimeout(90*time.Second, 0))
+	}
+	if fasterTimeout(0, 5*time.Second) != 5*time.Second {
+		t.Fatal(fasterTimeout(0, 5*time.Second))
+	}
+	if !grokStreamInternal("grok-4.7", &Error{Message: "http2: stream error: INTERNAL_ERROR"}) {
+		t.Fatal("detect")
+	}
+	if grokStreamInternal("grok-4", &Error{Message: "INTERNAL_ERROR"}) || grokStreamInternal("grok-4.7", &Error{Message: "HTTP 524"}) {
+		t.Fatal("scope")
+	}
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		if calls == 1 {
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("stream error: INTERNAL_ERROR; received from peer"))
+			return
+		}
+		if body["stream"] != false {
+			t.Errorf("retry should not stream %#v", body["stream"])
+		}
+		_, _ = w.Write([]byte(`{"output_text":"{\"title\":\"好\"}","usage":{"input_tokens":1,"output_tokens":2}}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 3, Backoff: time.Millisecond}
+	_, _, err := gw.CompleteJSON(context.Background(), []Provider{{
+		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
+		ExtraParams: map[string]any{"reasoning_effort": "high"}, Timeout: 90 * time.Second,
+	}}, StageMessages("正文", map[string]any{"word_target": 800}), nil, func(item map[string]any) (map[string]any, error) {
+		return item, nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("calls %d err %v", calls, err)
 	}
 }
 

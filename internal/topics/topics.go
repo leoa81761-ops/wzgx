@@ -1,6 +1,7 @@
 package topics
 
 import (
+	"strings"
 	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
@@ -186,6 +187,34 @@ func ProjectTree(tree []string, direction, tier, scheduleType string, weekdays [
 		cursor = end
 	}
 	return out, nil
+}
+
+// AssignColumn picks the article column from the account persona instead of the shared catalog list.
+// 避坑辟谣 is not used unless that name is one of the persona columns.
+func AssignColumn(topic Choice, columns string, history []Coverage) Choice {
+	cols := splitColumns(columns)
+	if len(cols) == 0 {
+		return topic
+	}
+	topic.Column = cols[len(history)%len(cols)]
+	topic.TopicTag = topic.Subtopic + "|" + topic.Column + "|" + topic.Angle
+	return topic
+}
+
+func splitColumns(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == ',' || r == '，' || r == '、' || r == '\n' || r == ';' || r == '；'
+	}) {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
 }
 
 func choice(sub, column, angle string) Choice {

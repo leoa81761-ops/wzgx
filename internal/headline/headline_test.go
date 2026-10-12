@@ -35,4 +35,25 @@ func TestRankLeavesTitlesUnchanged(t *testing.T) {
 	if inside-outside > 12 {
 		t.Fatal("length bonus is too large", inside, outside)
 	}
+	keyword := Score("为什么验收总是过不了这一关呢", nil, nil, "")
+	concrete := Score("验收现场还有 3 处线槽没盖", nil, nil, "")
+	if concrete <= keyword {
+		t.Fatal("a number should outrank a keyword question", concrete, keyword)
+	}
+}
+
+func TestInconsistentNumberIsDropped(t *testing.T) {
+	body := "周末两口人把玩具收进盒子，没有提到任何人数以外的数字。"
+	clash := Scored{Title: "全家 8 口人的周末收纳", HasScores: true, Hook: 4, Concrete: 5, Consistent: 5, Persona: 4}
+	fit := Scored{Title: "两口人把玩具收进一个盒子", HasScores: true, Hook: 4, Concrete: 5, Consistent: 5, Persona: 4}
+	weak := Scored{Title: "周末收纳其实一点也不难", HasScores: true, Hook: 4, Concrete: 2, Consistent: 1, Persona: 4}
+	best, alts := RankScored([]Scored{clash, weak, fit}, "两个人的周末收纳", body, nil, nil, "")
+	if best.Title != fit.Title {
+		t.Fatal(best, alts)
+	}
+	for _, alt := range alts {
+		if alt.Title == clash.Title || alt.Title == weak.Title {
+			t.Fatal(alt)
+		}
+	}
 }
