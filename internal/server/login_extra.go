@@ -46,30 +46,36 @@ func (a *App) sendSMS(w http.ResponseWriter, r *http.Request) error {
 	if !phoneRe.MatchString(phone) {
 		return bad("请填写中国大陆手机号")
 	}
+	if !a.smsSendIP.allow(clientIP(r)) {
+		return bad("尝试次数过多，请稍后再试")
+	}
 	now := time.Now().UTC()
-	recent, err := a.Store.CountSMSSince(r.Context(), phone, now.Add(-60*time.Second))
-	if err != nil {
-		return err
-	}
-	if recent > 0 {
-		return bad("请稍后再获取验证码")
-	}
-	day, err := a.Store.CountSMSSince(r.Context(), phone, now.Add(-24*time.Hour))
-	if err != nil {
-		return err
-	}
-	if day >= 5 {
-		return bad("这个手机号今天的验证码次数已用完")
-	}
 	code, err := numericCode(6)
+	if err != nil {
+		return err
+	}
+	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		recent, err := a.Store.CountSMSSince(r.Context(), tx, phone, now.Add(-60*time.Second))
+		if err != nil {
+			return err
+		}
+		if recent > 0 {
+			return bad("请稍后再获取验证码")
+		}
+		day, err := a.Store.CountSMSSince(r.Context(), tx, phone, now.Add(-24*time.Hour))
+		if err != nil {
+			return err
+		}
+		if day >= 5 {
+			return bad("这个手机号今天的验证码次数已用完")
+		}
+		return a.Store.ReplaceSMSCode(r.Context(), tx, phone, codeHash(a.Cfg.MasterKey, phone, code), now.Add(5*time.Minute), now)
+	})
 	if err != nil {
 		return err
 	}
 	if err := sms.Send(r.Context(), a.HTTP, a.Cfg, sms.Message{Phone: phone, Code: code}); err != nil {
 		return bad(err.Error())
-	}
-	if err := a.Store.ReplaceSMSCode(r.Context(), nil, phone, codeHash(a.Cfg.MasterKey, phone, code), now.Add(5*time.Minute), now); err != nil {
-		return err
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 	return nil
@@ -87,6 +93,9 @@ func (a *App) loginSMS(w http.ResponseWriter, r *http.Request) error {
 		DeviceID      string `json:"device_id"`
 		DeviceConsent bool   `json:"device_consent"`
 	}
+	if !a.smsLoginIP.allow(clientIP(r)) {
+		return bad("尝试次数过多，请稍后再试")
+	}
 	if err := readJSON(r, &body); err != nil {
 		return err
 	}
@@ -94,33 +103,28 @@ func (a *App) loginSMS(w http.ResponseWriter, r *http.Request) error {
 	if !phoneRe.MatchString(phone) || len(strings.TrimSpace(body.Code)) != 6 {
 		return bad("请填写手机号和 6 位验证码")
 	}
+	if !a.smsLoginPhone.allow(phone) {
+		return bad("尝试次数过多，请稍后再试")
+	}
 	now := time.Now().UTC()
-	id, hash, expires, attempts, err := a.Store.LatestSMS(r.Context(), nil, phone)
+	id, hash, expires, _, err := a.Store.LatestSMS(r.Context(), nil, phone)
 	if err != nil {
 		return err
 	}
-	if id == 0 || now.After(expires) || attempts >= 5 {
+	if id == 0 || now.After(expires) {
+		return bad("验证码不正确或已过期")
+	}
+	if _, ok, err := a.Store.ConsumeSMSAttempt(r.Context(), id); err != nil {
+		return err
+	} else if !ok {
 		return bad("验证码不正确或已过期")
 	}
 	expect := codeHash(a.Cfg.MasterKey, phone, strings.TrimSpace(body.Code))
 	if !hmac.Equal([]byte(hash), []byte(expect)) {
-		if err := a.Store.AddSMSAttempt(r.Context(), nil, id); err != nil {
-			return err
-		}
 		return bad("验证码不正确或已过期")
 	}
 	var user *model.User
 	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
-		latest, latestHash, latestExp, latestAttempts, err := a.Store.LatestSMS(r.Context(), tx, phone)
-		if err != nil {
-			return err
-		}
-		if latest != id || now.After(latestExp) || latestAttempts >= 5 || !hmac.Equal([]byte(latestHash), []byte(expect)) {
-			return bad("验证码不正确或已过期")
-		}
-		if err := a.Store.DeleteSMS(r.Context(), tx, id); err != nil {
-			return err
-		}
 		user, err = a.Store.FindUserByPhone(r.Context(), tx, phone)
 		if err != nil {
 			return err
@@ -129,10 +133,24 @@ func (a *App) loginSMS(w http.ResponseWriter, r *http.Request) error {
 			if !user.IsActive {
 				return &AppError{Status: 403, Message: "账号已停用"}
 			}
+			ok, err := a.Store.DeleteSMSMatch(r.Context(), tx, id, hash)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return bad("验证码不正确或已过期")
+			}
 			return nil
 		}
 		if !body.Agree {
 			return bad("新手机号请先勾选同意《用户协议》和《隐私政策》")
+		}
+		ok, err := a.Store.DeleteSMSMatch(r.Context(), tx, id, hash)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return bad("验证码不正确或已过期")
 		}
 		pass, err := randomSecret()
 		if err != nil {
@@ -177,10 +195,15 @@ func (a *App) wechatScanStart(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if err := a.Store.SaveOAuthState(r.Context(), nil, store.OAuthState{State: state, Kind: "qr", Expires: now.Add(10 * time.Minute)}, now); err != nil {
+	nonce, err := randomSecret()
+	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
+	if err := a.Store.SaveOAuthState(r.Context(), nil, store.OAuthState{State: state, Kind: "qr", Nonce: nonce, Expires: now.Add(10 * time.Minute)}, now); err != nil {
+		return err
+	}
+	setFlowCookie(w, wxScanCookie, nonce)
 	writeJSON(w, 200, map[string]any{"url": wxopen.ScanURL(a.Cfg.WeChatOpenAppID, a.Cfg.WeChatOpenRedirect, state)})
 	return nil
 }
@@ -191,15 +214,15 @@ func (a *App) wechatScanCallback(w http.ResponseWriter, r *http.Request) error {
 	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	row, err := a.Store.GetOAuthState(r.Context(), nil, state)
+	now := time.Now().UTC()
+	row, err := a.Store.ConsumeOAuthState(r.Context(), nil, state, "qr", flowCookie(r, wxScanCookie), now)
 	if err != nil {
 		return err
 	}
-	if row == nil || row.Kind != "qr" || time.Now().After(row.Expires) {
+	if row == nil {
 		http.Redirect(w, r, "/login?error="+url.QueryEscape("扫码已过期，请重试"), http.StatusFound)
 		return nil
 	}
-	_ = a.Store.DeleteOAuthState(r.Context(), nil, state)
 	profile, err := wxopen.ExchangeScan(r.Context(), a.HTTP, a.Cfg.WeChatAPIBase, a.Cfg.WeChatOpenAppID, a.Cfg.WeChatOpenSecret, code)
 	if err != nil {
 		http.Redirect(w, r, "/login?error="+url.QueryEscape(err.Error()), http.StatusFound)
@@ -213,14 +236,18 @@ func (a *App) wechatScanCallback(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	ticketNonce, err := randomSecret()
+	if err != nil {
+		return err
+	}
 	payload := "new:" + profile.OpenID + ":" + profile.UnionID
 	if userID > 0 {
 		payload = "user:" + strconv.FormatInt(userID, 10)
 	}
-	now := time.Now().UTC()
-	if err := a.Store.SaveOAuthState(r.Context(), nil, store.OAuthState{State: ticket, Kind: "ticket", Payload: payload, Expires: now.Add(10 * time.Minute)}, now); err != nil {
+	if err := a.Store.SaveOAuthState(r.Context(), nil, store.OAuthState{State: ticket, Kind: "ticket", Payload: payload, Nonce: ticketNonce, Expires: now.Add(10 * time.Minute)}, now); err != nil {
 		return err
 	}
+	setFlowCookie(w, wxScanCookie, ticketNonce)
 	http.Redirect(w, r, "/login?ticket="+url.QueryEscape(ticket), http.StatusFound)
 	return nil
 }
@@ -233,17 +260,24 @@ func (a *App) wechatTicket(w http.ResponseWriter, r *http.Request) error {
 	if err := readJSON(r, &body); err != nil {
 		return err
 	}
+	now := time.Now().UTC()
 	row, err := a.Store.GetOAuthState(r.Context(), nil, strings.TrimSpace(body.Ticket))
 	if err != nil {
 		return err
 	}
-	if row == nil || row.Kind != "ticket" || time.Now().After(row.Expires) {
+	if row == nil || row.Kind != "ticket" || now.After(row.Expires) || row.Nonce == "" || row.Nonce != flowCookie(r, wxScanCookie) {
 		return bad("扫码登录已过期，请重试")
 	}
-	now := time.Now().UTC()
 	var user *model.User
 	if strings.HasPrefix(row.Payload, "user:") {
-		id, _ := strconv.ParseInt(strings.TrimPrefix(row.Payload, "user:"), 10, 64)
+		consumed, err := a.Store.ConsumeOAuthState(r.Context(), nil, row.State, "ticket", row.Nonce, now)
+		if err != nil {
+			return err
+		}
+		if consumed == nil {
+			return bad("扫码登录已过期，请重试")
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(consumed.Payload, "user:"), 10, 64)
 		user, err = a.Store.GetUser(r.Context(), nil, id)
 		if err != nil {
 			return err
@@ -251,7 +285,6 @@ func (a *App) wechatTicket(w http.ResponseWriter, r *http.Request) error {
 		if user == nil || !user.IsActive {
 			return &AppError{Status: 403, Message: "账号已停用"}
 		}
-		_ = a.Store.DeleteOAuthState(r.Context(), nil, row.State)
 	} else {
 		parts := strings.SplitN(strings.TrimPrefix(row.Payload, "new:"), ":", 2)
 		if len(parts) != 2 || parts[0] == "" {
@@ -286,8 +319,12 @@ func (a *App) wechatTicket(w http.ResponseWriter, r *http.Request) error {
 					return err
 				}
 			}
-			if err := a.Store.DeleteOAuthState(r.Context(), tx, row.State); err != nil {
+			consumed, err := a.Store.ConsumeOAuthState(r.Context(), tx, row.State, "ticket", row.Nonce, now)
+			if err != nil {
 				return err
+			}
+			if consumed == nil {
+				return bad("扫码登录已过期，请重试")
 			}
 			_, err = a.Store.EnsureInviteCode(r.Context(), tx, user.ID, "")
 			return err
@@ -319,10 +356,15 @@ func (a *App) componentStart(w http.ResponseWriter, r *http.Request, user *model
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if err := a.Store.SaveOAuthState(r.Context(), nil, store.OAuthState{State: state, Kind: "component", UserID: user.ID, Expires: now.Add(10 * time.Minute)}, now); err != nil {
+	nonce, err := randomSecret()
+	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
+	if err := a.Store.SaveOAuthState(r.Context(), nil, store.OAuthState{State: state, Kind: "component", UserID: user.ID, Nonce: nonce, Expires: now.Add(10 * time.Minute)}, now); err != nil {
+		return err
+	}
+	setFlowCookie(w, wxBindCookie, nonce)
 	redirect := a.Cfg.WeChatComponentRedirect
 	if strings.Contains(redirect, "?") {
 		redirect += "&state=" + url.QueryEscape(state)
@@ -347,14 +389,13 @@ func (a *App) componentCallback(w http.ResponseWriter, r *http.Request) error {
 	}
 	state := r.URL.Query().Get("state")
 	authCode := r.URL.Query().Get("auth_code")
-	row, err := a.Store.GetOAuthState(r.Context(), nil, state)
+	row, err := a.Store.ConsumeOAuthState(r.Context(), nil, state, "component", flowCookie(r, wxBindCookie), time.Now().UTC())
 	if err != nil {
 		return err
 	}
-	if row == nil || row.Kind != "component" || row.UserID == 0 || time.Now().After(row.Expires) {
+	if row == nil || row.UserID == 0 {
 		return fail("授权已过期，请重试")
 	}
-	_ = a.Store.DeleteOAuthState(r.Context(), nil, state)
 	ticket, err := a.Store.GetSetting(r.Context(), nil, "wechat_component_ticket")
 	if err != nil || ticket == "" {
 		return fail("还没有收到微信的验证票据")
@@ -505,6 +546,25 @@ func (a *App) accountWeChatClient(ctx context.Context, account *model.WxAccount,
 		secret = "component"
 	}
 	return wechat.Build(account.AppID, secret, mode, base, a.HTTP, a.Tokens), nil
+}
+
+const (
+	wxScanCookie = "wx_scan"
+	wxBindCookie = "wx_bind"
+)
+
+func setFlowCookie(w http.ResponseWriter, name, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: name, Value: value, Path: "/", MaxAge: 600, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func flowCookie(r *http.Request, name string) string {
+	c, err := r.Cookie(name)
+	if err != nil || c == nil {
+		return ""
+	}
+	return c.Value
 }
 
 func codeHash(secret, phone, code string) string {

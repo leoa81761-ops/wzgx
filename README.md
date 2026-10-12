@@ -109,7 +109,8 @@
 - `SMS_ACCESS_KEY`、`SMS_ACCESS_SECRET`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`
 - 腾讯云还要 `SMS_SDK_APP_ID`。可选 `SMS_REGION`（默认 `ap-guangzhou`）
 - 可选 `SMS_API_BASE`，用来改短信网关地址。阿里云默认 `https://dysmsapi.aliyuncs.com`，腾讯云默认 `https://sms.tencentcloudapi.com`
-- 模板里放一个验证码变量。同一手机号 60 秒一次、24 小时最多 5 次。验证码 5 分钟有效，错 5 次作废。新手机号必须勾选协议后才会注册
+- 模板里放一个验证码变量。同一手机号 60 秒一次、24 小时最多 5 次。验证码 5 分钟有效。每次提交先占用一次机会，满 5 次作废，并行猜测也不能超过 5 次。同一 IP 每小时最多发 20 条、登录尝试 60 次；同一手机号 10 分钟内最多登录尝试 30 次。新手机号必须勾选协议后才会注册
+- 微信扫码和开放平台授权会给发起浏览器种下 `HttpOnly`、`SameSite=Lax` 的校验 cookie。回调必须带上这枚 cookie，state 和登录票据只能用一次。开放平台授权还会记下当时登录的用户，不能把授权绑到别的账号
 
 微信网站扫码登录：
 

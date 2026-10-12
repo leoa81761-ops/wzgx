@@ -13,6 +13,7 @@ type OAuthState struct {
 	Kind    string
 	UserID  int64
 	Payload string
+	Nonce   string
 	Expires time.Time
 }
 
@@ -24,10 +25,40 @@ func (s *Store) ReplaceSMSCode(ctx context.Context, q db.Q, phone, hash string, 
 	return err
 }
 
-func (s *Store) CountSMSSince(ctx context.Context, phone string, since time.Time) (int, error) {
+func (s *Store) CountSMSSince(ctx context.Context, q db.Q, phone string, since time.Time) (int, error) {
+	if q == nil {
+		q = s.DB
+	}
 	var n int
-	err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM sms_code WHERE phone = ? AND created_at >= ?`, phone, timeReq(since)).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM sms_code WHERE phone = ? AND created_at >= ?`, phone, timeReq(since)).Scan(&n)
 	return n, err
+}
+
+// ConsumeSMSAttempt increments the guess counter before the code is compared.
+// A missing row means the code is gone or already has 5 guesses.
+func (s *Store) ConsumeSMSAttempt(ctx context.Context, id int64) (int, bool, error) {
+	var n int
+	err := s.DB.QueryRow(ctx, `UPDATE sms_code SET attempts = attempts + 1 WHERE id = ? AND attempts < 5 RETURNING attempts`, id).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return n, true, nil
+}
+
+// DeleteSMSMatch removes one unused code. Only one caller can win.
+func (s *Store) DeleteSMSMatch(ctx context.Context, q db.Q, id int64, hash string) (bool, error) {
+	if q == nil {
+		q = s.DB
+	}
+	var got int64
+	err := q.QueryRow(ctx, `DELETE FROM sms_code WHERE id = ? AND code_hash = ? RETURNING id`, id, hash).Scan(&got)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *Store) LatestSMS(ctx context.Context, q db.Q, phone string) (id int64, hash string, expires time.Time, attempts int, err error) {
@@ -65,8 +96,8 @@ func (s *Store) SaveOAuthState(ctx context.Context, q db.Q, row OAuthState, now 
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `INSERT INTO oauth_state (state, kind, user_id, payload, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		row.State, row.Kind, row.UserID, row.Payload, timeReq(row.Expires), timeReq(now))
+	_, err := q.Exec(ctx, `INSERT INTO oauth_state (state, kind, user_id, payload, nonce, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		row.State, row.Kind, row.UserID, row.Payload, row.Nonce, timeReq(row.Expires), timeReq(now))
 	return err
 }
 
@@ -77,7 +108,33 @@ func (s *Store) GetOAuthState(ctx context.Context, q db.Q, state string) (*OAuth
 	var row OAuthState
 	var userID sql.NullInt64
 	var exp string
-	err := q.QueryRow(ctx, `SELECT state, kind, user_id, payload, expires_at FROM oauth_state WHERE state = ?`, state).Scan(&row.State, &row.Kind, &userID, &row.Payload, &exp)
+	err := q.QueryRow(ctx, `SELECT state, kind, user_id, payload, nonce, expires_at FROM oauth_state WHERE state = ?`, state).Scan(&row.State, &row.Kind, &userID, &row.Payload, &row.Nonce, &exp)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if userID.Valid {
+		row.UserID = userID.Int64
+	}
+	row.Expires = mustTime(exp)
+	return &row, nil
+}
+
+// ConsumeOAuthState deletes one unused state. A second caller gets no row.
+func (s *Store) ConsumeOAuthState(ctx context.Context, q db.Q, state, kind, nonce string, now time.Time) (*OAuthState, error) {
+	if q == nil {
+		q = s.DB
+	}
+	if state == "" || kind == "" || nonce == "" {
+		return nil, nil
+	}
+	var row OAuthState
+	var userID sql.NullInt64
+	var exp string
+	err := q.QueryRow(ctx, `DELETE FROM oauth_state WHERE state = ? AND kind = ? AND nonce = ? AND nonce != '' AND expires_at > ? RETURNING state, kind, user_id, payload, nonce, expires_at`,
+		state, kind, nonce, timeReq(now)).Scan(&row.State, &row.Kind, &userID, &row.Payload, &row.Nonce, &exp)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

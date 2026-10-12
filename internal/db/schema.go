@@ -476,6 +476,7 @@ CREATE TABLE IF NOT EXISTS oauth_state (
   kind TEXT NOT NULL,
   user_id INTEGER,
   payload TEXT NOT NULL DEFAULT '',
+  nonce TEXT NOT NULL DEFAULT '',
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -512,6 +513,7 @@ CREATE TABLE IF NOT EXISTS wechat_authorizer (
 		{"writing_plan", "confirm_mode", "INTEGER NOT NULL DEFAULT 0"},
 		{"user_invite", "device_hash", "TEXT NOT NULL DEFAULT ''"},
 		{"hot_item", "reports", "INTEGER NOT NULL DEFAULT 1"},
+		{"oauth_state", "nonce", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err
