@@ -12,6 +12,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/cover"
 	"github.com/leoa81761-ops/wzgx/internal/db"
+	"github.com/leoa81761-ops/wzgx/internal/hot"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/notify"
@@ -230,6 +231,15 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			}
 			task.ArticleID = &article.ID
 		}
+		if locked == nil {
+			tag, err := deps.Store.GetTopicLock(ctx, tx, task.ID)
+			if err != nil {
+				return err
+			}
+			if choice, yes := topics.ParseTag(tag); yes {
+				locked = &choice
+			}
+		}
 		secret := ""
 		if account.SecretEncrypted != "" {
 			secret, err = security.DecryptSecret(deps.Settings.MasterKey, account.SecretEncrypted)
@@ -332,6 +342,9 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	costAction := ops.Decide(spent, costPolicy)
 	in := w.input()
 	in.AILabel = costPolicy.AILabel
+	if err := applyHotTopic(ctx, deps, &in); err != nil {
+		return nil, err
+	}
 	if costAction != "" {
 		providers["research"] = nil
 		image = nil
@@ -399,6 +412,43 @@ type Input struct {
 	StyleHint      string
 	AILabel        bool
 	CostNote       string
+}
+
+func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
+	if in == nil || in.Locked != nil || in.SpecifiedTitle != "" || in.Tier == "free" {
+		return nil
+	}
+	rows, err := deps.Store.ListHotItems(ctx, nil)
+	if err != nil || len(rows) == 0 {
+		return err
+	}
+	items := make([]hot.Item, 0, len(rows))
+	for _, row := range rows {
+		reports := row.Reports
+		if reports < 1 {
+			reports = 1
+		}
+		items = append(items, hot.Item{
+			Title: row.Title, Summary: row.Summary, Source: row.SourceLabel, SourceName: row.SourceName,
+			URL: row.URL, PublishedOn: row.PublishedOn, Heat: row.Heat, Vertical: row.Vertical, Reports: reports,
+		})
+	}
+	items = hot.ForVertical(items, in.Pack.Key, in.Direction)
+	used := map[string]bool{}
+	for _, row := range in.History {
+		used[row.Subtopic+"|"+row.Column+"|"+row.Angle] = true
+	}
+	for _, tag := range in.Vetoed {
+		used[tag] = true
+	}
+	item, ok := hot.Choose(items, in.Tier, used)
+	if !ok {
+		return nil
+	}
+	if choice, yes := topics.ParseTag(hot.Tag(item)); yes {
+		in.Locked = &choice
+	}
+	return nil
 }
 
 func (w *work) input() Input {
@@ -703,7 +753,8 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	var publishNow int64
 	var costPaused bool
 	var noticeUser int64
-	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
+	var inviteChange *store.ReferralChange
+	txErr := deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		task, err := deps.Store.GetTask(ctx, tx, taskID)
 		if err != nil || task == nil || task.ArticleID == nil {
 			return err
@@ -814,8 +865,34 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		if err := deps.Store.ClearPin(ctx, tx, plan.ID); err != nil {
 			return err
 		}
-		return deps.Store.UpdatePlan(ctx, tx, plan)
+		change, err := deps.Store.SettleReferral(ctx, tx, task.UserID, now)
+		if err != nil {
+			return err
+		}
+		if err := deps.Store.UpdatePlan(ctx, tx, plan); err != nil {
+			return err
+		}
+		inviteChange = change
+		return nil
 	})
+	if txErr == nil && inviteChange != nil {
+		title, body := "邀请奖励已更新", inviteChange.Reason
+		switch inviteChange.Status {
+		case "valid":
+			title, body = "邀请奖励已生效", "有一条邀请通过了观察期，免费额度已增加。付费期间不加篇，降回免费后会恢复。"
+		case "frozen":
+			title = "有一条邀请待审核"
+			if body == "" {
+				body = "这条邀请暂不计入额度，等待管理员审核。"
+			}
+		default:
+			title = "有一条邀请已撤销"
+			if body == "" {
+				body = "这条邀请不再增加额度。已经写出的文章不会追回。"
+			}
+		}
+		emitNotice(ctx, deps, inviteChange.InviterID, "invite", title, body)
+	}
 	if publishNow > 0 {
 		publish.TryArticle(ctx, publishDeps(deps), publishNow)
 	}

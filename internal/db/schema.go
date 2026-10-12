@@ -409,6 +409,57 @@ CREATE TABLE IF NOT EXISTS usage_cost (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cost_user_month ON usage_cost(user_id, month_key);
+
+CREATE TABLE IF NOT EXISTS user_invite (
+  user_id INTEGER PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE,
+  device_hash TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS referral (
+  id {{PK}},
+  inviter_id INTEGER NOT NULL,
+  invitee_id INTEGER NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  device_hash TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  observe_until TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  valid_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_referral_inviter ON referral(inviter_id, status);
+
+CREATE TABLE IF NOT EXISTS topic_proposal (
+  id {{PK}},
+  plan_id INTEGER NOT NULL,
+  topic_tag TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  proposed_at TEXT NOT NULL,
+  execute_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proposal_plan ON topic_proposal(plan_id, status);
+
+CREATE TABLE IF NOT EXISTS topic_lock (
+  task_id INTEGER PRIMARY KEY,
+  topic_tag TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hot_item (
+  id {{PK}},
+  source_name TEXT NOT NULL,
+  vertical_key TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  source_label TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL,
+  published_on TEXT NOT NULL DEFAULT '',
+  heat INTEGER NOT NULL DEFAULT 0,
+  reports INTEGER NOT NULL DEFAULT 1,
+  fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hot_fetched ON hot_item(source_name, fetched_at);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	for _, stmt := range strings.Split(schema, ";") {
@@ -425,6 +476,9 @@ CREATE INDEX IF NOT EXISTS idx_cost_user_month ON usage_cost(user_id, month_key)
 		{"style_preset", "tone", "TEXT NOT NULL DEFAULT ''"},
 		{"layout_template", "min_tier", "TEXT NOT NULL DEFAULT 'free'"},
 		{"writing_plan", "daily_count", "INTEGER NOT NULL DEFAULT 1"},
+		{"writing_plan", "confirm_mode", "INTEGER NOT NULL DEFAULT 0"},
+		{"user_invite", "device_hash", "TEXT NOT NULL DEFAULT ''"},
+		{"hot_item", "reports", "INTEGER NOT NULL DEFAULT 1"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err

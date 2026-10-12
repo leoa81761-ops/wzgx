@@ -235,6 +235,11 @@ func (a *App) adminSetActive(w http.ResponseWriter, r *http.Request, admin *mode
 		if err := a.Store.UpdateUser(r.Context(), tx, user); err != nil {
 			return err
 		}
+		if !user.IsActive {
+			if err := a.Store.RevokeInvitee(r.Context(), tx, user.ID, "账号已停用"); err != nil {
+				return err
+			}
+		}
 		action := "disable_user"
 		detail := "停用用户"
 		if user.IsActive {

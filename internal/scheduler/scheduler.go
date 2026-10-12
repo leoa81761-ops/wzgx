@@ -56,11 +56,17 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	if err := r.refreshHot(ctx, now); err != nil {
+		log.Printf("刷新热点缓存失败: %v", err)
+	}
 	stamp := schedule.Format(now)
 	var claimed []int64
 	err := r.Deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
 		cutoff := schedule.Format(now.Add(-time.Duration(r.Deps.Settings.StaleTaskSeconds) * time.Second))
 		if err := r.Deps.Store.RequeueStale(ctx, tx, cutoff, stamp); err != nil {
+			return err
+		}
+		if err := r.advanceReferrals(ctx, tx, now); err != nil {
 			return err
 		}
 		if err := r.resumeQuota(ctx, tx, now); err != nil {
@@ -81,6 +87,9 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 			if err := quota.EnforceFreeLimits(ctx, r.Deps.Store, tx, user, now); err != nil {
 				return err
 			}
+		}
+		if err := r.prepareTopics(ctx, tx, now); err != nil {
+			return err
 		}
 		plans, err := r.Deps.Store.ListDuePlans(ctx, tx, stamp)
 		if err != nil {
@@ -183,9 +192,30 @@ func (r *Runner) handlePlan(ctx context.Context, tx *db.Tx, plan *model.WritingP
 	if produced >= plan.ArticlesPerDay() {
 		return r.advancePlan(ctx, tx, plan, now, produced)
 	}
+	lockTag := ""
+	if confirmActive(user, plan, now) {
+		prop, err := r.Deps.Store.OpenProposal(ctx, tx, plan.ID)
+		if err != nil {
+			return err
+		}
+		if prop != nil && prop.Status == "pending" && now.Before(prop.ProposedAt.Add(topicDecision)) {
+			return nil
+		}
+		if prop != nil {
+			lockTag = prop.TopicTag
+		}
+	}
 	err = tx.Savepoint(ctx, func() error {
-		_, err := jobs.Create(ctx, r.Deps.Store, tx, user, plan, account, "schedule", now, nil)
-		return err
+		task, err := jobs.Create(ctx, r.Deps.Store, tx, user, plan, account, "schedule", now, nil)
+		if err != nil {
+			return err
+		}
+		if lockTag != "" {
+			if err := r.Deps.Store.SetTopicLock(ctx, tx, task.ID, lockTag); err != nil {
+				return err
+			}
+		}
+		return r.Deps.Store.UseProposal(ctx, tx, plan.ID)
 	})
 	if err == nil {
 		return nil

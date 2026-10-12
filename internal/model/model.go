@@ -47,6 +47,7 @@ type WritingPlan struct {
 	PauseReason  string
 	NextRunAt    *time.Time
 	DailyCount   int
+	ConfirmMode  bool
 	CreatedAt    time.Time
 }
 

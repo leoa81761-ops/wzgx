@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
+	"github.com/leoa81761-ops/wzgx/internal/growth"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/security"
 )
@@ -126,9 +127,12 @@ func userDict(u *model.User) map[string]any {
 }
 
 type registerBody struct {
-	Account  string `json:"account"`
-	Password string `json:"password"`
-	Agree    bool   `json:"agree"`
+	Account       string `json:"account"`
+	Password      string `json:"password"`
+	Agree         bool   `json:"agree"`
+	InviteCode    string `json:"invite_code"`
+	DeviceID      string `json:"device_id"`
+	DeviceConsent bool   `json:"device_consent"`
 }
 
 type loginBody struct {
@@ -185,7 +189,16 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 		}
-		return nil
+		deviceHash := deviceFrom(r, body.DeviceID, body.DeviceConsent)
+		if deviceHash != "" {
+			if err := a.Store.InsertConsent(r.Context(), tx, &model.Consent{
+				UserID: user.ID, DocType: "device_fingerprint", Version: version, ConsentItem: "invite_device",
+				IP: clientIP(r), UserAgent: userAgent(r), CreatedAt: now,
+			}); err != nil {
+				return err
+			}
+		}
+		return attachInvite(r.Context(), a.Store, tx, user, body.InviteCode, deviceHash, growth.IPPrefix(clientIP(r)), now)
 	})
 	if err != nil {
 		return err

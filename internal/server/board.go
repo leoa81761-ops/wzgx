@@ -51,6 +51,7 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request, _ *model.User
 		"paid_users": m.PaidUsers, "conversion": conversion,
 		"orders_paid_30d": m.OrdersPaid30d, "renewals_30d": m.Renewals30d,
 		"articles_30d": m.Articles30d, "cost_cents_30d": m.CostCents30d, "cost_per_article_cents": per,
+		"referrals": m.Referrals, "referrals_valid": m.ReferralsValid, "referrals_frozen": m.ReferralsFrozen,
 		"ai_label": policy.AILabel, "cost": policyJSON(policy),
 		"legal_version": a.activeLegalVersion(r.Context()),
 	})
