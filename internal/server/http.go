@@ -191,6 +191,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/accounts/{account_id}/stats.png", a.withUser(false, a.statsPNG))
 	mux.HandleFunc("GET /api/accounts/{account_id}/reports", a.withUser(false, a.listReports))
 	mux.HandleFunc("POST /api/accounts/{account_id}/reports", a.withUser(false, a.createReport))
+	mux.HandleFunc("POST /api/setup/preview", a.withUser(false, a.setupPreview))
 	mux.HandleFunc("GET /api/plans", a.withUser(false, a.listPlans))
 	mux.HandleFunc("POST /api/plans", a.withUser(false, a.createPlan))
 	mux.HandleFunc("GET /api/plans/{plan_id}", a.withUser(false, a.getPlan))

@@ -123,7 +123,12 @@ th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line
 details.stack { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: white; }
 summary { cursor: pointer; font-weight: 650; }
 
+.account-grid { display: grid; gap: 14px; }
+
 @media (max-width: 900px) {
   .grid-2, .cards, .price-grid { grid-template-columns: 1fr; }
   h1 { font-size: 34px; }
+  .topbar { align-items: flex-start; }
+  .nav { font-size: 15px; }
+  .row .btn, .row .btn-ghost { flex: 1 1 140px; }
 }
