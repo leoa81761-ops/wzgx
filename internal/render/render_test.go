@@ -20,6 +20,9 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 	if !strings.Contains(html, "style=") || strings.Contains(html, "class=") || strings.Contains(html, "<b>") {
 		t.Fatalf("style/escape mismatch: %s", html)
 	}
+	if strings.Contains(html, "导语") {
+		t.Fatal("summary is not rendered as the lead paragraph")
+	}
 	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "示例媒体") || !strings.Contains(html, "一条报道") {
 		t.Fatalf("source line mismatch: %s", html)
 	}
@@ -63,5 +66,19 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 	labeled := RenderHTML(map[string]any{"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"乙"}}}, "ai_label": true}, "simple", false, false)
 	if !strings.Contains(labeled, "本文由人工智能辅助生成") {
 		t.Fatal(labeled)
+	}
+	further := RenderHTML(map[string]any{
+		"source_heading": "延伸阅读",
+		"sources":        []any{map[string]any{"name": "示例媒体", "title": "一条报道"}},
+	}, "simple", false, false)
+	if !strings.Contains(further, "延伸阅读") || strings.Contains(further, "参考来源") {
+		t.Fatal(further)
+	}
+	labeledColumn := RenderHTML(map[string]any{
+		"column_label": "工程圈快报",
+		"sections":     []any{map[string]any{"heading": "甲", "paragraphs": []any{"乙"}}},
+	}, "simple", false, false)
+	if !strings.Contains(labeledColumn, "栏目 · 工程圈快报") {
+		t.Fatal(labeledColumn)
 	}
 }

@@ -8,14 +8,14 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/model"
 )
 
-const userCols = `id, email, phone, password_hash, tier, tier_expires_at, tier_started_at, is_admin, is_active, created_at`
+const userCols = `id, email, phone, password_hash, tier, tier_expires_at, tier_started_at, is_admin, is_active, quota_exempt, created_at`
 
 func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 	var u model.User
 	var email, phone, exp, started sql.NullString
-	var admin, active int
+	var admin, active, exempt int
 	var created string
-	err := row.Scan(&u.ID, &email, &phone, &u.PasswordHash, &u.Tier, &exp, &started, &admin, &active, &created)
+	err := row.Scan(&u.ID, &email, &phone, &u.PasswordHash, &u.Tier, &exp, &started, &admin, &active, &exempt, &created)
 	if err != nil {
 		return nil, err
 	}
@@ -25,6 +25,7 @@ func scanUser(row interface{ Scan(dest ...any) error }) (*model.User, error) {
 	u.TierStartedAt = parsePtr(started)
 	u.IsAdmin = admin != 0
 	u.IsActive = active != 0
+	u.QuotaExempt = exempt != 0
 	u.CreatedAt = mustTime(created)
 	return &u, nil
 }
@@ -84,9 +85,9 @@ func (s *Store) InsertUser(ctx context.Context, q db.Q, u *model.User) error {
 	if u.Phone != "" {
 		phone = u.Phone
 	}
-	err := q.QueryRow(ctx, `INSERT INTO users (email, phone, password_hash, tier, tier_expires_at, tier_started_at, is_admin, is_active, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		email, phone, u.PasswordHash, u.Tier, timeArg(u.TierExpiresAt), timeArg(u.TierStartedAt), bint(u.IsAdmin), bint(u.IsActive), timeReq(u.CreatedAt),
+	err := q.QueryRow(ctx, `INSERT INTO users (email, phone, password_hash, tier, tier_expires_at, tier_started_at, is_admin, is_active, quota_exempt, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		email, phone, u.PasswordHash, u.Tier, timeArg(u.TierExpiresAt), timeArg(u.TierStartedAt), bint(u.IsAdmin), bint(u.IsActive), bint(u.QuotaExempt), timeReq(u.CreatedAt),
 	).Scan(&u.ID)
 	return err
 }
@@ -95,8 +96,8 @@ func (s *Store) UpdateUser(ctx context.Context, q db.Q, u *model.User) error {
 	if q == nil {
 		q = s.DB
 	}
-	_, err := q.Exec(ctx, `UPDATE users SET tier=?, tier_expires_at=?, tier_started_at=?, is_admin=?, is_active=? WHERE id=?`,
-		u.Tier, timeArg(u.TierExpiresAt), timeArg(u.TierStartedAt), bint(u.IsAdmin), bint(u.IsActive), u.ID)
+	_, err := q.Exec(ctx, `UPDATE users SET tier=?, tier_expires_at=?, tier_started_at=?, is_admin=?, is_active=?, quota_exempt=? WHERE id=?`,
+		u.Tier, timeArg(u.TierExpiresAt), timeArg(u.TierStartedAt), bint(u.IsAdmin), bint(u.IsActive), bint(u.QuotaExempt), u.ID)
 	return err
 }
 
@@ -173,6 +174,7 @@ func (s *Store) DeleteUserCascade(ctx context.Context, q db.Q, userID int64) err
 		`DELETE FROM article WHERE user_id = ?`,
 		`DELETE FROM article_task WHERE user_id = ?`,
 		`DELETE FROM writing_plan WHERE user_id = ?`,
+		`DELETE FROM account_column WHERE wx_account_id IN (SELECT id FROM wx_account WHERE user_id = ?)`,
 		`DELETE FROM wx_account WHERE user_id = ?`,
 		`DELETE FROM consent_log WHERE user_id = ?`,
 		`DELETE FROM entitlement WHERE user_id = ?`,

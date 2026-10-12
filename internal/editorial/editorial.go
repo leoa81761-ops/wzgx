@@ -113,10 +113,18 @@ func QualityOf(draft map[string]any) Quality {
 // A failed call, a lower score, or any lost body paragraph keeps the original.
 // A short hook may replace the first paragraph. A long or overlapping hook is ignored.
 func Apply(original map[string]any, model map[string]any, callErr error) map[string]any {
+	if original == nil {
+		return original
+	}
+	return ApplyNeed(original, model, NeedsRewrite(original), callErr)
+}
+
+// ApplyNeed is Apply with the rewrite targets already chosen.
+// The hook can be requested even when the review rubric scored it as good enough.
+func ApplyNeed(original map[string]any, model map[string]any, need Needs, callErr error) map[string]any {
 	if callErr != nil || original == nil || model == nil {
 		return original
 	}
-	need := NeedsRewrite(original)
 	if !need.Any() {
 		return original
 	}
@@ -159,6 +167,40 @@ func Splice(original, model map[string]any, need Needs) map[string]any {
 		}
 	}
 	return cloned
+}
+
+// BetterHook keeps a rewrite when the compare call fails: it must be a short opening, not a narrative sentence.
+func BetterHook(rewrite, opening string) bool {
+	if !HookAccepted(rewrite, opening) {
+		return false
+	}
+	rewrite = strings.TrimSpace(rewrite)
+	if strings.HasSuffix(rewrite, "。") || strings.HasSuffix(rewrite, "！") {
+		return false
+	}
+	if strings.Contains(rewrite, "，") && utf8.RuneCountInString(rewrite) > 22 {
+		return false
+	}
+	return true
+}
+
+// SetFirstParagraph replaces the opening paragraph and leaves the rest of the draft in place.
+func SetFirstParagraph(draft map[string]any, text string) {
+	if draft == nil {
+		return
+	}
+	text = strings.TrimSpace(text)
+	sections := sectionsOf(draft)
+	if len(sections) == 0 || text == "" {
+		return
+	}
+	paras := anyList(sections[0]["paragraphs"])
+	if len(paras) == 0 {
+		sections[0]["paragraphs"] = []any{text}
+		return
+	}
+	paras[0] = text
+	sections[0]["paragraphs"] = paras
 }
 
 // HookAccepted reports whether a hook is short enough and distinct enough to replace the opening.
@@ -271,11 +313,148 @@ func RepairNearDuplicates(draft map[string]any) map[string]any {
 
 func nearDuplicate(text string, seen []string) bool {
 	for _, prev := range seen {
-		if Overlap(text, prev) > 0.5 {
+		if Overlap(text, prev) > 0.5 || SharesNGram(text, prev, 12) {
 			return true
 		}
 	}
 	return false
+}
+
+// SharesNGram reports whether two passages share any run of n characters after punctuation is ignored.
+func SharesNGram(a, b string, n int) bool {
+	if n < 1 {
+		return false
+	}
+	ar := []rune(compact(a))
+	br := []rune(compact(b))
+	if len(ar) < n || len(br) < n {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for i := 0; i+n <= len(ar); i++ {
+		seen[string(ar[i:i+n])] = struct{}{}
+	}
+	for i := 0; i+n <= len(br); i++ {
+		if _, ok := seen[string(br[i:i+n])]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// StripAudience removes a reader-profile label from the title, summary, headings, body, closing, and alternate titles.
+// A paragraph, heading, summary, or closing that is only the label is dropped. Alternate titles that contain it are dropped.
+func StripAudience(draft map[string]any, label string) map[string]any {
+	label = strings.TrimSpace(label)
+	if draft == nil || utf8.RuneCountInString(label) < 2 {
+		return draft
+	}
+	if text, changed := stripLabel(textOf(draft["title"]), label, false); changed {
+		draft["title"] = text
+	}
+	if text, changed := stripLabel(textOf(draft["summary"]), label, true); changed {
+		draft["summary"] = text
+	}
+	if text, changed := stripLabel(textOf(draft["closing"]), label, true); changed {
+		draft["closing"] = text
+	}
+	for _, section := range sectionsOf(draft) {
+		if text, changed := stripLabel(textOf(section["heading"]), label, true); changed {
+			section["heading"] = text
+		}
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text, changed := stripLabel(textOf(item), label, true)
+			if changed && strings.TrimSpace(text) == "" {
+				continue
+			}
+			if changed {
+				paras = append(paras, text)
+				continue
+			}
+			paras = append(paras, item)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	var alts []any
+	for _, item := range anyList(draft["alt_titles"]) {
+		if strings.Contains(altText(item), label) {
+			continue
+		}
+		alts = append(alts, item)
+	}
+	if alts == nil {
+		alts = []any{}
+	}
+	draft["alt_titles"] = alts
+	return draft
+}
+
+func altText(item any) string {
+	switch row := item.(type) {
+	case string:
+		return row
+	case map[string]any:
+		if text := textOf(row["title"]); text != "" {
+			return text
+		}
+		return textOf(row["text"])
+	default:
+		return ""
+	}
+}
+
+func stripLabel(text, label string, dropShort bool) (string, bool) {
+	if label == "" || !strings.Contains(text, label) {
+		return text, false
+	}
+	next := tidyEdge(strings.ReplaceAll(text, label, ""))
+	if dropShort && utf8.RuneCountInString(next) < 8 {
+		return "", true
+	}
+	return next, true
+}
+
+func tidyEdge(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.TrimLeftFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	})
+	return strings.TrimSpace(text)
+}
+
+// DropSummaryEcho removes a first paragraph that repeats the summary. The summary itself stays for the WeChat digest.
+func DropSummaryEcho(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	summary := strings.TrimSpace(textOf(draft["summary"]))
+	if utf8.RuneCountInString(compact(summary)) < 8 {
+		return draft
+	}
+	sections := sectionsOf(draft)
+	if len(sections) == 0 {
+		return draft
+	}
+	paras := anyList(sections[0]["paragraphs"])
+	if len(paras) == 0 {
+		return draft
+	}
+	first := strings.TrimSpace(textOf(paras[0]))
+	if first == "" {
+		return draft
+	}
+	if compact(first) == compact(summary) || Overlap(first, summary) >= 0.9 {
+		rest := paras[1:]
+		if rest == nil {
+			rest = []any{}
+		}
+		sections[0]["paragraphs"] = rest
+	}
+	return draft
 }
 
 // DedupeBlocks leaves each section with a list or a table, and drops items that restate a paragraph.

@@ -341,32 +341,46 @@ func TestResearchStopsAfterOneRetry(t *testing.T) {
 	if _, err := st.DB.Exec(ctx, `UPDATE service_config SET timeout_seconds = 600 WHERE config_type = 'text_model'`); err != nil {
 		t.Fatal(err)
 	}
-	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	var taskID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "manual", time.Now().UTC(), nil)
+		if err != nil {
+			return err
+		}
+		taskID = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	Execute(ctx, deps, taskID, false, time.Now().UTC())
 	if researchCalls != 2 {
 		t.Fatalf("research calls %d", researchCalls)
 	}
-	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || strings.Contains(articles[0].BodyHTML, "参考来源") {
-		t.Fatal(articles, err)
+	article, err := st.GetArticleByTask(ctx, nil, taskID)
+	if err != nil || article == nil || strings.Contains(article.BodyHTML, "参考来源") {
+		t.Fatal(article, err)
 	}
-	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
+	task, err := st.GetTask(ctx, nil, taskID)
 	if err != nil || task == nil || traceStage(task.ModelTrace, "research")["ok"] != false {
 		t.Fatalf("%#v %v", task, err)
 	}
-	if articles[0].Status != "in_draft" || !strings.Contains(articles[0].DeliveryNote, "无参考来源") {
-		t.Fatalf("%s %s", articles[0].Status, articles[0].DeliveryNote)
+	if article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "无参考来源") || !strings.Contains(article.DeliveryNote, "未写入") {
+		t.Fatalf("%s %s %s", article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 	notes, _, err := st.ListNotifications(ctx, user.ID, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var flagged bool
+	var held bool
 	for _, note := range notes {
-		if note.Title == "无参考来源" && strings.Contains(note.Body, "草稿箱") {
-			flagged = true
+		if strings.Contains(note.Body, "草稿箱") {
+			t.Fatal(note.Title, note.Body)
+		}
+		if note.Title == "有一篇稿没有写入草稿" && strings.Contains(note.Body, "未写入") {
+			held = true
 		}
 	}
-	if !flagged {
+	if !held {
 		t.Fatalf("%#v", notes)
 	}
 }
@@ -438,7 +452,7 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 
 func TestExpandAsksToCondenseInsteadOfCutting(t *testing.T) {
 	long := strings.Repeat("步骤写清楚。", 400)
-	short := strings.Repeat("压短后仍是完整的句子。", 70)
+	short := strings.Repeat("压短后仍是完整的句子。", 80)
 	var sawGoal bool
 	var condense int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -764,7 +778,7 @@ func TestFactCheckExpansionIsTrimmed(t *testing.T) {
 func TestDraftCondensesWhenLong(t *testing.T) {
 	var expandCalls, condenseCalls int
 	long := strings.Repeat("这是一段很长的说明文字。", 200)
-	short := "压短后的说明。"
+	short := strings.Repeat("压短后的说明。", 120)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
@@ -947,7 +961,7 @@ func TestCondenseKeepsSourcesAndRejectsNewClaims(t *testing.T) {
 
 func TestDegradeSkipsRewriteAndTitles(t *testing.T) {
 	long := strings.Repeat("这是一段很长的说明文字。", 200)
-	short := "压短后的说明。"
+	short := strings.Repeat("压短后的说明。", 120)
 	var polish, titles, condense int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -1127,7 +1141,7 @@ func TestResearchPrefersChatFast(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "先用快模型", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "先用快模型", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()

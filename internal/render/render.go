@@ -105,8 +105,8 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 	}
 	var parts []string
 	parts = append(parts, `<section style="`+theme["wrap"]+`">`)
-	if summary := strings.TrimSpace(asString(article["summary"])); summary != "" {
-		parts = append(parts, `<p style="`+theme["lead"]+`">`+html.EscapeString(summary)+`</p>`)
+	if label := strings.TrimSpace(asString(article["column_label"])); label != "" {
+		parts = append(parts, `<p style="`+theme["lead"]+`">`+html.EscapeString("栏目 · "+label)+`</p>`)
 	}
 	for _, raw := range asList(article["sections"]) {
 		section, _ := raw.(map[string]any)
@@ -156,8 +156,12 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 	}
 	sources := asList(article["sources"])
 	if len(sources) > 0 {
+		heading := strings.TrimSpace(asString(article["source_heading"]))
+		if heading == "" {
+			heading = "参考来源"
+		}
 		parts = append(parts, `<hr style="`+theme["hr"]+`" />`)
-		parts = append(parts, `<p style="`+theme["src_h"]+`">参考来源</p>`)
+		parts = append(parts, `<p style="`+theme["src_h"]+`">`+html.EscapeString(heading)+`</p>`)
 		for i, raw := range sources {
 			source, _ := raw.(map[string]any)
 			if source == nil {

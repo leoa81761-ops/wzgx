@@ -115,6 +115,9 @@ func Usage(ctx context.Context, st *store.Store, q db.Q, userID int64, dayKey, p
 }
 
 func BlockReason(ctx context.Context, st *store.Store, q db.Q, user *model.User, now time.Time) (string, error) {
+	if user != nil && user.QuotaExempt {
+		return "", nil
+	}
 	tier, _ := Membership(user, now)
 	limits, err := LimitsFor(ctx, st, q, tier)
 	if err != nil {
@@ -197,6 +200,12 @@ func Reserve(ctx context.Context, st *store.Store, q db.Q, user *model.User, tas
 			note = "首次重写不占额度"
 		}
 		return st.InsertLedger(ctx, q, user.ID, "free_regen", 0, &taskID, note, schedule.Format(now))
+	}
+	if user != nil && user.QuotaExempt {
+		if err := st.InsertHold(ctx, q, &model.QuotaHold{UserID: user.ID, TaskID: taskID, DayKey: day, PeriodKey: period, Amount: 1, State: "held", CreatedAt: now}); err != nil {
+			return err
+		}
+		return st.InsertLedger(ctx, q, user.ID, "reserve", 1, &taskID, "测试账号不限额", schedule.Format(now))
 	}
 	reason, err := BlockReason(ctx, st, q, user, now)
 	if err != nil {
@@ -311,6 +320,14 @@ func Snapshot(ctx context.Context, st *store.Store, q db.Q, user *model.User, no
 		"period_unit": limits.PeriodUnit, "period_label": periodLabel, "max_words": limits.MaxWords, "max_accounts": limits.MaxAccounts,
 		"max_plans": limits.MaxPlans, "summary": limits.Summary,
 	}
+	if user.QuotaExempt {
+		out["quota_exempt"] = true
+		out["unlimited"] = true
+		out["daily_limit"] = "unlimited"
+		out["daily_remaining"] = "unlimited"
+		out["period_limit"] = "unlimited"
+		out["period_remaining"] = "unlimited"
+	}
 	if left, err := st.PackRemaining(ctx, q, user.ID, now); err != nil {
 		return nil, err
 	} else {
@@ -418,6 +435,9 @@ func remaining(limit, used int) int {
 func CheckDailyCount(ctx context.Context, st *store.Store, q db.Q, user *model.User, now time.Time, exceptPlanID int64, count int) error {
 	if count < 1 {
 		return &Error{Message: "每天篇数至少为 1"}
+	}
+	if user != nil && user.QuotaExempt {
+		return nil
 	}
 	tier, _ := Membership(user, now)
 	limits, err := LimitsFor(ctx, st, q, tier)

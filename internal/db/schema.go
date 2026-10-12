@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
   tier_started_at TEXT,
   is_admin INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
+  quota_exempt INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -541,8 +542,25 @@ CREATE TABLE IF NOT EXISTS plan_extra (
   tone TEXT NOT NULL DEFAULT '',
   persona_columns TEXT NOT NULL DEFAULT '',
   signatures TEXT NOT NULL DEFAULT '',
-  taboos TEXT NOT NULL DEFAULT ''
+  taboos TEXT NOT NULL DEFAULT '',
+  column_rotation TEXT NOT NULL DEFAULT 'weight',
+  column_weekdays TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS account_column (
+  id {{PK}},
+  wx_account_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  positioning TEXT NOT NULL DEFAULT '',
+  structure TEXT NOT NULL DEFAULT 'custom',
+  word_target INTEGER NOT NULL DEFAULT 800,
+  image_style TEXT NOT NULL DEFAULT '',
+  weight INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'suggested',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_account_column_account ON account_column(wx_account_id, status);
 
 CREATE TABLE IF NOT EXISTS title_bias (
   account_id INTEGER PRIMARY KEY,
@@ -717,6 +735,9 @@ CREATE TABLE IF NOT EXISTS user_contract (
 		{"wx_account", "persona_columns", "TEXT NOT NULL DEFAULT ''"},
 		{"wx_account", "signatures", "TEXT NOT NULL DEFAULT ''"},
 		{"wx_account", "taboos", "TEXT NOT NULL DEFAULT ''"},
+		{"users", "quota_exempt", "INTEGER NOT NULL DEFAULT 0"},
+		{"plan_extra", "column_rotation", "TEXT NOT NULL DEFAULT 'weight'"},
+		{"plan_extra", "column_weekdays", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err

@@ -34,8 +34,15 @@ func TestFactCheckPromptForbidsInventedThresholds(t *testing.T) {
 		t.Fatal(review[0]["content"])
 	}
 	titles := StageMessages("标题", map[string]any{"summary": "两个人的周末"})
-	if !strings.Contains(titles[0]["content"], "consistent") || !strings.Contains(titles[0]["content"], "具体场景") {
+	if !strings.Contains(titles[0]["content"], "consistent") || !strings.Contains(titles[0]["content"], "具体场景") || !strings.Contains(titles[0]["content"], "28") || !strings.Contains(titles[0]["content"], "叙述句") {
 		t.Fatal(titles[0]["content"])
+	}
+	if !strings.Contains(draft[0]["content"], "reader_profile") || !strings.Contains(titles[0]["content"], "读者画像") {
+		t.Fatal("reader profile instruction missing")
+	}
+	condense := StageMessages("缩写", map[string]any{"word_target": 800})
+	if !strings.Contains(condense[0]["content"], "不要短于") || strings.Contains(condense[0]["content"], "85% 到 130%") {
+		t.Fatal(condense[0]["content"])
 	}
 }
 

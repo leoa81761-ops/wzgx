@@ -76,6 +76,20 @@
       <label>固定结尾<input v-model="form.ending" maxlength="200" /></label>
       <label>栏目名<input v-model="form.column_name" /></label>
       <label>该栏目风格<input v-model="form.column_style" /></label>
+      <label>栏目轮换
+        <select v-model="form.column_rotation">
+          <option value="weight">按权重自动轮换</option>
+          <option value="weekday">按星期指定栏目</option>
+        </select>
+      </label>
+      <div v-if="form.column_rotation === 'weekday'" class="stack">
+        <label v-for="day in WEEKDAYS" :key="day.value">{{ day.label }}
+          <select v-model="form.column_weekdays[day.value]">
+            <option :value="0">不指定</option>
+            <option v-for="col in activeColumns" :key="col.id" :value="col.id">{{ col.name }}</option>
+          </select>
+        </label>
+      </div>
       <label>垂类资料包
         <select v-model="form.vertical_key">
           <option value="">按方向自动匹配</option>
@@ -146,6 +160,8 @@ const form = reactive({
   vertical_key: "",
   topic_mode: "auto",
   image_mode: "auto",
+  column_rotation: "weight",
+  column_weekdays: {},
 });
 
 function tierRank(tier) {
@@ -155,6 +171,7 @@ function tierRank(tier) {
 const styleChoices = computed(() => styles.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
 const templateChoices = computed(() => templates.value.filter((item) => tierRank(quota.value.tier) >= tierRank(item.min_tier || "free")));
 const selectedStyle = computed(() => styleChoices.value.find((item) => item.key === form.style_key));
+const activeColumns = computed(() => (plan.value.account_columns || []).filter((col) => col.status === "active"));
 const wordOptions = computed(() => {
   const max = quota.value.max_words || 1000;
   return [800, 1000, 1500, 3000].filter((item) => item <= max || item === form.word_target);
@@ -186,6 +203,12 @@ function fill(row) {
   form.vertical_key = row.vertical_key || "";
   form.topic_mode = row.topic_mode || "auto";
   form.image_mode = row.image_mode || "auto";
+  form.column_rotation = row.column_rotation || "weight";
+  form.column_weekdays = {};
+  const savedDays = row.column_weekdays || {};
+  for (const day of WEEKDAYS) {
+    form.column_weekdays[day.value] = Number(savedDays[day.value] || savedDays[String(day.value)] || 0);
+  }
 }
 
 async function load() {
@@ -262,6 +285,10 @@ async function save() {
         vertical_key: form.vertical_key,
         topic_mode: form.topic_mode,
         image_mode: form.image_mode,
+        column_rotation: form.column_rotation,
+        column_weekdays: Object.fromEntries(
+          WEEKDAYS.map((day) => [String(day.value), Number(form.column_weekdays[day.value] || 0)]).filter((item) => item[1] > 0),
+        ),
       },
     });
     fill(row);

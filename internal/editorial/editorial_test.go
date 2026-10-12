@@ -99,6 +99,73 @@ func TestKeywordDoesNotTriggerHookPolish(t *testing.T) {
 	}
 }
 
+func TestSharedNGramDropsTheLaterParagraph(t *testing.T) {
+	phrase := "爷爷奶奶眼睛里面闪闪发光"
+	if len([]rune(phrase)) != 12 {
+		t.Fatal(len([]rune(phrase)))
+	}
+	first := strings.Repeat("早上孩子把绘本摊在桌上喝茶。", 8) + phrase + "茶还是温的。"
+	second := strings.Repeat("傍晚换成院子里的椅子看风。", 8) + phrase + "风从窗外进来。"
+	if Overlap(first, second) > 0.5 {
+		t.Fatal("fixture should stay under the overlap cutoff", Overlap(first, second))
+	}
+	if !SharesNGram(first, second, 12) {
+		t.Fatal("shared phrase")
+	}
+	draft := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{first, second, "把玩具收进盒子就好。"}}}}
+	out := RepairNearDuplicates(draft)
+	paras := paragraphsOf(out)
+	if len(paras) != 2 || paras[0] != first || paras[1] != "把玩具收进盒子就好。" {
+		t.Fatal(paras)
+	}
+}
+
+func TestStripAudienceDoesNotLeaveTheLabel(t *testing.T) {
+	label := "在家过日子的读者"
+	draft := map[string]any{
+		"title":      label + "，周末早晨阳光洒进客厅",
+		"summary":    label + "，你好！",
+		"alt_titles": []any{label + "的一个标题", "两口人收玩具"},
+		"sections": []any{map[string]any{
+			"heading": label,
+			"paragraphs": []any{
+				label + "，你好！",
+				label + "，你好！想象一个周日早晨。",
+				"把玩具收进盒子就好。",
+			},
+		}},
+		"closing": label + "，欢迎留言。",
+	}
+	out := StripAudience(draft, label)
+	if strings.Contains(dump(out), label) {
+		t.Fatal(dump(out))
+	}
+	paras := paragraphsOf(out)
+	if len(paras) != 2 || paras[0] != "你好！想象一个周日早晨。" || paras[1] != "把玩具收进盒子就好。" {
+		t.Fatal(paras)
+	}
+	if out["title"] != "周末早晨阳光洒进客厅" || out["summary"] != "" || out["closing"] != "" {
+		t.Fatal(out["title"], out["summary"], out["closing"])
+	}
+	alts, _ := out["alt_titles"].([]any)
+	if len(alts) != 1 || alts[0] != "两口人收玩具" {
+		t.Fatal(alts)
+	}
+}
+
+func TestDropSummaryEchoRemovesTheLead(t *testing.T) {
+	summary := "在家过日子的读者，通过家里日常小事也能让晚年好心情。"
+	draft := map[string]any{
+		"summary":  summary,
+		"sections": []any{map[string]any{"paragraphs": []any{summary, "把玩具收进盒子。"}}},
+	}
+	out := DropSummaryEcho(draft)
+	paras := paragraphsOf(out)
+	if len(paras) != 1 || paras[0] != "把玩具收进盒子。" || out["summary"] != summary {
+		t.Fatal(paras, out["summary"])
+	}
+}
+
 func TestRepairDropsNearDuplicateParagraph(t *testing.T) {
 	draft := map[string]any{
 		"sections": []any{map[string]any{"paragraphs": []any{

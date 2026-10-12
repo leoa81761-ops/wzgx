@@ -12,6 +12,7 @@ type User struct {
 	TierStartedAt *time.Time
 	IsAdmin       bool
 	IsActive      bool
+	QuotaExempt   bool
 	CreatedAt     time.Time
 }
 

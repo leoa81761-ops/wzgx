@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
+	"github.com/leoa81761-ops/wzgx/internal/columns"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
@@ -31,6 +32,8 @@ type planSettings struct {
 	PersonaColumns string
 	Signatures     string
 	Taboos         string
+	ColumnRotation string
+	ColumnWeekdays string
 	AssetID        int64
 	ProfileID      int64
 }
@@ -43,6 +46,7 @@ func (s planSettings) extra(planID int64) store.PlanExtra {
 		Keywords: s.Keywords, Audience: s.Audience, BannedWords: s.BannedWords,
 		VerticalKey: s.VerticalKey, TopicMode: s.TopicMode, ImageMode: s.ImageMode,
 		Tone: s.Tone, PersonaColumns: s.PersonaColumns, Signatures: s.Signatures, Taboos: s.Taboos,
+		ColumnRotation: s.ColumnRotation, ColumnWeekdays: s.ColumnWeekdays,
 	}
 }
 
@@ -99,13 +103,31 @@ func (a *App) normalizePlanSettings(ctx context.Context, q db.Q, userID int64, t
 	if err := a.ownProfileID(ctx, userID, raw.ProfileID); err != nil {
 		return planSettings{}, err
 	}
+	rotation, err := normalizeColumnRotation(raw.ColumnRotation)
+	if err != nil {
+		return planSettings{}, err
+	}
 	return planSettings{
 		Opening: clipText(raw.Opening, 200), Ending: clipText(raw.Ending, 200),
 		ColumnName: strings.TrimSpace(raw.ColumnName), ColumnStyle: strings.TrimSpace(raw.ColumnStyle),
 		Keywords: keywords, Audience: audience, BannedWords: banned, VerticalKey: verticalKey,
 		TopicMode: topic, ImageMode: image, Tone: tone, PersonaColumns: columns,
-		Signatures: signatures, Taboos: taboos, AssetID: raw.AssetID, ProfileID: raw.ProfileID,
+		Signatures: signatures, Taboos: taboos, ColumnRotation: rotation, ColumnWeekdays: raw.ColumnWeekdays,
+		AssetID: raw.AssetID, ProfileID: raw.ProfileID,
 	}, nil
+}
+
+func normalizeColumnRotation(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = "weight"
+	}
+	switch raw {
+	case "weight", "weekday":
+		return raw, nil
+	default:
+		return "", bad("栏目轮换只支持按权重或按星期")
+	}
 }
 
 func normalizeTopicMode(raw string) (string, error) {
@@ -210,31 +232,33 @@ func (a *App) getPlan(w http.ResponseWriter, r *http.Request, user *model.User) 
 }
 
 type planPatch struct {
-	WxAccountID    *int64  `json:"wx_account_id"`
-	Direction      *string `json:"direction"`
-	StyleKey       *string `json:"style_key"`
-	TemplateKey    *string `json:"template_key"`
-	WordTarget     *int    `json:"word_target"`
-	DailyCount     *int    `json:"daily_count"`
-	ScheduleType   *string `json:"schedule_type"`
-	Weekdays       *[]int  `json:"weekdays"`
-	TimeWindow     *string `json:"time_window"`
-	Opening        *string `json:"opening"`
-	Ending         *string `json:"ending"`
-	ColumnName     *string `json:"column_name"`
-	ColumnStyle    *string `json:"column_style"`
-	AssetID        *int64  `json:"asset_id"`
-	ProfileID      *int64  `json:"profile_id"`
-	Keywords       *string `json:"keywords"`
-	Audience       *string `json:"audience"`
-	BannedWords    *string `json:"banned_words"`
-	VerticalKey    *string `json:"vertical_key"`
-	TopicMode      *string `json:"topic_mode"`
-	ImageMode      *string `json:"image_mode"`
-	Tone           *string `json:"tone"`
-	PersonaColumns *string `json:"persona_columns"`
-	Signatures     *string `json:"signatures"`
-	Taboos         *string `json:"taboos"`
+	WxAccountID    *int64            `json:"wx_account_id"`
+	Direction      *string           `json:"direction"`
+	StyleKey       *string           `json:"style_key"`
+	TemplateKey    *string           `json:"template_key"`
+	WordTarget     *int              `json:"word_target"`
+	DailyCount     *int              `json:"daily_count"`
+	ScheduleType   *string           `json:"schedule_type"`
+	Weekdays       *[]int            `json:"weekdays"`
+	TimeWindow     *string           `json:"time_window"`
+	Opening        *string           `json:"opening"`
+	Ending         *string           `json:"ending"`
+	ColumnName     *string           `json:"column_name"`
+	ColumnStyle    *string           `json:"column_style"`
+	AssetID        *int64            `json:"asset_id"`
+	ProfileID      *int64            `json:"profile_id"`
+	Keywords       *string           `json:"keywords"`
+	Audience       *string           `json:"audience"`
+	BannedWords    *string           `json:"banned_words"`
+	VerticalKey    *string           `json:"vertical_key"`
+	TopicMode      *string           `json:"topic_mode"`
+	ImageMode      *string           `json:"image_mode"`
+	Tone           *string           `json:"tone"`
+	PersonaColumns *string           `json:"persona_columns"`
+	Signatures     *string           `json:"signatures"`
+	Taboos         *string           `json:"taboos"`
+	ColumnRotation *string           `json:"column_rotation"`
+	ColumnWeekdays *map[string]int64 `json:"column_weekdays"`
 }
 
 func pickString(next *string, current string) string {
@@ -339,6 +363,25 @@ func (a *App) updatePlan(w http.ResponseWriter, r *http.Request, user *model.Use
 		} else if topicIn == "" && plan.ConfirmMode {
 			topicIn = "confirm"
 		}
+		rotation := extra.ColumnRotation
+		if body.ColumnRotation != nil {
+			rotation = *body.ColumnRotation
+		}
+		weekdaysJSON := extra.ColumnWeekdays
+		if body.ColumnWeekdays != nil {
+			parsed := map[int]int64{}
+			for key, id := range *body.ColumnWeekdays {
+				day, convErr := strconv.Atoi(key)
+				if convErr != nil || day < 1 || day > 7 || id < 1 {
+					return bad("星期栏目请用 1 到 7 对应栏目")
+				}
+				parsed[day] = id
+			}
+			if err := a.knownColumnIDs(r.Context(), tx, plan.WxAccountID, parsed); err != nil {
+				return err
+			}
+			weekdaysJSON = columns.EncodeDays(parsed)
+		}
 		settings, err := a.normalizePlanSettings(r.Context(), tx, user.ID, tier, planSettings{
 			Opening: pickString(body.Opening, extra.Opening), Ending: pickString(body.Ending, extra.Ending),
 			ColumnName: pickString(body.ColumnName, extra.ColumnName), ColumnStyle: pickString(body.ColumnStyle, extra.ColumnStyle),
@@ -347,6 +390,7 @@ func (a *App) updatePlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			TopicMode: topicIn, ImageMode: pickString(body.ImageMode, extra.ImageMode),
 			Tone: pickString(body.Tone, extra.Tone), PersonaColumns: pickString(body.PersonaColumns, extra.PersonaColumns),
 			Signatures: pickString(body.Signatures, extra.Signatures), Taboos: pickString(body.Taboos, extra.Taboos),
+			ColumnRotation: rotation, ColumnWeekdays: weekdaysJSON,
 			AssetID: pickInt(body.AssetID, extra.AssetID), ProfileID: pickInt(body.ProfileID, extra.ProfileID),
 		})
 		if err != nil {
@@ -396,4 +440,24 @@ func pickInt(next *int64, current int64) int64 {
 		return current
 	}
 	return *next
+}
+
+func (a *App) knownColumnIDs(ctx context.Context, q db.Q, accountID int64, days map[int]int64) error {
+	if len(days) == 0 {
+		return nil
+	}
+	rows, err := a.Store.ListAccountColumns(ctx, q, accountID, "")
+	if err != nil {
+		return err
+	}
+	allowed := map[int64]bool{}
+	for _, row := range rows {
+		allowed[row.ID] = true
+	}
+	for _, id := range days {
+		if !allowed[id] {
+			return bad("星期栏目里有不属于这个号的栏目")
+		}
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/store"
@@ -17,7 +18,7 @@ func TestAccountVoiceReachesThePrompt(t *testing.T) {
 		Audience: "物业工程", Keywords: "验收,机房", BannedWords: "1000V", TopicMode: "rotate", ImageMode: "none",
 	}).input()
 	fields := voiceFields(in)
-	if fields["audience"] != "物业工程" || fields["keywords"] != "验收,机房" || fields["banned_words"] != "1000V" || fields["topic_mode"] != "rotate" {
+	if fields["reader_profile"] != "物业工程" || fields["audience"] != nil || fields["keywords"] != "验收,机房" || fields["banned_words"] != "1000V" || fields["topic_mode"] != "rotate" {
 		t.Fatal(fields)
 	}
 	voiced := (&work{Direction: "弱电智能化", Tone: "我的语气", Pack: store.VerticalPack{Key: "elv"}}).input()
@@ -91,13 +92,15 @@ func TestMockRewriteKeepsParagraphsAndLeavesTitlesWhole(t *testing.T) {
 	}
 	raw, _ := json.Marshal(out)
 	text := string(raw)
-	for _, piece := range []string{first, second, "[1]", "https://www.gov.cn/a", "不要删掉这条列表。", "结束。", "，", whole} {
+	for _, piece := range []string{first, second, "[1]", "https://www.gov.cn/a", "不要删掉这条列表。", "结束。", "，"} {
 		if !strings.Contains(text, piece) {
 			t.Fatal(piece, text)
 		}
 	}
+	if strings.Contains(text, whole) {
+		t.Fatal("titles over 30 runes are dropped, not clipped", text)
+	}
 	alts, _ := out["alt_titles"].([]any)
-	found := false
 	for _, alt := range alts {
 		title := ""
 		switch row := alt.(type) {
@@ -109,15 +112,87 @@ func TestMockRewriteKeepsParagraphsAndLeavesTitlesWhole(t *testing.T) {
 				t.Fatal("scores missing", row)
 			}
 		}
-		if title == whole {
-			found = true
+		if title == whole || utf8.RuneCountInString(title) > 30 {
+			t.Fatal(title)
 		}
 		if strings.Contains(title, "写给正在做") || strings.Contains(title, "震惊") || strings.Contains(title, "稳赚") {
 			t.Fatal(title)
 		}
 	}
-	if !found {
-		t.Fatal(alts)
+}
+
+func TestHookPolishKeepsThePairwiseChoice(t *testing.T) {
+	first := "验收时核对线槽，是否盖好。"
+	draft := map[string]any{
+		"title":    "模型原来的标题",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{first}, "list": []any{}}},
+		"closing":  "可以先记住这一步。欢迎留言说说你的做法。",
+	}
+	gateway := llm.NewGateway(true, nil)
+	providers := map[string][]llm.Provider{
+		"review": {{Name: "mock", Protocol: "openai", Model: "mock", ExtraParams: map[string]any{"_mock_hook_choice": "rewrite"}}},
+	}
+	out, _, trace := finishPiece(context.Background(), gateway, providers, draft, Input{
+		Direction: "弱电智能化", WordTarget: 800,
+	}, "验收", map[string]any{"subtopic": "验收"}, nil)
+	raw, _ := json.Marshal(out)
+	if strings.Contains(string(raw), first) || !strings.Contains(string(raw), "为什么先把这一步说清楚？") {
+		t.Fatal(string(raw))
+	}
+	saw := false
+	for _, row := range trace {
+		if row["stage"] == "hook" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal(trace)
+	}
+}
+
+func TestMotifRewriteRunsWhenReviewFlagsIt(t *testing.T) {
+	body := "爷爷奶奶眼睛里闪闪发光，孩子也跟着笑。[1]"
+	draft := map[string]any{
+		"title": "两口人把玩具收进盒子",
+		"_quality": map[string]any{
+			"hook": 5, "headings": true, "closing": true, "motif": true,
+		},
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}}},
+		"closing":  "可以先记住这一步。欢迎留言说说你的做法。",
+		"sources":  []any{map[string]any{"name": "示例", "url": "https://www.gov.cn/a"}},
+	}
+	gateway := llm.NewGateway(true, nil)
+	providers := map[string][]llm.Provider{
+		"review": {{Name: "mock", Protocol: "openai", Model: "mock"}},
+	}
+	out, _, trace := finishPiece(context.Background(), gateway, providers, draft, Input{
+		Direction: "家庭生活", WordTarget: 800,
+	}, "收纳", map[string]any{"subtopic": "收纳"}, nil)
+	raw, _ := json.Marshal(out)
+	if !strings.Contains(string(raw), body) || !strings.Contains(string(raw), "https://www.gov.cn/a") {
+		t.Fatal(string(raw))
+	}
+	saw := false
+	for _, row := range trace {
+		if row["stage"] == "motif" && row["ok"] == true {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal(trace)
+	}
+	quiet := map[string]any{
+		"title":    "两口人把玩具收进盒子",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}}},
+		"closing":  "可以先记住这一步。欢迎留言说说你的做法。",
+	}
+	_, _, quietTrace := finishPiece(context.Background(), gateway, providers, quiet, Input{
+		Direction: "家庭生活", WordTarget: 800,
+	}, "收纳", map[string]any{}, nil)
+	for _, row := range quietTrace {
+		if row["stage"] == "motif" {
+			t.Fatal(quietTrace)
+		}
 	}
 }
 

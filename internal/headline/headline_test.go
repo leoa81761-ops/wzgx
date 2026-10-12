@@ -15,10 +15,13 @@ func TestRankLeavesTitlesUnchanged(t *testing.T) {
 		t.Fatal("fixture should sit inside the preferred length", utf8.RuneCountInString(mid))
 	}
 	pool := append([]string{best}, alts...)
-	allowed := map[string]bool{short: true, long: true, mid: true}
+	allowed := map[string]bool{short: true, mid: true}
 	for _, title := range pool {
 		if !allowed[title] {
 			t.Fatal("title was padded, cut, or invented", title)
+		}
+		if title == long {
+			t.Fatal("titles over 30 runes stay out of the pool", title)
 		}
 		if strings.Contains(title, "写给正在做") || strings.Contains(title, "震惊") || strings.Contains(title, "包过") {
 			t.Fatal(title)
@@ -27,7 +30,7 @@ func TestRankLeavesTitlesUnchanged(t *testing.T) {
 	if best != mid {
 		t.Fatal(best, alts)
 	}
-	if len(alts) != 2 {
+	if len(alts) != 1 || alts[0] != short {
 		t.Fatal(alts)
 	}
 	outside := Score(short, nil, nil, "")
@@ -53,6 +56,35 @@ func TestInconsistentNumberIsDropped(t *testing.T) {
 	}
 	for _, alt := range alts {
 		if alt.Title == clash.Title || alt.Title == weak.Title {
+			t.Fatal(alt)
+		}
+	}
+}
+
+func TestSelfScoresDoNotOutrankAShortTitle(t *testing.T) {
+	narrative := "周末早晨，阳光从窗外洒进客厅，你推开门，看到爷爷奶奶捧着温茶转圈，那一小步就让上午亮堂起来。"
+	clause := "周末早晨的阳光从窗外洒进客厅，你推开门就看到了转圈"
+	if utf8.RuneCountInString(narrative) <= 30 {
+		t.Fatal("fixture should be over 30", utf8.RuneCountInString(narrative))
+	}
+	if utf8.RuneCountInString(clause) <= 22 || !strings.Contains(clause, "，") || strings.HasSuffix(clause, "。") {
+		t.Fatal("fixture should be a long comma clause", utf8.RuneCountInString(clause))
+	}
+	if Score(narrative, nil, nil, "") != 0 || Score(clause, nil, nil, "") != 0 {
+		t.Fatal("descriptive titles are rejected")
+	}
+	mid := "验收之前，先把这三件事都核对完再收工"
+	if utf8.RuneCountInString(mid) > 22 {
+		t.Fatal("the comma title inside 22 runes must stay eligible", utf8.RuneCountInString(mid))
+	}
+	scored := Scored{Title: narrative, HasScores: true, Hook: 5, Concrete: 5, Consistent: 5, Persona: 5}
+	plain := Scored{Title: mid}
+	best, alts := RankScored([]Scored{scored, plain}, "", "", nil, nil, "")
+	if best.Title != mid {
+		t.Fatal(best, alts)
+	}
+	for _, alt := range alts {
+		if alt.Title == narrative {
 			t.Fatal(alt)
 		}
 	}

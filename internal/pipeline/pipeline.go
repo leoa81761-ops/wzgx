@@ -10,6 +10,7 @@ import (
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
 	"github.com/leoa81761-ops/wzgx/internal/chart"
+	"github.com/leoa81761-ops/wzgx/internal/columns"
 	"github.com/leoa81761-ops/wzgx/internal/config"
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/cover"
@@ -97,6 +98,10 @@ type work struct {
 	Signatures        string
 	Taboos            string
 	TitlePrefer       string
+	ActiveColumns     []columns.Column
+	ColumnRotation    string
+	ColumnWeekdays    map[int]int64
+	RunAt             time.Time
 }
 
 type Built struct {
@@ -108,6 +113,7 @@ type Built struct {
 	MissingSources bool
 	Uncited        bool
 	LengthShort    bool
+	NoFacts        bool
 	Searched       bool
 }
 
@@ -367,7 +373,13 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			ImageMode: strings.TrimSpace(extra.ImageMode), Tone: voice.Tone,
 			PersonaColumns: voice.Columns, Signatures: voice.Signatures,
 			Taboos: voice.Taboos, TitlePrefer: strings.TrimSpace(prefer),
+			ColumnRotation: extra.ColumnRotation, ColumnWeekdays: columns.ParseDays(extra.ColumnWeekdays), RunAt: task.RunAt,
 		}
+		active, err := deps.Store.ListAccountColumns(ctx, tx, account.ID, "active")
+		if err != nil {
+			return err
+		}
+		w.ActiveColumns = active
 		ok = true
 		return nil
 	})
@@ -478,10 +490,20 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		content.AnnotateAccess(ctx, deps.HTTP, built.Draft)
 	}
 	var push pushed
-	if built.LengthShort {
+	if built.NoFacts || built.LengthShort || built.Uncited {
+		note := ""
+		if built.NoFacts {
+			note = joinNote(note, "无参考来源，未写入公众号草稿。")
+		}
+		if built.LengthShort {
+			note = joinNote(note, "篇幅不到目标的 85%，已再扩写一次，仍偏短，未写入公众号草稿。")
+		}
+		if built.Uncited {
+			note = joinNote(note, "正文没有引用，未写入公众号草稿。")
+		}
 		push = pushed{
 			Status: "held", HTML: built.HTML, RiskLevel: risk.Grade(w.Direction, built.Draft),
-			DeliveryNote: "篇幅不到目标的 85%，已再扩写一次，仍偏短，未写入公众号草稿。",
+			DeliveryNote: note,
 		}
 	} else {
 		push, err = pushDraft(ctx, deps, w, built, wx, image)
@@ -506,11 +528,8 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		level = "low"
 	}
 	note := push.DeliveryNote
-	if built.MissingSources {
+	if built.MissingSources && push.Status != "held" {
 		note = joinNote(note, "无参考来源")
-	}
-	if built.Uncited {
-		note = joinNote(note, "正文没有标注引用")
 	}
 	if in.CostNote != "" {
 		note = joinNote(note, "本月成本已达上限")
@@ -563,6 +582,10 @@ type Input struct {
 	Signatures     string
 	Taboos         string
 	TitlePrefer    string
+	ActiveColumns  []columns.Column
+	ColumnRotation string
+	ColumnWeekdays map[int]int64
+	RunAt          time.Time
 }
 
 func hotAllowed(in *Input) bool {
@@ -610,7 +633,7 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt}
 }
 
 // AppendSiblingCoverage keeps another account's recent angles out of this plan's rotation.
@@ -638,10 +661,20 @@ func fillPersona(in Input) Input {
 	return in
 }
 
+// TopicTree derives the rotation from the account persona when the pack list does not match it.
+func TopicTree(pack store.VerticalPack, direction, keywords, planColumns, accountColumns string) []string {
+	voice := persona.Effective(
+		persona.Profile{Columns: planColumns},
+		persona.Profile{Columns: accountColumns},
+		persona.Suggest(direction, pack.Key),
+	)
+	return topics.AccountTree(vertical.Subtopics(pack), pack.Keywords, direction, keywords, voice.Columns)
+}
+
 func voiceFields(in Input) map[string]any {
 	out := map[string]any{}
 	if text := strings.TrimSpace(in.Audience); text != "" {
-		out["audience"] = text
+		out["reader_profile"] = text
 	}
 	if text := strings.TrimSpace(in.Keywords); text != "" {
 		out["keywords"] = text
@@ -727,18 +760,17 @@ func finishPiece(ctx context.Context, gateway *llm.Gateway, providers map[string
 }
 
 func rewriteWeak(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
-	need := editorial.NeedsRewrite(draft)
-	if !need.Any() {
+	if draft == nil {
 		return draft, 0, nil
 	}
+	need := editorial.NeedsRewrite(draft)
+	need.Hook = true
 	payload := cloneMap(base)
 	payload["draft"] = draft
-	payload["rewrite_hook"] = need.Hook
+	payload["rewrite_hook"] = true
 	payload["rewrite_headings"] = need.Headings
 	payload["rewrite_closing"] = need.Closing
-	if need.Hook {
-		payload["current_hook"] = draftHook(draft)
-	}
+	payload["current_hook"] = draftHook(draft)
 	if need.Headings {
 		payload["current_headings"] = draftHeadings(draft)
 	}
@@ -747,10 +779,60 @@ func rewriteWeak(ctx context.Context, gateway *llm.Gateway, providers map[string
 	}
 	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("结构润色", payload), llm.StageSchema("结构润色"), validatePolish)
 	trace := appendStage(nil, "polish", completion, err)
-	if err != nil {
+	tokens := tokensOf(completion)
+	next := draft
+	if err == nil {
+		next = editorial.ApplyNeed(draft, model, need, nil)
+		compared, compareTokens, compareTrace := keepBetterHook(ctx, gateway, providers, draft, next, base)
+		next = compared
+		tokens += compareTokens
+		trace = append(trace, compareTrace...)
+	}
+	if editorial.QualityOf(draft).Motif {
+		rewritten, motifTokens, motifTrace := rewriteMotif(ctx, gateway, providers, next, base)
+		next = rewritten
+		tokens += motifTokens
+		trace = append(trace, motifTrace...)
+	}
+	return next, tokens, trace
+}
+
+func keepBetterHook(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, before, after, base map[string]any) (map[string]any, int, []map[string]any) {
+	old := draftHook(before)
+	neu := draftHook(after)
+	if old == neu {
+		return after, 0, nil
+	}
+	payload := cloneMap(base)
+	payload["original"] = old
+	payload["rewrite"] = neu
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("开头比较", payload), llm.StageSchema("开头比较"), validateChoice)
+	trace := appendStage(nil, "hook", completion, err)
+	keep := false
+	if err != nil || model == nil {
+		keep = editorial.BetterHook(neu, old)
+	} else {
+		keep = str(model["choice"]) == "rewrite"
+	}
+	if !keep {
+		editorial.SetFirstParagraph(after, old)
+	}
+	return after, tokensOf(completion), trace
+}
+
+func rewriteMotif(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
+	payload := cloneMap(base)
+	payload["draft"] = draft
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("意象改写", payload), llm.StageSchema("正文"), validateDraft)
+	trace := appendStage(nil, "motif", completion, err)
+	if err != nil || model == nil {
 		return draft, tokensOf(completion), trace
 	}
-	return editorial.Apply(draft, model, nil), tokensOf(completion), trace
+	kept, ok := keepMotif(draft, model)
+	if !ok {
+		return draft, tokensOf(completion), trace
+	}
+	return kept, tokensOf(completion), trace
 }
 
 func condenseOnce(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
@@ -763,7 +845,7 @@ func condenseOnce(ctx context.Context, gateway *llm.Gateway, providers map[strin
 	if err != nil || condensed == nil {
 		return draft, tokensOf(completion), trace
 	}
-	kept, ok := keepCondensed(draft, condensed)
+	kept, ok := keepCondensed(draft, condensed, intOf(base["word_target"]))
 	if !ok {
 		return draft, tokensOf(completion), trace
 	}
@@ -777,7 +859,8 @@ var (
 
 // keepCondensed accepts a shorter draft only when it does not add numbers or change which citations appear.
 // Sources stay as they were on the pre-condense draft. Dropping a repeated marker is fine; a new marker, a missing marker, or a new number is rejected.
-func keepCondensed(original, condensed map[string]any) (map[string]any, bool) {
+// A positive floor rejects a result shorter than that many runes. Floor 0 does not add a minimum.
+func keepCondensed(original, condensed map[string]any, floor int) (map[string]any, bool) {
 	if original == nil || condensed == nil {
 		return original, false
 	}
@@ -786,11 +869,28 @@ func keepCondensed(original, condensed map[string]any) (map[string]any, bool) {
 	if next == 0 || next >= before {
 		return original, false
 	}
+	if floor > 0 && next < floor {
+		return original, false
+	}
 	if citationsChanged(original, condensed) || claimsAdded(original, condensed) {
 		return original, false
 	}
 	copySources(condensed, original)
 	return condensed, true
+}
+
+func keepMotif(original, next map[string]any) (map[string]any, bool) {
+	if original == nil || next == nil {
+		return original, false
+	}
+	if content.BodyRunes(next) == 0 {
+		return original, false
+	}
+	if citationsChanged(original, next) || claimsAdded(original, next) {
+		return original, false
+	}
+	copySources(next, original)
+	return next, true
 }
 
 func citationsChanged(original, condensed map[string]any) bool {
@@ -934,10 +1034,66 @@ func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string]
 	}
 	candidates = append(candidates, scoredTitles(asList(draft["alt_titles"]))...)
 	best, alts := headline.RankScored(candidates, str(draft["summary"]), bodyPlain(draft), append(splitWords(w.Pack.RedLines, w.BannedWords, w.Taboos), sensitive...), w.RecentTitles, w.TitlePrefer)
+	tokens := tokensOf(completion)
+	if strings.TrimSpace(best.Title) != "" && len(alts) > 0 {
+		winner, compareTokens, compareTrace := compareTitles(ctx, gateway, providers, best, alts, base)
+		tokens += compareTokens
+		trace = append(trace, compareTrace...)
+		best, alts = promoteTitle(best, alts, winner)
+	}
 	title, altAny := chosenTitle(best, alts, w.SpecifiedTitle, str(draft["title"]), fallbackTitle)
 	draft["title"] = title
 	draft["alt_titles"] = altAny
-	return draft, tokensOf(completion), trace
+	return draft, tokens, trace
+}
+
+func compareTitles(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, best headline.Scored, alts []headline.Scored, base map[string]any) (string, int, []map[string]any) {
+	candidates := []string{best.Title}
+	for _, alt := range alts {
+		if text := strings.TrimSpace(alt.Title); text != "" {
+			candidates = append(candidates, text)
+		}
+	}
+	if len(candidates) < 2 {
+		return "", 0, nil
+	}
+	payload := cloneMap(base)
+	payload["candidates"] = candidates
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("标题比较", payload), llm.StageSchema("标题比较"), validateWinner)
+	trace := appendStage(nil, "title_compare", completion, err)
+	if err != nil || model == nil {
+		return "", tokensOf(completion), trace
+	}
+	return strings.TrimSpace(str(model["winner"])), tokensOf(completion), trace
+}
+
+func promoteTitle(best headline.Scored, alts []headline.Scored, winner string) (headline.Scored, []headline.Scored) {
+	winner = strings.TrimSpace(winner)
+	if winner == "" || winner == best.Title {
+		return best, alts
+	}
+	found := false
+	var next headline.Scored
+	rest := []headline.Scored{best}
+	for _, alt := range alts {
+		if !found && alt.Title == winner {
+			next = alt
+			found = true
+			continue
+		}
+		rest = append(rest, alt)
+	}
+	if !found {
+		return best, alts
+	}
+	var out []headline.Scored
+	for _, row := range rest {
+		if row.Title == next.Title {
+			continue
+		}
+		out = append(out, row)
+	}
+	return next, out
 }
 
 func chosenTitle(best headline.Scored, alts []headline.Scored, specified, current, fallback string) (string, []any) {
@@ -1081,13 +1237,60 @@ func splitWords(parts ...string) []string {
 	return out
 }
 
+// ApplyColumnChoice replaces pack subtopics with the active column and the account theme.
+func ApplyColumnChoice(choice topics.Choice, at time.Time, active []columns.Column, rotation string, days map[int]int64, direction, keywords string, history []topics.Coverage) (topics.Choice, columns.Column, bool) {
+	var recent []string
+	for _, row := range history {
+		if row.Column != "" {
+			recent = append(recent, row.Column)
+		}
+	}
+	col, ok := columns.Pick(active, rotation, columns.WeekdayOf(at), days, recent)
+	if !ok {
+		return choice, columns.Column{}, false
+	}
+	subs := columns.Topics(col.Name, col.Positioning, direction, keywords)
+	if len(subs) > 0 {
+		choice.Subtopic = subs[len(history)%len(subs)]
+	}
+	choice.Column = col.Name
+	choice.TopicTag = choice.Subtopic + "|" + choice.Column + "|" + choice.Angle
+	return choice, col, true
+}
+
+func coverDirection(direction, imageStyle string) string {
+	imageStyle = strings.TrimSpace(imageStyle)
+	if imageStyle == "" {
+		return direction
+	}
+	if direction == "" {
+		return "配图：" + imageStyle
+	}
+	return direction + "。配图：" + imageStyle
+}
+
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
 	w = fillPersona(w)
-	topic := topics.PickTree(topics.ExpandTree(vertical.Subtopics(w.Pack), w.Direction, w.Tier, w.Weights), w.Direction, w.Tier, w.History, now, w.Vetoed...)
+	runAt := w.RunAt
+	if runAt.IsZero() {
+		runAt = now
+	}
+	topic := topics.PickTree(topics.ExpandTree(topics.AccountTree(vertical.Subtopics(w.Pack), w.Pack.Keywords, w.Direction, w.Keywords, w.PersonaColumns), w.Direction, w.Tier, w.Weights), w.Direction, w.Tier, w.History, now, w.Vetoed...)
+	var picked columns.Column
+	usingColumn := false
 	if w.Locked != nil {
 		topic = *w.Locked
+	} else if len(w.ActiveColumns) > 0 {
+		topic, picked, usingColumn = ApplyColumnChoice(topic, runAt, w.ActiveColumns, w.ColumnRotation, w.ColumnWeekdays, w.Direction, w.Keywords, w.History)
 	} else {
 		topic = topics.AssignColumn(topic, w.PersonaColumns, w.History)
+	}
+	imageStyle := ""
+	if usingColumn {
+		if picked.WordTarget > 0 {
+			w.WordTarget = picked.WordTarget
+		}
+		imageStyle = strings.TrimSpace(picked.ImageStyle)
 	}
 	if w.ColumnName != "" && w.ColumnStyle != "" && topic.Column == w.ColumnName {
 		w.StyleKey = w.ColumnStyle
@@ -1138,7 +1341,21 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	for key, value := range voiceFields(w) {
 		base[key] = value
 	}
-	base["structure"] = editorial.Structure(w.Pack.Key, w.Direction)
+	structure := editorial.Structure(w.Pack.Key, w.Direction)
+	if usingColumn {
+		if text := columns.StructureText(picked.Structure, picked.Positioning); text != "" {
+			structure = text
+		}
+	}
+	base["structure"] = structure
+	if imageStyle != "" {
+		if styleHint != "" {
+			styleHint += "。"
+		}
+		styleHint += "配图风格：" + imageStyle
+		base["style_hint"] = styleHint
+		base["image_style"] = imageStyle
+	}
 	var trace []map[string]any
 	tokens := 0
 	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
@@ -1263,15 +1480,35 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
 	draft = editorial.RepairNearDuplicates(draft)
 	draft = editorial.DedupeBlocks(draft)
+	draft = editorial.StripAudience(draft, w.Audience)
+	draft = editorial.DropSummaryEcho(draft)
 	delete(draft, "_quality")
+	cited := citationMarks.MatchString(bodyPlain(draft))
+	if w.Tier != "free" && hadSources && !cited && strings.TrimSpace(w.CostNote) == "" {
+		added, citeTokens, citeTrace := addCitations(ctx, gateway, providers, draft, base)
+		draft = added
+		tokens += citeTokens
+		trace = append(trace, citeTrace...)
+		cited = citationMarks.MatchString(bodyPlain(draft))
+	}
 	uncited := false
-	if w.Tier != "free" {
-		cited := applyCitations(draft)
-		uncited = hadSources && !cited
+	if w.Tier != "free" && hadSources {
+		if cited {
+			saved := append([]any{}, asList(draft["sources"])...)
+			if !applyCitations(draft) {
+				draft["sources"] = saved
+				draft["source_heading"] = "延伸阅读"
+				uncited = true
+			}
+		} else {
+			draft["source_heading"] = "延伸阅读"
+			uncited = true
+		}
 	}
 	missingSources := w.Tier != "free" && searched && !hadSources
-	if w.WordTarget > 0 && content.BodyRunes(draft) >= w.WordTarget*85/100 {
-		lengthShort = false
+	noFacts := missingSources
+	if w.WordTarget > 0 {
+		lengthShort = content.BodyRunes(draft) < w.WordTarget*85/100
 	}
 	footnotes := []any{"请发布前审阅。"}
 	if text := footnoteDisclaimer(w.Pack); text != "" {
@@ -1299,11 +1536,17 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		notes := asList(draft["footnotes"])
 		draft["footnotes"] = append(notes, "配图来自用户素材："+w.AssetNote)
 	}
+	if topic.Column != "" {
+		draft["column_label"] = topic.Column
+	}
+	if imageStyle != "" {
+		draft["image_style"] = imageStyle
+	}
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
 	if err != nil {
 		return Built{Trace: trace}, err
 	}
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, Searched: searched}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, Searched: searched}, nil
 }
 
 func footnoteDisclaimer(pack store.VerticalPack) string {
@@ -1373,7 +1616,7 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		}
 	}
 	if len(png) == 0 {
-		png, filename, coverTrace = chooseCover(ctx, deps, image, str(article.Draft["title"]), w.Direction, w.TemplateKey, aiCover)
+		png, filename, coverTrace = chooseCover(ctx, deps, image, str(article.Draft["title"]), coverDirection(w.Direction, str(article.Draft["image_style"])), w.TemplateKey, aiCover)
 	}
 	imageCalls := 0
 	if coverTrace["source"] == "ai" {
@@ -1387,7 +1630,7 @@ func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtim
 		return pushed{Status: "exported", HTML: outHTML, DeliveryNote: "写入草稿失败，已改为手动导出：" + err.Error(), CoverTrace: coverTrace, RiskLevel: level, ImageCalls: imageCalls}, nil
 	}
 	if inlineN > 0 && image != nil {
-		if n := uploadInlineImages(ctx, deps, client, image, article.Draft, inlineN, w.Pack.ImageRules, w.Direction); n > 0 {
+		if n := uploadInlineImages(ctx, deps, client, image, article.Draft, inlineN, w.Pack.ImageRules, coverDirection(w.Direction, str(article.Draft["image_style"]))); n > 0 {
 			imageCalls += n
 			if rendered, err := render.RenderWithinLimit(article.Draft, w.TemplateKey, false); err == nil {
 				html = rendered
@@ -1648,11 +1891,11 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 	if str(result["status"]) == "held" {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "risk", "有一篇稿没有写入草稿", str(result["delivery_note"]))
 	}
-	if strings.Contains(str(result["delivery_note"]), "无参考来源") {
+	if str(result["status"]) != "held" && strings.Contains(str(result["delivery_note"]), "无参考来源") {
 		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "无参考来源", "这篇稿已经在草稿箱，但没有可用的参考来源。发布前请自行核对事实。")
 	}
-	if strings.Contains(str(result["delivery_note"]), "没有标注引用") {
-		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "正文没有标注引用", "检索到了来源，但正文没有用 [n] 标出来，这些来源没有写入文末。")
+	if strings.Contains(str(result["delivery_note"]), "延伸阅读") {
+		emitNotice(ctx, deps, taskUserID(ctx, deps, taskID), "research", "来源放在延伸阅读", "正文没有用序号标出来源，这些来源留在文末延伸阅读，发布前可以自己核对。")
 	}
 	if str(result["status"]) == "in_draft" {
 		body := str(result["delivery_note"])
@@ -2102,6 +2345,41 @@ func stampSourceTrace(completion *llm.Completion, sources []map[string]any, drop
 	}
 }
 
+func addCitations(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
+	payload := cloneMap(base)
+	payload["draft"] = draft
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("补引用", payload), llm.StageSchema("正文"), validateDraft)
+	trace := appendStage(nil, "cite", completion, err)
+	if err != nil || model == nil {
+		return draft, tokensOf(completion), trace
+	}
+	if !citationMarks.MatchString(bodyPlain(model)) {
+		return draft, tokensOf(completion), trace
+	}
+	if content.BodyRunes(model)*2 < content.BodyRunes(draft) {
+		return draft, tokensOf(completion), trace
+	}
+	if newClaims(draft, model) {
+		return draft, tokensOf(completion), trace
+	}
+	copySources(model, draft)
+	return model, tokensOf(completion), trace
+}
+
+func newClaims(original, next map[string]any) bool {
+	seen := map[string]int{}
+	for _, token := range claimNumbers.FindAllString(citationMarks.ReplaceAllString(bodyPlain(original), ""), -1) {
+		seen[token]++
+	}
+	for _, token := range claimNumbers.FindAllString(citationMarks.ReplaceAllString(bodyPlain(next), ""), -1) {
+		if seen[token] == 0 {
+			return true
+		}
+		seen[token]--
+	}
+	return false
+}
+
 func applyCitations(draft map[string]any) bool {
 	marks := map[int]bool{}
 	for _, mark := range citationMarks.FindAllString(bodyPlain(draft), -1) {
@@ -2202,7 +2480,7 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 		trace = appendStage(trace, "condense", completion, err)
 		if err == nil && condensed != nil {
 			tokens += completion.PromptTokens + completion.CompletionTokens
-			if kept, ok := keepCondensed(draft, condensed); ok {
+			if kept, ok := keepCondensed(draft, condensed, target); ok {
 				draft = kept
 			}
 		}
@@ -2509,6 +2787,25 @@ func validateReview(data map[string]any) (map[string]any, error) {
 		}
 	}
 	return draft, nil
+}
+
+func validateChoice(data map[string]any) (map[string]any, error) {
+	choice := strings.TrimSpace(str(data["choice"]))
+	if choice != "original" && choice != "rewrite" {
+		return nil, errStr("比较结果无效")
+	}
+	return map[string]any{"choice": choice}, nil
+}
+
+func validateWinner(data map[string]any) (map[string]any, error) {
+	if data == nil {
+		return nil, errStr("没有选出标题")
+	}
+	winner := strings.TrimSpace(str(data["winner"]))
+	if winner == "" {
+		return nil, errStr("没有选出标题")
+	}
+	return map[string]any{"winner": winner}, nil
 }
 
 func validatePolish(data map[string]any) (map[string]any, error) {

@@ -40,7 +40,8 @@ func (a *App) adminUsers(w http.ResponseWriter, r *http.Request, admin *model.Us
 		item := map[string]any{
 			"id": row.ID, "account": account, "tier": row.Tier, "tier_label": label,
 			"tier_expires_at": jtime(row.TierExpiresAt), "is_admin": row.IsAdmin, "is_active": row.IsActive,
-			"is_self": admin != nil && row.ID == admin.ID, "created_at": jtimev(row.CreatedAt),
+			"quota_exempt": row.QuotaExempt,
+			"is_self":      admin != nil && row.ID == admin.ID, "created_at": jtimev(row.CreatedAt),
 		}
 		if contract, err := a.Store.GetContract(r.Context(), row.ID); err != nil {
 			return err
@@ -263,6 +264,52 @@ func (a *App) adminSetActive(w http.ResponseWriter, r *http.Request, admin *mode
 		return err
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "is_active": *body.Active})
+	return nil
+}
+
+type exemptBody struct {
+	QuotaExempt *bool `json:"quota_exempt"`
+}
+
+func (a *App) adminSetQuotaExempt(w http.ResponseWriter, r *http.Request, admin *model.User) error {
+	id, err := pathID(r, "user_id", "找不到用户")
+	if err != nil {
+		return err
+	}
+	var body exemptBody
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	if body.QuotaExempt == nil {
+		return bad("请指定是否不限额")
+	}
+	now := time.Now().UTC()
+	err = a.DB.WithTx(r.Context(), func(tx *db.Tx) error {
+		user, err := a.Store.GetUser(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		if user == nil {
+			return &AppError{Status: 404, Message: "找不到用户"}
+		}
+		user.QuotaExempt = *body.QuotaExempt
+		if err := a.Store.UpdateUser(r.Context(), tx, user); err != nil {
+			return err
+		}
+		detail := "取消测试账号不限额"
+		if user.QuotaExempt {
+			detail = "设为测试账号，不限额"
+		}
+		actor := admin.ID
+		return a.Store.InsertAudit(r.Context(), tx, model.AuditLog{
+			ActorID: &actor, Action: "set_quota_exempt", Target: "user:" + strconv.FormatInt(user.ID, 10),
+			Detail: detail, CreatedAt: now,
+		})
+	})
+	if err != nil {
+		return err
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "quota_exempt": *body.QuotaExempt})
 	return nil
 }
 
