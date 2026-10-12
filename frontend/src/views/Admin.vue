@@ -40,9 +40,13 @@
                 </select>
                 <input v-model="edits[user.id].expires" type="datetime-local" />
                 <input v-model="edits[user.id].note" placeholder="备注，例如线下收款 30 元" />
+                <input v-model="edits[user.id].company" placeholder="定制合同公司名称" />
+                <input v-model="edits[user.id].contract_no" placeholder="合同编号" />
+                <input v-model="edits[user.id].contract_note" placeholder="合同备注" />
                 <label class="check"><input type="checkbox" v-model="edits[user.id].later" /> 降级等到期再生效</label>
                 <div class="row">
                   <button class="btn" type="button" @click="saveTier(user)">保存</button>
+                  <button class="btn-ghost" type="button" @click="saveContract(user)">保存合同</button>
                   <button v-if="!user.is_self" class="btn-ghost" type="button" @click="setActive(user, !user.is_active)">{{ user.is_active ? "停用" : "启用" }}</button>
                   <button v-if="!user.is_self" class="btn-ghost" type="button" @click="removeUser(user)">删除</button>
                 </div>
@@ -693,8 +697,11 @@ async function load() {
   planConfigs.value = await api("/api/admin/plan-configs");
   users.value = await api("/api/admin/users");
   for (const user of users.value) {
-    edits[user.id] = edits[user.id] || { tier: user.tier, expires: "", note: "" };
+    edits[user.id] = edits[user.id] || { tier: user.tier, expires: "", note: "", company: "", contract_no: "", contract_note: "" };
     edits[user.id].tier = user.tier;
+    edits[user.id].company = user.company || "";
+    edits[user.id].contract_no = user.contract_no || "";
+    edits[user.id].contract_note = user.contract_note || "";
   }
   providers.value = await api("/api/admin/providers");
   const routeData = await api("/api/admin/routes");
@@ -853,6 +860,21 @@ async function removeUser(user) {
     await api(`/api/admin/users/${user.id}`, { method: "DELETE" });
     message.value = "账号已删除";
     await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function saveContract(user) {
+  error.value = "";
+  message.value = "";
+  const edit = edits[user.id];
+  try {
+    await api(`/api/admin/users/${user.id}/contract`, {
+      method: "PUT",
+      body: { company: edit.company || "", contract_no: edit.contract_no || "", note: edit.contract_note || "" },
+    });
+    message.value = "合同字段已保存";
   } catch (err) {
     error.value = err.message;
   }

@@ -163,6 +163,26 @@ func (a *App) saveAsset(w http.ResponseWriter, r *http.Request, user *model.User
 	return nil
 }
 
+func (a *App) consentStyleDiff(w http.ResponseWriter, r *http.Request, user *model.User) error {
+	var body struct {
+		Agree bool `json:"agree"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		return err
+	}
+	if !body.Agree {
+		return bad("从修改差异学习风格需要单独同意")
+	}
+	if err := a.Store.InsertConsent(r.Context(), nil, &model.Consent{
+		UserID: user.ID, DocType: "style_diff", Version: "1", ConsentItem: "从修改差异学习风格",
+		IP: clientIP(r), UserAgent: r.UserAgent(), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return err
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+	return nil
+}
+
 func (a *App) consentDraftTitles(w http.ResponseWriter, r *http.Request, user *model.User) error {
 	var body struct {
 		Agree bool `json:"agree"`

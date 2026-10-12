@@ -2,7 +2,7 @@
   <div class="stack">
     <h1 style="font-size: 32px">定价</h1>
     <p v-if="!pay.enabled" class="muted">价格和额度来自后台套餐配置。在线支付即将开通，现在不能在这里付款。付费档位仍由管理员在确认收款后手工开通。</p>
-    <p v-else class="muted">价格和额度来自后台套餐配置。支付成功后档位会开通。退款由管理员在商户平台手工处理，不会自动降级。</p>
+    <p v-else class="muted">价格和额度来自后台套餐配置。支付成功后档位会开通。同周期升级按剩余天数补差。首次购买且 7 天内未使用，可在会员页申请全额退款并回到免费档；款项仍需在商户平台手工退回。管理员标记退款不会自动改档位。</p>
     <p v-if="error" class="banner">{{ error }}</p>
     <p v-if="message" class="banner info">{{ message }}</p>
     <div class="price-grid">
@@ -34,6 +34,12 @@
         </div>
       </article>
     </div>
+    <section v-if="pay.enabled" class="card stack">
+      <h2>加量包</h2>
+      <p>{{ (pay.pack_articles || 10) }} 篇，{{ yuan(pay.pack_price_cents || 1900) }} 元，90 天内有效。订阅当月额度用完后才扣加量包，每天篇数上限仍然有效。</p>
+      <button v-if="loggedIn" class="btn" type="button" @click="buy('pack', 'pack')">购买加量包</button>
+      <router-link v-else class="btn" to="/login?next=/pricing">登录后购买</router-link>
+    </section>
     <section v-if="order" class="card stack">
       <h2>订单 {{ order.out_trade_no }}</h2>
       <p>{{ order.message }}</p>

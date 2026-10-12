@@ -179,7 +179,7 @@ func (a *App) myConsents(w http.ResponseWriter, r *http.Request, user *model.Use
 		}
 		out = append(out, map[string]any{
 			"id": row.ID, "doc_type": row.DocType, "title": title, "version": row.Version,
-			"consent_item": row.ConsentItem, "created_at": jtimev(row.CreatedAt),
+			"consent_item": row.ConsentItem, "created_at": jtimev(row.CreatedAt), "withdrawn_at": jtime(row.WithdrawnAt),
 		})
 	}
 	writeJSON(w, 200, out)

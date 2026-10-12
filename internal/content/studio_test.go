@@ -2,6 +2,7 @@ package content
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,19 @@ func TestCopiedSpanAndStyleFeatures(t *testing.T) {
 	}
 	if _, err := StyleFeatures([]string{sample}); err == nil {
 		t.Fatal("two samples are not enough")
+	}
+}
+
+func TestDiffStyleFeaturesOmitText(t *testing.T) {
+	local := "今天天气很好。"
+	remote := "今天天气很好吗？我觉得要带伞。"
+	features := DiffStyleFeatures(local, remote)
+	raw := fmt.Sprint(features)
+	if strings.Contains(raw, "带伞") || strings.Contains(raw, "天气") {
+		t.Fatal(features)
+	}
+	if features["question_delta"] != 1 || features["source"] != "edit_diff" {
+		t.Fatal(features)
 	}
 }
 

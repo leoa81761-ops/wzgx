@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -49,8 +50,14 @@ func (a *App) payMeta() map[string]any {
 	if providers == nil {
 		providers = []string{}
 	}
+	articles := a.Cfg.PackArticles
+	if articles < 1 {
+		articles = 10
+	}
+	packCents, _ := pay.PriceCents(a.Cfg, "pack", "pack")
 	return map[string]any{
 		"enabled": len(providers) > 0, "sandbox": sandbox, "providers": providers, "alipay_page": page,
+		"pack_articles": articles, "pack_price_cents": packCents,
 	}
 }
 
@@ -84,23 +91,40 @@ func (a *App) checkout(w http.ResponseWriter, r *http.Request, user *model.User)
 	}
 	tier := strings.TrimSpace(body.Tier)
 	period := strings.TrimSpace(body.Period)
-	if tier == "lifetime" && (period == "" || period == "lifetime") {
-		period = "once"
-	}
-	if period == "" {
-		period = "month"
-	}
-	cents, ok := pay.PriceCents(a.Cfg, tier, period)
-	if !ok || cents <= 0 {
-		return bad("请选择要开通的档位和周期")
-	}
 	fresh, err := a.Store.GetUser(r.Context(), nil, user.ID)
 	if err != nil || fresh == nil {
 		return &AppError{Status: 401, Message: "请先登录"}
 	}
-	effective, _ := quota.Membership(fresh, time.Now().UTC())
-	if catalog.TierRank(tier) < catalog.TierRank(effective) {
-		return bad("当前档位更高，降级请联系管理员")
+	now := time.Now().UTC()
+	var cents int
+	var ok bool
+	if tier == "pack" || period == "pack" {
+		tier = "pack"
+		cents, ok = pay.PriceCents(a.Cfg, "pack", "pack")
+		articles := a.Cfg.PackArticles
+		if articles < 1 {
+			articles = 10
+		}
+		period = fmt.Sprintf("pack:%d", articles)
+	} else {
+		if tier == "lifetime" && (period == "" || period == "lifetime") {
+			period = "once"
+		}
+		if period == "" {
+			period = "month"
+		}
+		cents, ok = pay.PriceCents(a.Cfg, tier, period)
+		effective, _ := quota.Membership(fresh, now)
+		if catalog.TierRank(tier) < catalog.TierRank(effective) {
+			return bad("当前档位更高，降级请联系管理员")
+		}
+		if pay.RankHigher(effective, tier) {
+			currentPeriod, currentPrice := a.currentPlanPrice(r.Context(), fresh, effective)
+			cents, period = pay.UpgradeDue(now, effective, currentPeriod, fresh.TierExpiresAt, currentPrice, cents, period, true)
+		}
+	}
+	if !ok || (cents <= 0 && !strings.HasPrefix(period, "upgrade")) {
+		return bad("请选择要开通的档位和周期")
 	}
 	channel := strings.TrimSpace(body.Channel)
 	if channel == "" {
@@ -137,13 +161,22 @@ func (a *App) checkout(w http.ResponseWriter, r *http.Request, user *model.User)
 	if provider != "wechat" && provider != "alipay" && provider != "sandbox" {
 		return bad("不支持的支付方式")
 	}
-	now := time.Now().UTC()
 	order := &store.PayOrder{
 		UserID: fresh.ID, OutTradeNo: pay.NewOutTradeNo(fresh.ID), Provider: provider, Channel: channel,
 		Tier: tier, Period: period, AmountCents: cents, Status: "pending", CreatedAt: now,
 	}
 	if err := a.Store.InsertPayOrder(r.Context(), nil, order); err != nil {
 		return err
+	}
+	if cents == 0 {
+		if err := pay.MarkPaid(r.Context(), a.Store, order.OutTradeNo, provider, "prorate", 0, now); err != nil {
+			return bad(err.Error())
+		}
+		writeJSON(w, 200, map[string]any{
+			"provider": provider, "status": "paid", "out_trade_no": order.OutTradeNo,
+			"amount_cents": 0, "tier": tier, "period": period, "message": "未使用天数已抵扣，档位已更新。",
+		})
+		return nil
 	}
 	subject := pay.Subject(tier, period)
 	var codeURL, payURL string
@@ -196,6 +229,25 @@ func (a *App) checkout(w http.ResponseWriter, r *http.Request, user *model.User)
 		"message": message,
 	})
 	return nil
+}
+
+func (a *App) currentPlanPrice(ctx context.Context, user *model.User, tier string) (period string, price int) {
+	period = "month"
+	if user.TierExpiresAt != nil && user.TierExpiresAt.Sub(time.Now()) > 40*24*time.Hour {
+		period = "year"
+	}
+	if latest, err := a.Store.LatestPaidOrder(ctx, nil, user.ID); err == nil && latest != nil {
+		switch latest.Period {
+		case "year", "month", "once":
+			period = latest.Period
+		}
+	}
+	price, _ = pay.PriceCents(a.Cfg, tier, period)
+	if period == "once" {
+		price, _ = pay.PriceCents(a.Cfg, tier, "month")
+		period = "month"
+	}
+	return period, price
 }
 
 func (a *App) sandboxComplete(w http.ResponseWriter, r *http.Request, user *model.User) error {

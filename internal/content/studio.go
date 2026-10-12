@@ -80,6 +80,17 @@ func StyleFeatures(samples []string) (map[string]any, error) {
 	}, nil
 }
 
+// DiffStyleFeatures keeps only counts from an edit. It does not keep either text.
+func DiffStyleFeatures(local, remote string) map[string]any {
+	return map[string]any{
+		"source":             "edit_diff",
+		"local_runes":        utf8.RuneCountInString(local),
+		"remote_runes":       utf8.RuneCountInString(remote),
+		"question_delta":     strings.Count(remote, "？") - strings.Count(local, "？"),
+		"first_person_delta": strings.Count(remote, "我") - strings.Count(local, "我"),
+	}
+}
+
 type sampleError struct{}
 
 func (sampleError) Error() string { return "请提供 3 到 5 篇至少 80 字的范文" }

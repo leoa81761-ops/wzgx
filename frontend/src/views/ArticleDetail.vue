@@ -24,6 +24,7 @@
       <button class="btn-ghost" type="button" @click="copyHtml">复制 HTML</button>
       <button class="btn-ghost" type="button" @click="downloadHtml">下载 HTML</button>
       <button class="btn-ghost" type="button" @click="toggleTheme">{{ dark ? "浅色预览" : "暗色预览" }}</button>
+      <button class="btn-ghost" type="button" @click="agreeStyleDiff">同意用修改差异学风格</button>
       <button class="btn-ghost" type="button" @click="reread">回读草稿</button>
       <button class="btn-ghost" type="button" @click="feedback('published')">已发布</button>
       <button class="btn-ghost" type="button" @click="feedback('edited_published')">修改后发布</button>
@@ -100,6 +101,16 @@ async function regenerate() {
     error.value = err.message;
   } finally {
     loading.value = false;
+  }
+}
+
+async function agreeStyleDiff() {
+  error.value = "";
+  try {
+    await api("/api/me/consents/style-diff", { method: "POST", body: { agree: true } });
+    feedbackNote.value = "已同意从修改差异学习风格。回读到改动后只保存统计，不保存改后全文。高级版和买断版才会写入。";
+  } catch (err) {
+    error.value = err.message;
   }
 }
 

@@ -189,14 +189,9 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 		}
-		deviceHash := deviceFrom(r, body.DeviceID, body.DeviceConsent)
-		if deviceHash != "" {
-			if err := a.Store.InsertConsent(r.Context(), tx, &model.Consent{
-				UserID: user.ID, DocType: "device_fingerprint", Version: version, ConsentItem: "invite_device",
-				IP: clientIP(r), UserAgent: userAgent(r), CreatedAt: now,
-			}); err != nil {
-				return err
-			}
+		deviceHash, err := a.deviceForInvite(r.Context(), tx, r, user.ID, body.DeviceID, body.DeviceConsent, now)
+		if err != nil {
+			return err
 		}
 		return attachInvite(r.Context(), a.Store, tx, user, body.InviteCode, deviceHash, growth.IPPrefix(clientIP(r)), now)
 	})

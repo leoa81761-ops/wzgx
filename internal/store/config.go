@@ -297,8 +297,15 @@ func (s *Store) InsertLegal(ctx context.Context, q db.Q, d model.LegalDoc) error
 }
 
 func (s *Store) HasConsentVersion(ctx context.Context, userID int64, docType, version string) (bool, error) {
+	return s.HasActiveConsent(ctx, nil, userID, docType, version)
+}
+
+func (s *Store) HasActiveConsent(ctx context.Context, q db.Q, userID int64, docType, version string) (bool, error) {
+	if q == nil {
+		q = s.DB
+	}
 	var n int
-	err := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM consent_log WHERE user_id = ? AND doc_type = ? AND version = ?`, userID, docType, version).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM consent_log WHERE user_id = ? AND doc_type = ? AND version = ? AND withdrawn_at IS NULL`, userID, docType, version).Scan(&n)
 	return n > 0, err
 }
 
@@ -311,7 +318,7 @@ func (s *Store) InsertConsent(ctx context.Context, q db.Q, c *model.Consent) err
 }
 
 func (s *Store) ListConsents(ctx context.Context, userID int64) ([]model.Consent, error) {
-	rows, err := s.DB.Query(ctx, `SELECT id, user_id, doc_type, version, consent_item, ip, user_agent, created_at FROM consent_log WHERE user_id = ? ORDER BY id DESC`, userID)
+	rows, err := s.DB.Query(ctx, `SELECT id, user_id, doc_type, version, consent_item, ip, user_agent, created_at, withdrawn_at FROM consent_log WHERE user_id = ? ORDER BY id DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -320,10 +327,12 @@ func (s *Store) ListConsents(ctx context.Context, userID int64) ([]model.Consent
 	for rows.Next() {
 		var c model.Consent
 		var created string
-		if err := rows.Scan(&c.ID, &c.UserID, &c.DocType, &c.Version, &c.ConsentItem, &c.IP, &c.UserAgent, &created); err != nil {
+		var withdrawn sql.NullString
+		if err := rows.Scan(&c.ID, &c.UserID, &c.DocType, &c.Version, &c.ConsentItem, &c.IP, &c.UserAgent, &created, &withdrawn); err != nil {
 			return nil, err
 		}
 		c.CreatedAt = mustTime(created)
+		c.WithdrawnAt = parsePtr(withdrawn)
 		out = append(out, c)
 	}
 	return out, rows.Err()

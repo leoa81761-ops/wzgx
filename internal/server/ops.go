@@ -7,6 +7,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"encoding/json"
+
+	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/quota"
@@ -135,6 +138,9 @@ func (a *App) rereadDraft(w http.ResponseWriter, r *http.Request, user *model.Us
 		}
 	}
 	diff := wechat.DiffDraft(article.Title, article.BodyHTML, view)
+	if err := a.learnEditStyle(r, user, article.BodyHTML, view.Content, diff.State == "modified"); err != nil {
+		return err
+	}
 	row := &store.Feedback{
 		UserID: user.ID, ArticleID: article.ID, Kind: "reread", DraftState: diff.State,
 		ChangeRatio: diff.ChangeRatio, Note: diff.RemoteTitle, CreatedAt: time.Now().UTC(),
@@ -147,6 +153,29 @@ func (a *App) rereadDraft(w http.ResponseWriter, r *http.Request, user *model.Us
 	payload["note_text"] = draftStateText(diff.State)
 	writeJSON(w, 200, payload)
 	return nil
+}
+
+func (a *App) learnEditStyle(r *http.Request, user *model.User, local, remote string, modified bool) error {
+	if !modified {
+		return nil
+	}
+	agreed, err := a.Store.HasConsentVersion(r.Context(), user.ID, "style_diff", "1")
+	if err != nil || !agreed {
+		return err
+	}
+	fresh, err := a.Store.GetUser(r.Context(), nil, user.ID)
+	if err != nil || fresh == nil {
+		return err
+	}
+	tier, _ := quota.Membership(fresh, time.Now().UTC())
+	if tier != "premium" && tier != "lifetime" {
+		return nil
+	}
+	raw, err := json.Marshal(content.DiffStyleFeatures(local, remote))
+	if err != nil {
+		return err
+	}
+	return a.Store.SaveDiffProfile(r.Context(), user.ID, string(raw), time.Now().UTC())
 }
 
 func draftStateText(state string) string {

@@ -511,6 +511,15 @@ func (a *App) notePriorAppID(ctx context.Context, q db.Q, userID int64, seenBefo
 }
 
 func attachInvite(ctx context.Context, st *store.Store, q db.Q, user *model.User, code, deviceHash, ip string, now time.Time) error {
+	if deviceHash != "" {
+		ok, err := st.HasActiveConsent(ctx, q, user.ID, "device_fingerprint", "1")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			deviceHash = ""
+		}
+	}
 	if _, err := st.EnsureInviteCode(ctx, q, user.ID, deviceHash); err != nil {
 		return err
 	}
@@ -545,6 +554,20 @@ func attachInvite(ctx context.Context, st *store.Store, q db.Q, user *model.User
 		InviterID: inviter, InviteeID: user.ID, Status: status, Reason: reason,
 		DeviceHash: deviceHash, IP: ip, ObserveUntil: now.Add(time.Duration(rules.ObserveDays) * 24 * time.Hour), CreatedAt: now,
 	})
+}
+
+func (a *App) deviceForInvite(ctx context.Context, q db.Q, r *http.Request, userID int64, deviceID string, consent bool, now time.Time) (string, error) {
+	hash := deviceFrom(r, deviceID, consent)
+	if hash == "" {
+		return "", nil
+	}
+	if err := a.Store.InsertConsent(ctx, q, &model.Consent{
+		UserID: userID, DocType: "device_fingerprint", Version: "1", ConsentItem: "invite_device",
+		IP: clientIP(r), UserAgent: userAgent(r), CreatedAt: now,
+	}); err != nil {
+		return "", err
+	}
+	return hash, nil
 }
 
 func deviceFrom(r *http.Request, bodyID string, consent bool) string {

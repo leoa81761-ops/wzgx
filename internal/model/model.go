@@ -188,6 +188,7 @@ type Consent struct {
 	IP          string
 	UserAgent   string
 	CreatedAt   time.Time
+	WithdrawnAt *time.Time
 }
 
 type AuditLog struct {

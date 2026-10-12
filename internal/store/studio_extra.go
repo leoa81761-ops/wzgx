@@ -68,6 +68,22 @@ func (s *Store) GetPlanExtra(ctx context.Context, q db.Q, planID int64) (PlanExt
 	return row, err
 }
 
+func (s *Store) SaveDiffProfile(ctx context.Context, userID int64, features string, now time.Time) error {
+	res, err := s.DB.Exec(ctx, `UPDATE style_profile SET features = ?, created_at = ? WHERE user_id = ? AND name = ?`, features, timeReq(now), userID, "修改差异")
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err = s.InsertStyleProfile(ctx, userID, "修改差异", features, now)
+	return err
+}
+
 func (s *Store) InsertStyleProfile(ctx context.Context, userID int64, name, features string, now time.Time) (int64, error) {
 	var id int64
 	err := s.DB.QueryRow(ctx, `INSERT INTO style_profile (user_id, name, features, created_at) VALUES (?, ?, ?, ?) RETURNING id`, userID, name, features, timeReq(now)).Scan(&id)

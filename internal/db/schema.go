@@ -611,6 +611,50 @@ CREATE TABLE IF NOT EXISTS wechat_authorizer (
   refresh_token TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS quota_pack (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  order_no TEXT NOT NULL,
+  articles INTEGER NOT NULL,
+  remaining INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pack_user ON quota_pack(user_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS pack_hold (
+  task_id INTEGER PRIMARY KEY,
+  pack_id INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS expiry_notice (
+  id {{PK}},
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  expires_on TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (user_id, kind, expires_on)
+);
+
+CREATE TABLE IF NOT EXISTS recovery_code (
+  id {{PK}},
+  account TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_account ON recovery_code(account, id);
+
+CREATE TABLE IF NOT EXISTS user_contract (
+  user_id INTEGER PRIMARY KEY,
+  company TEXT NOT NULL DEFAULT '',
+  contract_no TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	schema = strings.ReplaceAll(schema, "{{BLOB}}", blob)
