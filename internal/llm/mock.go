@@ -19,6 +19,22 @@ const anecdoteRule = "事例只能来自已经给出的来源，或者明确写�
 
 const readerRule = "reader_profile 是给编辑看的读者画像，不要用这串文字称呼读者，也不要把它写进标题、摘要或正文。"
 
+const sceneRule = "recent_titles 只用来避开这个账号已经用过的标题。不要把其他文章、其他账号的人物、场景或原句写进开头和正文。"
+
+func tabooRule(payload map[string]any) string {
+	if strings.TrimSpace(asString(payload["taboos"])) == "" {
+		return ""
+	}
+	return "taboos 是这个号不写的说法。不要在标题、摘要或正文里写出这些原话，也不要把它们当成要解释的词。"
+}
+
+func columnRule(payload map[string]any) string {
+	if strings.TrimSpace(asString(payload["column_positioning"])) == "" {
+		return ""
+	}
+	return "column_positioning 是栏目定位的全文，要整段遵守，不要只取前几个字。"
+}
+
 func voiceRule(payload map[string]any) string {
 	if !technicalVoice(payload) {
 		return ""
@@ -69,7 +85,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写。" +
 			"目标大约是 word_target 的 105%（输入里的 expand_goal）。写到 100% 到 110% 就停，不要为了凑到 130% 而注水。" +
-			"如果输入里有 shortfall，这是离目标 85% 还差的字数，请优先补上这段篇幅。" +
+			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
 			sourcedFacts + anecdoteRule +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
@@ -94,7 +110,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" +
 			"开头如果要改，只写不超过 40 个字的一句，用来替换原来的第一段，不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
 			"小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
-			anecdoteRule + voiceRule(payload) + readerRule +
+			anecdoteRule + voiceRule(payload) + readerRule + sceneRule + tabooRule(payload) + columnRule(payload) +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "补引用":
 		schema = StageSchema("正文")
@@ -133,7 +149,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "正文" || stageLabel == "审核" {
-			system += lengthRule + citationRule + anecdoteRule + voiceRule(payload)
+			system += lengthRule + citationRule + anecdoteRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 		}
 		system += readerRule
 		if stageLabel == "审核" {

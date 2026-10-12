@@ -52,6 +52,7 @@ type Gateway struct {
 	MaxAttempts         int
 	ResearchTimeout     time.Duration
 	ResearchBackupModel string
+	BackupSearchURL     string
 	CacheTTL            time.Duration
 	cacheMu             sync.Mutex
 	cache               map[string]cachedCompletion

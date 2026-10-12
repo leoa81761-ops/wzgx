@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -399,8 +400,11 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 			writeChoice(w, map[string]any{"title": "补救检索成功", "angle": "今天就能做"})
 		case "资料检索":
 			researchCalls++
-			if req["stream"] != true || req["model"] != "grok-chat-fast" {
+			if researchCalls == 1 && (req["stream"] != true || req["model"] != "grok-chat-fast") {
 				t.Errorf("stream %#v model %#v", req["stream"], req["model"])
+			}
+			if researchCalls > 1 && req["model"] == "grok-chat-fast" {
+				t.Errorf("backup should leave grok-chat-fast, got %#v", req["model"])
 			}
 			if _, ok := req["tools"]; ok {
 				t.Errorf("research should not send web_search: %#v", req["tools"])
@@ -504,20 +508,20 @@ func TestExpandAsksToCondenseInsteadOfCutting(t *testing.T) {
 	}
 }
 
-func TestBackupResearchUsesChatFast(t *testing.T) {
+func TestBackupResearchUsesADifferentModel(t *testing.T) {
 	providers := []llm.Provider{
 		{Name: "推理", Protocol: "openai", Model: "grok-4.7"},
 		{Name: "快", Protocol: "openai", Model: "grok-chat-fast"},
 	}
-	out := backupResearchProviders(providers, "grok-chat-fast")
-	if len(out) != 1 || out[0].Model != "grok-chat-fast" || out[0].Protocol != "openai" {
+	out := backupResearchProviders(providers, "grok-chat-fast", "grok-chat-fast")
+	if len(out) != 1 || out[0].Model != "grok-4.7" || out[0].Protocol != "openai" {
 		t.Fatalf("%#v", out)
 	}
-	only := backupResearchProviders([]llm.Provider{{Name: "快", Protocol: "openai", Model: "grok-chat-fast"}}, "")
-	if len(only) != 1 || only[0].Model != "grok-chat-fast" || only[0].Protocol != "openai" {
+	only := backupResearchProviders([]llm.Provider{{Name: "快", Protocol: "openai", Model: "grok-chat-fast"}}, "", "grok-chat-fast")
+	if len(only) != 1 || only[0].Model == "grok-chat-fast" || only[0].Protocol != "openai" {
 		t.Fatalf("%#v", only)
 	}
-	custom := backupResearchProviders([]llm.Provider{{Name: "快", Protocol: "openai", Model: "grok-chat-fast", BaseURL: "https://x/v1"}}, "grok-4.7")
+	custom := backupResearchProviders([]llm.Provider{{Name: "快", Protocol: "openai", Model: "grok-chat-fast", BaseURL: "https://x/v1"}}, "grok-4.7", "grok-chat-fast")
 	if len(custom) != 1 || custom[0].Protocol != "openai" || custom[0].Model != "grok-4.7" || custom[0].BaseURL != "https://x/v1" {
 		t.Fatalf("%#v", custom)
 	}
@@ -1705,6 +1709,243 @@ func traceStage(rows []map[string]any, stage string) map[string]any {
 		}
 	}
 	return map[string]any{}
+}
+
+func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
+	_, kept, _, _ := takeSources("笔记", []map[string]any{
+		{"title": "综合布线验收", "name": "住建部", "url": "https://www.mohurd.gov.cn/a"},
+		{"title": "PPT模板下载", "name": "模板", "url": "https://www.1ppt.com/moban/1"},
+		{"title": "奶奶养生茶", "name": "茶", "url": "https://example.com/tea"},
+		{"title": "", "name": "", "url": "https://www.gov.cn/zhengce/1"},
+	}, content.DefaultSourcePolicy(), "弱电 验收")
+	if len(kept) != 2 {
+		t.Fatal(kept)
+	}
+	seen := map[string]bool{}
+	for _, row := range kept {
+		seen[str(row["url"])] = true
+	}
+	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] {
+		t.Fatal(kept)
+	}
+}
+
+func TestTabooDoesNotFailTheTask(t *testing.T) {
+	var sawRule bool
+	long := strings.Repeat("现场要逐项核对编号。", 80)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		msgs, _ := req["messages"].([]any)
+		blob, _ := json.Marshal(msgs)
+		if strings.Contains(string(blob), "不写的说法") {
+			sawRule = true
+		}
+		body := long
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "验收怎么核对", "angle": "今天就能做"})
+			return
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+			return
+		default:
+			body = "现场要逐项核对。包过验收这种话不写。下一步看编号。" + long
+		}
+		writeChoice(w, map[string]any{"title": "验收怎么核对", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, account, plan := seedPlan(t, st, "taboo@example.com")
+	plan.Direction = "弱电智能化"
+	if err := st.UpdatePlan(ctx, nil, plan); err != nil {
+		t.Fatal(err)
+	}
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 || strings.Contains(articles[0].BodyHTML, "包过验收") || !sawRule {
+		t.Fatal(sawRule, articles)
+	}
+}
+
+func TestResearchUsesWebSearchAfterModelFailure(t *testing.T) {
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"title":"弱电智能化验收说明","url":"https://www.mohurd.gov.cn/gongkai/backup"}]}`))
+	}))
+	defer search.Close()
+	var researchCalls int
+	body := strings.Repeat("合适的正文。", 120) + "[1]"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "弱电智能化验收", "angle": "今天就能做"})
+		case "资料检索":
+			researchCalls++
+			w.WriteHeader(502)
+			_, _ = w.Write([]byte("bad gateway"))
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "弱电智能化验收", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	deps.Gateway.BackupSearchURL = search.URL
+	deps.Gateway.Backoff = time.Millisecond
+	ctx := context.Background()
+	user, account, plan := seedPaid(t, st, "websearch@example.com", srv.URL)
+	plan.Direction = "弱电智能化"
+	if err := st.UpdatePlan(ctx, nil, plan); err != nil {
+		t.Fatal(err)
+	}
+	runTask(t, st, deps, user, account, plan, time.Now().UTC())
+	if researchCalls < 2 {
+		t.Fatalf("research calls %d", researchCalls)
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
+	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "mohurd.gov.cn") {
+		note := ""
+		if len(articles) > 0 {
+			note = articles[0].DeliveryNote + " " + articles[0].Status
+		}
+		t.Fatal(note, err)
+	}
+}
+
+func TestConcurrentAccountsDoNotShareOpenings(t *testing.T) {
+	grandma := "周末早晨，阳光从窗外洒进客厅，你推开门，看到爷爷奶奶捧着温茶转圈，那一小步就让上午亮堂起来。"
+	var mu sync.Mutex
+	leaked := false
+	long := strings.Repeat("验收先核对回路编号。", 80)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		msgs, _ := req["messages"].([]any)
+		blob, _ := json.Marshal(msgs)
+		text := string(blob)
+		stage := stageOf(req)
+		if (stage == "选题" || stage == "大纲" || stage == "正文") && strings.Contains(text, "弱电智能化") && strings.Contains(text, "爷爷奶奶") {
+			mu.Lock()
+			leaked = true
+			mu.Unlock()
+		}
+		opening := long
+		if strings.Contains(text, "家庭生活") {
+			opening = grandma + long
+		}
+		if strings.Contains(text, "弱电智能化") {
+			opening = grandma + long
+		}
+		switch stageOf(req) {
+		case "选题":
+			writeChoice(w, map[string]any{"title": "今天的题目", "angle": "一个做法"})
+		case "大纲":
+			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		default:
+			writeChoice(w, map[string]any{"title": "今天的题目", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{opening}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+		}
+	}))
+	defer srv.Close()
+	st, deps := openDeps(t, "live", srv.Client())
+	deps.Gateway.CacheTTL = time.Hour
+	ctx := context.Background()
+	if err := st.InsertService(ctx, nil, &model.ServiceConfig{
+		ConfigType: "text_model", Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", ModelName: "writer",
+		Enabled: true, TimeoutSeconds: 10, UpdatedAt: time.Now().UTC(), ExtraHeaders: map[string]string{}, ExtraParams: map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	user, familyAccount, familyPlan := seedPlan(t, st, "family@example.com")
+	user.Tier = "premium"
+	if err := st.UpdateUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	familyPlan.Direction = "家庭生活"
+	if err := st.UpdatePlan(ctx, nil, familyPlan); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := st.InsertArticle(ctx, nil, &model.Article{
+		TaskID: familyPlan.ID, UserID: user.ID, PlanID: familyPlan.ID, WxAccountID: familyAccount.ID,
+		Title: grandma, Status: "in_draft", TemplateKey: "fresh", StyleKey: "warm", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := security.EncryptSecret("test-master-key", "mock-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := now
+	elvAccount := &model.WxAccount{UserID: user.ID, Name: "弱电陈工", AppID: "wx_mock_elv", SecretEncrypted: secret, SubjectType: "personal", ServiceType: "subscription", DeliveryMode: "draft", BindStatus: "active", BoundAt: &bound}
+	if err := st.InsertAccount(ctx, nil, elvAccount); err != nil {
+		t.Fatal(err)
+	}
+	next := now.Add(-time.Minute)
+	elvPlan := &model.WritingPlan{UserID: user.ID, WxAccountID: elvAccount.ID, Direction: "弱电智能化", Mode: "managed", StyleKey: "warm", TemplateKey: "fresh", WordTarget: 800, ScheduleType: "daily", TimeWindow: "night", Status: "active", NextRunAt: &next, CreatedAt: now, Weekdays: []int{}}
+	if err := st.InsertPlan(ctx, nil, elvPlan); err != nil {
+		t.Fatal(err)
+	}
+	var familyTask, elvTask int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, familyPlan, familyAccount, "manual", now, nil)
+		if err != nil {
+			return err
+		}
+		familyTask = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, elvPlan, elvAccount, "manual", now.Add(time.Second), nil)
+		if err != nil {
+			return err
+		}
+		elvTask = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		Execute(ctx, deps, familyTask, false, now)
+	}()
+	go func() {
+		defer wg.Done()
+		Execute(ctx, deps, elvTask, false, now.Add(time.Second))
+	}()
+	wg.Wait()
+	if leaked {
+		t.Fatal("弱电 prompt contained the other account's opening")
+	}
+	articles, err := st.ListArticlesByUser(ctx, user.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var elvHTML string
+	for _, article := range articles {
+		if article.PlanID == elvPlan.ID {
+			elvHTML = article.BodyHTML
+		}
+	}
+	if elvHTML == "" || strings.Contains(elvHTML, "爷爷奶奶") {
+		t.Fatal(elvHTML)
+	}
 }
 
 func openDeps(t *testing.T, llmMode string, client *http.Client) (*store.Store, Deps) {

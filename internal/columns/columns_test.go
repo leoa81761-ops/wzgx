@@ -1,6 +1,7 @@
 package columns
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +34,24 @@ func TestTopicsStayOnTheColumnAndTheme(t *testing.T) {
 	}
 	if seen["亲子阅读"] || seen["综合布线"] {
 		t.Fatal(got)
+	}
+}
+
+func TestLongPositioningBecomesKeywords(t *testing.T) {
+	long := "把综合布线的验收步骤写成现场可以照着做的说明，并交代和业主的关系"
+	got := Topics("方案拆解", long, "弱电智能化", "")
+	seen := map[string]bool{}
+	for _, item := range got {
+		seen[item] = true
+	}
+	if seen[long] {
+		t.Fatal(got)
+	}
+	if !seen["综合布线"] || !seen["验收步骤"] || !seen["弱电智能化"] {
+		t.Fatal(got)
+	}
+	if !strings.Contains(StructureText("steps", long), long) {
+		t.Fatal(StructureText("steps", long))
 	}
 }
 

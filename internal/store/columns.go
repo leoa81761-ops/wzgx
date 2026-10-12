@@ -65,6 +65,53 @@ func (s *Store) DeleteAccountColumn(ctx context.Context, q db.Q, accountID, id i
 	return err
 }
 
+func (s *Store) DeleteAccountColumns(ctx context.Context, q db.Q, accountID int64) error {
+	if q == nil {
+		q = s.DB
+	}
+	_, err := q.Exec(ctx, `DELETE FROM account_column WHERE wx_account_id=?`, accountID)
+	return err
+}
+
+// BackfillSuggestedColumns adds suggestions for active accounts that were bound before columns existed.
+func (s *Store) BackfillSuggestedColumns(ctx context.Context, q db.Q, now time.Time) error {
+	if q == nil {
+		q = s.DB
+	}
+	rows, err := q.Query(ctx, `SELECT id, name, persona_columns FROM wx_account WHERE bind_status = 'active' AND NOT EXISTS (SELECT 1 FROM account_column c WHERE c.wx_account_id = wx_account.id)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type pending struct {
+		id      int64
+		name    string
+		columns string
+	}
+	var accounts []pending
+	for rows.Next() {
+		var row pending
+		if err := rows.Scan(&row.id, &row.name, &row.columns); err != nil {
+			return err
+		}
+		accounts = append(accounts, row)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, account := range accounts {
+		history, err := s.ColumnNames(ctx, q, account.id)
+		if err != nil {
+			return err
+		}
+		suggested := columns.Suggest(account.name, "", account.columns, history)
+		if err := s.ReplaceSuggestedColumns(ctx, q, account.id, suggested, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) ReplaceSuggestedColumns(ctx context.Context, q db.Q, accountID int64, rows []columns.Column, now time.Time) error {
 	if q == nil {
 		q = s.DB

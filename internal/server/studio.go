@@ -815,6 +815,9 @@ func (a *App) unbindAccount(w http.ResponseWriter, r *http.Request, user *model.
 		if err := a.Store.UpdateAccount(r.Context(), tx, account); err != nil {
 			return err
 		}
+		if err := a.Store.DeleteAccountColumns(r.Context(), tx, account.ID); err != nil {
+			return err
+		}
 		plans, err := a.Store.ListPlansByAccount(r.Context(), tx, account.ID)
 		if err != nil {
 			return err

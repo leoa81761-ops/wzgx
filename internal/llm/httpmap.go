@@ -78,10 +78,12 @@ func pathInt(root any, path string) int {
 
 func completionKey(provider Provider, messages []map[string]string) string {
 	raw, _ := json.Marshal(struct {
+		Provider int64
+		BaseURL  string
 		Protocol string
 		Model    string
 		Messages []map[string]string
-	}{provider.Protocol, provider.Model, messages})
+	}{provider.ID, provider.BaseURL, provider.Protocol, provider.Model, messages})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -93,7 +95,32 @@ func (g *Gateway) cached(key string) (Completion, bool) {
 	if !ok || time.Now().After(hit.until) {
 		return Completion{}, false
 	}
-	return hit.completion, true
+	return cloneCompletion(hit.completion), true
+}
+
+func cloneCompletion(in Completion) Completion {
+	out := in
+	if len(in.Attempts) > 0 {
+		out.Attempts = make([]map[string]any, len(in.Attempts))
+		for i, row := range in.Attempts {
+			copied := make(map[string]any, len(row))
+			for key, value := range row {
+				copied[key] = value
+			}
+			out.Attempts[i] = copied
+		}
+	}
+	if len(in.ResearchSources) > 0 {
+		out.ResearchSources = make([]map[string]any, len(in.ResearchSources))
+		for i, row := range in.ResearchSources {
+			copied := make(map[string]any, len(row))
+			for key, value := range row {
+				copied[key] = value
+			}
+			out.ResearchSources[i] = copied
+		}
+	}
+	return out
 }
 
 func (g *Gateway) remember(key string, completion Completion) {

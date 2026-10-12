@@ -246,6 +246,54 @@ func TestFailedRewriteReturnsOriginal(t *testing.T) {
 	}
 }
 
+func TestShingleDropsARephrasedParagraph(t *testing.T) {
+	first := "验收之前先把回路编号抄进表格，再逐个点位核对。"
+	second := "回路编号要先抄进表格，验收时再逐个点位核对。"
+	if SharesNGram(first, second, 12) {
+		t.Fatal("fixture should not share a 12-rune run")
+	}
+	if ShingleSimilarity(first, second, 3) < 0.45 {
+		t.Fatal(ShingleSimilarity(first, second, 3))
+	}
+	draft := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{first, second, "收工前再看一眼盖板。"}}}}
+	paras := paragraphsOf(RepairNearDuplicates(draft))
+	if len(paras) != 2 || paras[0] != first || strings.Contains(paras[1], "回路编号") {
+		t.Fatal(paras)
+	}
+}
+
+func TestTabooSentenceIsRewritten(t *testing.T) {
+	draft := map[string]any{
+		"title":   "验收清单",
+		"summary": "不要承诺包过验收。",
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"现场要逐项核对。包过验收这种话不写。下一步看编号。",
+		}}},
+		"closing": "包过验收。",
+	}
+	out := RewriteTaboos(draft, "包过验收")
+	raw, _ := json.Marshal(out)
+	if strings.Contains(string(raw), "包过验收") {
+		t.Fatal(string(raw))
+	}
+	if !strings.Contains(string(raw), "现场要逐项核对") || !strings.Contains(string(raw), "下一步看编号") {
+		t.Fatal(string(raw))
+	}
+}
+
+func TestForeignTitleSceneIsRemoved(t *testing.T) {
+	title := "周末早晨，阳光从窗外洒进客厅，你推开门，看到爷爷奶奶捧着温茶转圈，那一小步就让上午亮堂起来。"
+	draft := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{
+		"爷爷奶奶捧着温茶转圈，那一小步就让上午亮堂起来。",
+		"验收先核对回路编号。",
+	}}}}
+	out := StripForeignScenes(draft, []string{title})
+	paras := paragraphsOf(out)
+	if len(paras) != 1 || strings.Contains(paras[0], "爷爷奶奶") {
+		t.Fatal(paras)
+	}
+}
+
 func dump(draft map[string]any) string {
 	buf, err := json.Marshal(draft)
 	if err != nil {

@@ -5,8 +5,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/config"
+	"github.com/leoa81761-ops/wzgx/internal/model"
 )
 
 func TestBindSuggestsColumnsAndAdminCanExemptQuota(t *testing.T) {
@@ -99,5 +101,41 @@ func TestBindSuggestsColumnsAndAdminCanExemptQuota(t *testing.T) {
 	}
 	if !found {
 		t.Fatal(logs)
+	}
+	removed := sendJSON(t, "DELETE", ts.URL+"/api/accounts/"+strconv.FormatInt(accountID, 10), token, nil)
+	if removed.StatusCode != 200 {
+		t.Fatal(removed.StatusCode, removed.Body)
+	}
+	left, err := app.Store.ListAccountColumns(t.Context(), nil, accountID, "")
+	if err != nil || len(left) != 0 {
+		t.Fatal(len(left), err)
+	}
+}
+
+func TestBackfillSuggestsColumnsForBoundAccounts(t *testing.T) {
+	app := openApp(t, config.Settings{})
+	ctx := t.Context()
+	now := time.Now().UTC()
+	user := &model.User{Email: "old@example.com", PasswordHash: "x", Tier: "premium", IsActive: true, CreatedAt: now}
+	if err := app.Store.InsertUser(ctx, nil, user); err != nil {
+		t.Fatal(err)
+	}
+	account := &model.WxAccount{UserID: user.ID, Name: "弱电陈工", AppID: "wx_old", BindStatus: "active", SubjectType: "personal", ServiceType: "subscription", DeliveryMode: "draft"}
+	if err := app.Store.InsertAccount(ctx, nil, account); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.BackfillSuggestedColumns(ctx, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := app.Store.ListAccountColumns(ctx, nil, account.ID, "")
+	if err != nil || len(rows) < 3 {
+		t.Fatal(len(rows), err)
+	}
+	names := map[string]bool{}
+	for _, row := range rows {
+		names[row.Name] = row.Status == "suggested"
+	}
+	if !names["工程圈快报"] || !names["方案拆解"] || !names["知识FAQ"] {
+		t.Fatal(rows)
 	}
 }
