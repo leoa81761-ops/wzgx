@@ -313,11 +313,50 @@ func RepairNearDuplicates(draft map[string]any) map[string]any {
 
 func nearDuplicate(text string, seen []string) bool {
 	for _, prev := range seen {
-		if Overlap(text, prev) > 0.5 || SharesNGram(text, prev, 12) {
+		if Overlap(text, prev) > 0.5 || SharesNGram(text, prev, 12) || ShingleSimilarity(text, prev, 3) >= 0.45 {
 			return true
 		}
 	}
 	return false
+}
+
+// ShingleSimilarity is the share of character n-grams in the shorter passage that also appear in the longer one.
+// It catches a rephrased paragraph that does not repeat a long exact run.
+func ShingleSimilarity(a, b string, n int) float64 {
+	if n < 1 {
+		return 0
+	}
+	left := shingles(a, n)
+	right := shingles(b, n)
+	if len(left) == 0 || len(right) == 0 {
+		return 0
+	}
+	shared := 0
+	for gram := range left {
+		if _, ok := right[gram]; ok {
+			shared++
+		}
+	}
+	denom := len(left)
+	if len(right) < denom {
+		denom = len(right)
+	}
+	if denom == 0 {
+		return 0
+	}
+	return float64(shared) / float64(denom)
+}
+
+func shingles(text string, n int) map[string]struct{} {
+	runes := []rune(compact(text))
+	out := map[string]struct{}{}
+	if len(runes) < n {
+		return out
+	}
+	for i := 0; i+n <= len(runes); i++ {
+		out[string(runes[i:i+n])] = struct{}{}
+	}
+	return out
 }
 
 // SharesNGram reports whether two passages share any run of n characters after punctuation is ignored.
@@ -701,6 +740,173 @@ func anyList(raw any) []any {
 	default:
 		return nil
 	}
+}
+
+// RewriteTaboos drops sentences that contain a persona taboo and leaves the rest of the draft.
+// An empty paragraph becomes a neutral line so the task is not failed for mentioning the phrase.
+func RewriteTaboos(draft map[string]any, taboos string) map[string]any {
+	words := tabooWords(taboos)
+	if draft == nil || len(words) == 0 {
+		return draft
+	}
+	if text := rewriteTabooText(textOf(draft["title"]), words); text != textOf(draft["title"]) {
+		draft["title"] = text
+	}
+	if text := rewriteTabooText(textOf(draft["summary"]), words); text != textOf(draft["summary"]) {
+		draft["summary"] = text
+	}
+	if text := rewriteTabooText(textOf(draft["closing"]), words); text != textOf(draft["closing"]) {
+		draft["closing"] = text
+	}
+	for _, section := range sectionsOf(draft) {
+		if text := rewriteTabooText(textOf(section["heading"]), words); text != textOf(section["heading"]) {
+			section["heading"] = text
+		}
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			paras = append(paras, rewriteTabooText(textOf(item), words))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	var alts []any
+	for _, item := range anyList(draft["alt_titles"]) {
+		text := altText(item)
+		if containsAny(text, words...) {
+			continue
+		}
+		alts = append(alts, item)
+	}
+	if alts == nil {
+		alts = []any{}
+	}
+	draft["alt_titles"] = alts
+	return draft
+}
+
+func tabooWords(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == ',' || r == '，' || r == '\n' || r == '、' || r == ';' || r == '；'
+	}) {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
+}
+
+func rewriteTabooText(text string, words []string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || !containsAny(text, words...) {
+		return text
+	}
+	var kept []string
+	for _, sentence := range splitSentences(text) {
+		if containsAny(sentence, words...) {
+			continue
+		}
+		kept = append(kept, sentence)
+	}
+	if len(kept) == 0 {
+		return "这一步按现场记录来写。"
+	}
+	return strings.Join(kept, "")
+}
+
+func splitSentences(text string) []string {
+	var out []string
+	var buf strings.Builder
+	for _, r := range text {
+		buf.WriteRune(r)
+		switch r {
+		case '。', '！', '？', '!', '?':
+			if part := strings.TrimSpace(buf.String()); part != "" {
+				out = append(out, part)
+			}
+			buf.Reset()
+		}
+	}
+	if part := strings.TrimSpace(buf.String()); part != "" {
+		out = append(out, part)
+	}
+	return out
+}
+
+// StripForeignScenes removes a sentence that repeats another account's title.
+// Titles shorter than 8 runes are ignored so a shared word does not wipe a paragraph.
+func StripForeignScenes(draft map[string]any, titles []string) map[string]any {
+	var banned []string
+	for _, title := range titles {
+		title = strings.TrimSpace(title)
+		if utf8.RuneCountInString(compact(title)) < 8 {
+			continue
+		}
+		banned = append(banned, title)
+	}
+	if draft == nil || len(banned) == 0 {
+		return draft
+	}
+	if text, changed := dropForeignSentences(textOf(draft["title"]), banned); changed {
+		draft["title"] = text
+	}
+	if text, changed := dropForeignSentences(textOf(draft["summary"]), banned); changed {
+		draft["summary"] = text
+	}
+	if text, changed := dropForeignSentences(textOf(draft["closing"]), banned); changed {
+		draft["closing"] = text
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text, changed := dropForeignSentences(textOf(item), banned)
+			if changed && strings.TrimSpace(text) == "" {
+				continue
+			}
+			if changed {
+				paras = append(paras, text)
+				continue
+			}
+			paras = append(paras, item)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
+func dropForeignSentences(text string, titles []string) (string, bool) {
+	if strings.TrimSpace(text) == "" {
+		return text, false
+	}
+	changed := false
+	var kept []string
+	for _, sentence := range splitSentences(text) {
+		foreign := false
+		for _, title := range titles {
+			if SharesNGram(sentence, title, 8) {
+				foreign = true
+				break
+			}
+		}
+		if foreign {
+			changed = true
+			continue
+		}
+		kept = append(kept, sentence)
+	}
+	if !changed {
+		return text, false
+	}
+	return strings.Join(kept, ""), true
 }
 
 func containsAny(text string, words ...string) bool {

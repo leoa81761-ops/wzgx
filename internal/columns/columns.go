@@ -97,6 +97,7 @@ func preset(direction, verticalKey string) []Column {
 
 // Topics are the only subtopics for an active column: its name plus the account theme.
 // Fixed pack lists such as 亲子阅读 are not included.
+// A positioning sentence longer than 16 runes is not used as a topic. Keywords are extracted from the full text instead.
 func Topics(name, positioning, direction, keywords string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -110,7 +111,13 @@ func Topics(name, positioning, direction, keywords string) []string {
 		out = append(out, text)
 	}
 	add(name)
-	add(positioning)
+	pos := strings.TrimSpace(positioning)
+	if n := utf8.RuneCountInString(pos); n >= 2 && n <= 16 && !strings.ContainsAny(pos, "，。；、！？") {
+		add(pos)
+	}
+	for _, word := range positioningKeywords(pos) {
+		add(word)
+	}
 	add(direction)
 	for _, word := range splitNames(keywords) {
 		add(word)
@@ -121,6 +128,44 @@ func Topics(name, positioning, direction, keywords string) []string {
 			runes = runes[:16]
 		}
 		out = append(out, string(runes))
+	}
+	return out
+}
+
+// positioningKeywords pulls 2-to-8 rune words out of a positioning sentence.
+func positioningKeywords(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	for _, stop := range []string{"一个", "这个", "可以", "不要", "以及", "或者", "我们", "读者", "自己", "什么", "怎么", "如何", "进行", "通过", "为了", "重点", "几条"} {
+		text = strings.ReplaceAll(text, stop, "\n")
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(text, func(r rune) bool {
+		switch r {
+		case '，', '。', '；', '、', '！', '？', ',', '.', ';', '\n', '的', '了', '和', '与', '把', '用', '在', '是', '将', '就', '都', '而', '要', '给', '让', '从', '对', '及':
+			return true
+		default:
+			return false
+		}
+	}) {
+		part = strings.TrimSpace(part)
+		n := utf8.RuneCountInString(part)
+		if n < 2 || seen[part] {
+			continue
+		}
+		if n > 6 {
+			runes := []rune(part)
+			part = string(runes[:4])
+			n = 4
+		}
+		if n < 2 || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
 	}
 	return out
 }

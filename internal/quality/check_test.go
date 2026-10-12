@@ -40,3 +40,68 @@ func TestArticleFixtures(t *testing.T) {
 		}
 	}
 }
+
+func TestColumnStructure(t *testing.T) {
+	news := Fixture{
+		Title: "本周布线", Paragraphs: []string{"2024年10月，综合布线验收有一条公开说明。[1]", "近日，另一条消息也写进了记录。[1]"},
+		Sources: 1, WordTarget: 20, Structure: "news-brief",
+	}
+	if failures := Check(news); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	broken := Fixture{
+		Title: "快报", Paragraphs: []string{"综合布线验收有一条说明。", "另一条消息没有日期。"},
+		Sources: 1, WordTarget: 10, Structure: "news-brief",
+	}
+	if !has(Check(broken), "structure") {
+		t.Fatal(Check(broken))
+	}
+	steps := Fixture{Title: "步骤", Paragraphs: []string{"先看现场。", "再核对编号。"}, Sources: 1, WordTarget: 10, Structure: "steps"}
+	if !has(Check(steps), "structure") {
+		t.Fatal(Check(steps))
+	}
+	faq := Fixture{Title: "问答", Paragraphs: []string{"验收要看什么。", "对照图纸。"}, Sources: 1, WordTarget: 10, Structure: "Q&A"}
+	if !has(Check(faq), "structure") {
+		t.Fatal(Check(faq))
+	}
+	draft := map[string]any{
+		"sources":  []any{map[string]any{"url": "https://www.gov.cn/a"}},
+		"sections": []any{map[string]any{"paragraphs": []any{"综合布线验收有一条说明。", "另一条消息没有日期。"}}},
+	}
+	fixed := RepairDraft("news-brief", draft)
+	var paras []string
+	section := fixed["sections"].([]any)[0].(map[string]any)
+	for _, item := range section["paragraphs"].([]any) {
+		paras = append(paras, item.(string))
+	}
+	if !StructureOK("news", paras) {
+		t.Fatal(paras)
+	}
+	stepDraft := RepairDraft("steps", map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"先看现场。", "再核对编号。"}}}})
+	stepSection := stepDraft["sections"].([]any)[0].(map[string]any)
+	var stepParas []string
+	for _, item := range stepSection["paragraphs"].([]any) {
+		stepParas = append(stepParas, item.(string))
+	}
+	if !StructureOK("steps", stepParas) {
+		t.Fatal(stepParas)
+	}
+	qaDraft := RepairDraft("qa", map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"验收要看什么", "对照图纸"}}}})
+	qaSection := qaDraft["sections"].([]any)[0].(map[string]any)
+	var qaParas []string
+	for _, item := range qaSection["paragraphs"].([]any) {
+		qaParas = append(qaParas, item.(string))
+	}
+	if !StructureOK("qa", qaParas) {
+		t.Fatal(qaParas)
+	}
+}
+
+func has(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}

@@ -2,8 +2,11 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,6 +34,40 @@ func TestMappedHTTPFieldsAndCache(t *testing.T) {
 	second, err := g.CompleteText(context.Background(), []Provider{provider}, messages, nil, false)
 	if err != nil || second.Content != "映射成功" || atomic.LoadInt32(&hits) != 1 {
 		t.Fatal(second, err, hits)
+	}
+}
+
+func TestConcurrentCacheDoesNotSwapCompletions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		msgs, _ := req["messages"].([]any)
+		last, _ := msgs[len(msgs)-1].(map[string]any)
+		text, _ := last["content"].(string)
+		time.Sleep(30 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + text + `"}}]}`))
+	}))
+	defer srv.Close()
+	g := NewGateway(false, srv.Client())
+	g.CacheTTL = time.Hour
+	provider := Provider{ID: 4, Name: "快", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast"}
+	var wg sync.WaitGroup
+	errCh := make(chan string, 2)
+	for _, text := range []string{"家庭账号的开头", "弱电账号的开头"} {
+		wg.Add(1)
+		go func(text string) {
+			defer wg.Done()
+			got, err := g.CompleteText(context.Background(), []Provider{provider}, []map[string]string{{"role": "user", "content": text}}, nil, false)
+			if err != nil || got.Content != text {
+				errCh <- text + " -> " + got.Content
+			}
+		}(text)
+	}
+	wg.Wait()
+	close(errCh)
+	for msg := range errCh {
+		t.Fatal(msg)
 	}
 }
 

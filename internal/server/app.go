@@ -66,6 +66,7 @@ func Open(cfg config.Settings) (*App, error) {
 	gateway.CacheTTL = 24 * time.Hour
 	gateway.ResearchTimeout = cfg.ResearchTimeout
 	gateway.ResearchBackupModel = cfg.ResearchBackupModel
+	gateway.BackupSearchURL = cfg.ResearchBackupSearch
 	app := &App{
 		Cfg: cfg, DB: database, Store: st, HTTP: client, Tokens: wechat.NewTokenCache(),
 		Cache: runtime.New(st, cfg), Gateway: gateway,
@@ -223,8 +224,10 @@ func (a *App) seed(ctx context.Context) error {
 			}
 			now := time.Now().UTC()
 			user := &model.User{Email: a.Cfg.AdminEmail, PasswordHash: hash, Tier: "lifetime", TierStartedAt: &now, IsAdmin: true, IsActive: true, CreatedAt: now}
-			return a.Store.InsertUser(ctx, tx, user)
+			if err := a.Store.InsertUser(ctx, tx, user); err != nil {
+				return err
+			}
 		}
-		return nil
+		return a.Store.BackfillSuggestedColumns(ctx, tx, time.Now().UTC())
 	})
 }

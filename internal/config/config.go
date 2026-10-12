@@ -60,6 +60,7 @@ type Settings struct {
 	PackArticles            int
 	ResearchTimeout         time.Duration
 	ResearchBackupModel     string
+	ResearchBackupSearch    string
 	SMSProvider             string
 	SMSAccessKey            string
 	SMSAccessSecret         string
@@ -161,7 +162,8 @@ func Load() Settings {
 		PricePack:               positiveOr("PAY_PRICE_PACK", 1900),
 		PackArticles:            positiveOr("PAY_PACK_ARTICLES", 10),
 		ResearchTimeout:         researchTimeout(),
-		ResearchBackupModel:     getenv("RESEARCH_BACKUP_MODEL", "grok-chat-fast"),
+		ResearchBackupModel:     getenv("RESEARCH_BACKUP_MODEL", "grok-4.7"),
+		ResearchBackupSearch:    getenv("RESEARCH_BACKUP_SEARCH", "https://html.duckduckgo.com/html/"),
 		SMSProvider:             strings.ToLower(strings.TrimSpace(os.Getenv("SMS_PROVIDER"))),
 		SMSAccessKey:            strings.TrimSpace(os.Getenv("SMS_ACCESS_KEY")),
 		SMSAccessSecret:         os.Getenv("SMS_ACCESS_SECRET"),
