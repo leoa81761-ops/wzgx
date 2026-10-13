@@ -1852,7 +1852,7 @@ func TestJudgeKeepsRelevantFactsOnly(t *testing.T) {
 		map[string]any{"index": float64(2), "score": float64(2), "facts": []any{"线槽先看清楚再放线"}},
 		map[string]any{"index": float64(3), "score": float64(1), "facts": []any{"茶"}},
 	}
-	kept, dropped := applyJudgeScores(sources, items)
+	kept, dropped := applyJudgeScores(sources, items, "")
 	if len(kept) != 2 {
 		t.Fatal(kept, dropped)
 	}
@@ -1870,7 +1870,7 @@ func TestJudgeKeepsRelevantFactsOnly(t *testing.T) {
 	gateway := llm.NewGateway(true, nil)
 	judged, extra, _ := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: "mock://", Model: "grok-chat-fast",
-	}}, "弱电智能化 综合布线验收", sources)
+	}}, "弱电智能化 综合布线验收", "综合布线验收", sources)
 	seen := map[string]bool{}
 	for _, row := range judged {
 		seen[str(row["url"])] = true
@@ -2298,7 +2298,7 @@ func TestJudgeRetriesOnceOnAnotherModel(t *testing.T) {
 	sources := []map[string]any{{"title": "综合布线验收说明", "snippet": "施工前要核对材料清单", "url": "https://www.mohurd.gov.cn/a"}}
 	judged, extra, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
-	}}, "综合布线验收", sources)
+	}}, "综合布线验收", "综合布线验收", sources)
 	if len(models) != 2 || models[0] != "grok-chat-fast" || models[1] != "grok-4.20-0309-non-reasoning" {
 		t.Fatal(models)
 	}
@@ -2333,7 +2333,7 @@ func TestJudgeFallsBackToRanking(t *testing.T) {
 	}
 	judged, _, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
-	}}, "综合布线验收", sources)
+	}}, "综合布线验收", "综合布线验收", sources)
 	if len(models) != 2 || models[0] != "grok-chat-fast" || models[1] != "grok-4.20-0309-non-reasoning" {
 		t.Fatal(models)
 	}
@@ -2367,7 +2367,7 @@ func TestJudgeUsesFencedRatingsWithoutRetry(t *testing.T) {
 	sources := []map[string]any{{"title": "", "snippet": "施工前要核对材料清单", "url": "https://www.example.com/no-title"}}
 	judged, extra, _ := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
-	}}, "综合布线验收", sources)
+	}}, "综合布线验收", "综合布线验收", sources)
 	if calls != 1 || len(judged) != 1 || str(judged[0]["url"]) != "https://www.example.com/no-title" {
 		t.Fatal(calls, judged, extra)
 	}
@@ -2415,7 +2415,7 @@ func TestJudgeBatchesAtMostEight(t *testing.T) {
 	}
 	judged, _, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
-	}}, "综合布线验收", sources)
+	}}, "综合布线验收", "综合布线验收", sources)
 	if calls != 2 || len(judged) != 6 {
 		t.Fatal(calls, len(judged))
 	}
@@ -2438,14 +2438,14 @@ func TestJudgeDropsInflatedJunk(t *testing.T) {
 		map[string]any{"index": 3, "score": 3, "page_type": "dictionary", "on_topic": true, "snippet": "这个词的例句在这里", "facts": []any{"这个词的例句在这里"}},
 		map[string]any{"index": 4, "score": 3, "page_type": "job", "on_topic": false, "snippet": "这个职位月薪面议欢迎投递", "facts": []any{"这个职位月薪面议欢迎投递"}},
 	}
-	kept, dropped := applyJudgeScores(sources, items)
+	kept, dropped := applyJudgeScores(sources, items, "综合布线验收")
 	if len(kept) != 1 || str(kept[0]["url"]) != "https://www.gov.cn/a" {
 		t.Fatal(kept, dropped)
 	}
 	miss := []map[string]any{{"title": "布线验收", "snippet": "施工前要核对材料清单", "url": "https://www.gov.cn/a", "fetched_text": "页面里没有这句原话"}}
 	kept, dropped = applyJudgeScores(miss, []any{
 		map[string]any{"index": 1, "score": 3, "page_type": "official", "on_topic": true, "snippet": "施工前要核对材料清单"},
-	})
+	}, "布线验收")
 	if len(kept) != 0 || dropped[0]["reason"] != "原句对不上" {
 		t.Fatal(kept, dropped)
 	}

@@ -122,6 +122,7 @@ type Built struct {
 	NoFacts        bool
 	OffStructure   bool
 	NoDatedNews    bool
+	Thin           bool
 	Searched       bool
 }
 
@@ -707,7 +708,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		content.AnnotateAccess(ctx, deps.HTTP, built.Draft)
 	}
 	var push pushed
-	if built.NoFacts || built.LengthShort || built.Uncited || built.OffStructure || built.NoDatedNews {
+	if built.NoFacts || built.LengthShort || built.Uncited || built.OffStructure || built.NoDatedNews || built.Thin {
 		note := ""
 		if built.NoFacts {
 			note = joinNote(note, "无参考来源，未写入公众号草稿。")
@@ -723,6 +724,9 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		}
 		if built.OffStructure {
 			note = joinNote(note, "栏目结构和正文对不上，未写入公众号草稿。")
+		}
+		if built.Thin {
+			note = joinNote(note, "经验分享缺少能照做的具体做法，未写入公众号草稿。")
 		}
 		push = pushed{
 			Status: "held", HTML: built.HTML, RiskLevel: draftRisk(w.Direction, built.Draft),
@@ -1547,7 +1551,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	imageStyle := ""
 	if usingColumn {
-		if picked.WordTarget > 0 {
+		if picked.WordTarget > w.WordTarget {
 			w.WordTarget = picked.WordTarget
 		}
 		imageStyle = strings.TrimSpace(picked.ImageStyle)
@@ -1738,7 +1742,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 				base["column_positioning"] = text
 			}
 			base["topic_title"] = clip(topic.Subtopic+"："+topic.Angle, 64)
-			if alt.WordTarget > 0 {
+			if alt.WordTarget > w.WordTarget {
 				w.WordTarget = alt.WordTarget
 				base["word_target"] = w.WordTarget
 			}
@@ -1955,9 +1959,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if usingColumn && columns.NormalizeStructure(picked.Structure) != "custom" {
 		offStructure = !quality.StructureOK(columns.NormalizeStructure(picked.Structure), draftParagraphs(draft))
 	}
-	if w.WordTarget > 0 {
-		lengthShort = content.BodyRunes(draft) < w.WordTarget*85/100
-	}
 	footnotes := []any{"请发布前审阅。"}
 	if text := footnoteDisclaimer(w.Pack); text != "" {
 		footnotes = append(footnotes, text)
@@ -2018,6 +2019,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			}
 		}
 	}
+	if w.WordTarget > 0 {
+		lengthShort = content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget)
+	}
+	thin := thinExperience(draft, experience, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
 		"stages": stageCharList(trace),
@@ -2027,7 +2032,18 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if err != nil {
 		return Built{Trace: trace, Topic: topic}, err
 	}
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Searched: searched}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Searched: searched}, nil
+}
+
+func thinExperience(draft map[string]any, experience bool, column string) bool {
+	if !experience || draft == nil {
+		return false
+	}
+	tips := editorial.ConcreteTips(draft)
+	if strings.Contains(column, "窍门") {
+		return tips < 5
+	}
+	return tips < 3 && editorial.FillerHeavy(draft)
 }
 
 func footnoteDisclaimer(pack store.VerticalPack) string {
@@ -2886,7 +2902,11 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		}
 	}
 	if len(sources) > 0 {
-		judged, extra, judgeCompletion := judgeAndKeep(ctx, gateway, providers, topic, sources)
+		title := strings.TrimSpace(str(payload["topic_title"]))
+		if title == "" {
+			title = topic
+		}
+		judged, extra, judgeCompletion := judgeAndKeep(ctx, gateway, providers, topic, title, sources)
 		dropped = append(dropped, extra...)
 		sources = judged
 		merged.PromptTokens += judgeCompletion.PromptTokens
@@ -3305,7 +3325,7 @@ const judgeRetryModel = "grok-4.20-0309-non-reasoning"
 
 const sourceFloor = 2
 
-func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic string, sources []map[string]any) ([]map[string]any, []map[string]any, llm.Completion) {
+func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic, title string, sources []map[string]any) ([]map[string]any, []map[string]any, llm.Completion) {
 	if len(sources) == 0 {
 		return nil, nil, llm.Completion{}
 	}
@@ -3337,7 +3357,7 @@ func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Pro
 		go func(i int) {
 			defer wg.Done()
 			offset := i * judgeBatchSize
-			items, raw, part := judgeBatch(ctx, gateway, providers, topic, batches[i].batch, offset)
+			items, raw, part := judgeBatch(ctx, gateway, providers, topic, title, batches[i].batch, offset)
 			batches[i].items = items
 			batches[i].raw = raw
 			batches[i].part = part
@@ -3361,7 +3381,7 @@ func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Pro
 			continue
 		}
 		judgedOK = true
-		batchKept, batchDropped := applyJudgeScores(result.batch, alignJudgeItems(offset, result.batch, result.items))
+		batchKept, batchDropped := applyJudgeScores(result.batch, alignJudgeItems(offset, result.batch, result.items), title)
 		for _, source := range batchKept {
 			source["_from_judge"] = true
 		}
@@ -3454,7 +3474,7 @@ func judgeProviders(providers []llm.Provider) []llm.Provider {
 	return []llm.Provider{next}
 }
 
-func judgeBatch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic string, batch []map[string]any, offset int) ([]any, string, llm.Completion) {
+func judgeBatch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic, title string, batch []map[string]any, offset int) ([]any, string, llm.Completion) {
 	candidates := make([]any, 0, len(batch))
 	for i, source := range batch {
 		title := strings.TrimSpace(str(source["title"]))
@@ -3467,7 +3487,7 @@ func judgeBatch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provi
 		}
 		candidates = append(candidates, row)
 	}
-	payload := map[string]any{"topic": topic, "candidates": candidates}
+	payload := map[string]any{"topic": topic, "article_title": title, "candidates": candidates}
 	messages := llm.StageMessages("来源判断", payload)
 	schema := llm.StageSchema("来源判断")
 	used := judgeProviders(providers)
@@ -4039,13 +4059,15 @@ func genericPhrase(text string) bool {
 	}
 }
 
-func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]any, dropped []map[string]any) {
+func applyJudgeScores(sources []map[string]any, items []any, title string) (kept []map[string]any, dropped []map[string]any) {
 	type rating struct {
 		score    int
 		facts    []any
 		pageType string
 		onTopic  bool
 		hasTopic bool
+		exact    bool
+		hasExact bool
 		snippet  string
 		strict   bool
 	}
@@ -4081,10 +4103,12 @@ func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]
 		_, hasType := item["page_type"]
 		_, hasTopic := item["on_topic"]
 		_, hasSnippet := item["snippet"]
+		_, hasExact := item["exact_topic"]
 		byIndex[index] = rating{
 			score: score, facts: facts,
 			pageType: normalizePageType(item["page_type"]),
 			onTopic:  onTopicValue(item["on_topic"]), hasTopic: hasTopic,
+			exact: onTopicValue(item["exact_topic"]), hasExact: hasExact,
 			snippet: strings.TrimSpace(str(item["snippet"])),
 			strict:  hasType || hasTopic || hasSnippet,
 		}
@@ -4106,7 +4130,7 @@ func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]
 			continue
 		}
 		if rate.strict {
-			reason := judgeKeepReason(source, rate.pageType, rate.onTopic, rate.hasTopic, rate.snippet)
+			reason := judgeKeepReason(source, title, rate.pageType, rate.onTopic, rate.hasTopic, rate.exact, rate.hasExact, rate.snippet)
 			if reason != "" {
 				dropped = append(dropped, map[string]any{
 					"url": str(source["url"]), "title": str(source["title"]), "score": rate.score, "reason": reason,
@@ -4147,7 +4171,7 @@ func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]
 	return kept, dropped
 }
 
-func judgeKeepReason(source map[string]any, pageType string, onTopic, hasTopic bool, snippet string) string {
+func judgeKeepReason(source map[string]any, title, pageType string, onTopic, hasTopic, exact, hasExact bool, snippet string) string {
 	if !allowedPageType(pageType) {
 		return "页面类型不符"
 	}
@@ -4164,7 +4188,49 @@ func judgeKeepReason(source map[string]any, pageType string, onTopic, hasTopic b
 	if !snippetIn(snippet, page) {
 		return "原句对不上"
 	}
+	if hasExact && !exact {
+		return "和标题对不上"
+	}
+	if strings.TrimSpace(title) != "" && !sharesTitleTerm(title, source) {
+		return "和标题对不上"
+	}
 	return ""
+}
+
+// sharesTitleTerm requires a distinctive term from the article title in the source title or snippet.
+// The same ministry, the same host, or a shared word such as 规范 does not count.
+func sharesTitleTerm(title string, source map[string]any) bool {
+	terms := distinctiveTitleTerms(title)
+	if len(terms) == 0 {
+		return true
+	}
+	blob := str(source["title"]) + str(source["snippet"]) + str(source["note"])
+	for _, term := range terms {
+		if strings.Contains(blob, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func distinctiveTitleTerms(title string) []string {
+	var out []string
+	for _, term := range topicTerms(title) {
+		if genericTitleTerm(term) {
+			continue
+		}
+		out = append(out, term)
+	}
+	return out
+}
+
+func genericTitleTerm(text string) bool {
+	switch text {
+	case "标准", "规范", "工程", "项目", "国家", "住房", "城乡", "建设", "发布", "公告", "关于", "文件", "通知", "办法", "管理", "系统", "要求":
+		return true
+	default:
+		return false
+	}
 }
 
 func snippetIn(snippet, page string) bool {
@@ -4284,6 +4350,8 @@ func settleExperience(draft map[string]any, structure string, target int) map[st
 	draft = stripCiteMarks(draft)
 	draft = editorial.SoftenHealthClaims(draft)
 	draft = editorial.CapRepeatedPhrases(draft, 2)
+	draft = editorial.CapWordRepetition(draft, 4)
+	draft = editorial.StripFactNumbers(draft)
 	draft = editorial.LimitParagraphs(draft, 4)
 	draft = dedupeExperience(draft, target)
 	if columns.NormalizeStructure(structure) != "custom" {
@@ -4525,11 +4593,127 @@ func rewriteColumnStructure(ctx context.Context, gateway *llm.Gateway, providers
 		}
 		return draft, tokensOf(completion), trace, true
 	}
-	if content.BodyRunes(model)*2 < content.BodyRunes(draft) {
-		return draft, tokensOf(completion), trace, true
+	if !structureRewriteOK(draft, model) {
+		return draft, tokensOf(completion), trace, false
 	}
 	copySources(model, draft)
-	return model, tokensOf(completion), trace, false
+	return editorial.StripFactNumbers(model), tokensOf(completion), trace, false
+}
+
+// structureRewriteOK rejects a rewrite that drops more than 10% of the characters
+// or breaks a table, a list, or a 1..n numbering. The pre-structure draft stays.
+func structureRewriteOK(before, after map[string]any) bool {
+	if after == nil {
+		return false
+	}
+	prior := content.BodyRunes(before)
+	next := content.BodyRunes(after)
+	if prior > 0 && next*10 < prior*9 {
+		return false
+	}
+	bt, bc := markupCounts(before)
+	at, ac := markupCounts(after)
+	if at < bt || ac < bc {
+		return false
+	}
+	if listCount(after) < listCount(before) {
+		return false
+	}
+	return leadingNumbersContiguous(after)
+}
+
+func markupCounts(draft map[string]any) (tables, cells int) {
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		table, _ := section["table"].(map[string]any)
+		if table == nil {
+			continue
+		}
+		n := 0
+		for _, row := range asList(table["rows"]) {
+			switch cells := row.(type) {
+			case []any:
+				for _, cell := range cells {
+					if strings.TrimSpace(str(cell)) != "" {
+						n++
+					}
+				}
+			}
+		}
+		if n == 0 {
+			continue
+		}
+		tables++
+		cells += n
+	}
+	return tables, cells
+}
+
+func listCount(draft map[string]any) int {
+	n := 0
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		for _, item := range asList(section["list"]) {
+			if strings.TrimSpace(str(item)) != "" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func leadingNumbersContiguous(draft map[string]any) bool {
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		if !indexRunOK(asList(section["paragraphs"])) || !indexRunOK(asList(section["list"])) {
+			return false
+		}
+	}
+	return true
+}
+
+func indexRunOK(items []any) bool {
+	n := 0
+	for _, item := range items {
+		text := strings.TrimSpace(str(item))
+		got, ok := leadingFactIndex(text)
+		if !ok {
+			continue
+		}
+		n++
+		if got != n {
+			return false
+		}
+	}
+	return true
+}
+
+func leadingFactIndex(text string) (int, bool) {
+	runes := []rune(strings.TrimSpace(text))
+	i := 0
+	for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(runes) {
+		return 0, false
+	}
+	if runes[i] != '.' && runes[i] != '、' {
+		return 0, false
+	}
+	n := 0
+	for _, r := range runes[:i] {
+		n = n*10 + int(r-'0')
+	}
+	return n, n > 0
 }
 
 func draftParagraphs(draft map[string]any) []string {
@@ -4549,10 +4733,12 @@ func draftParagraphs(draft map[string]any) []string {
 }
 
 func polishDraft(draft map[string]any, w Input) map[string]any {
+	draft = editorial.StripFactNumbers(draft)
 	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
 	draft = editorial.DropOffTopicParagraphs(draft)
 	draft = editorial.StripEnglishLeaks(draft)
 	draft = editorial.CapRepeatedPhrases(draft, 2)
+	draft = editorial.CapWordRepetition(draft, 4)
 	draft = editorial.RepairNearDuplicates(draft)
 	draft = editorial.DedupeBlocks(draft)
 	draft = editorial.DedupeTables(draft)

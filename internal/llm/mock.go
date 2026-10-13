@@ -122,7 +122,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "来源判断":
 		system = "你是资料相关性判断。对照 topic，判断 candidates 里每一条能不能当这篇的来源。" +
 			"每条必须给出 page_type、on_topic、snippet 和 fact。page_type 只能是 news、official、standard、professional、forum、ad、novel、dictionary、job、ecommerce、other。professional 表示专业文章。" +
-			"只有 news、official、standard、professional 才可能保留。on_topic 表示是不是在讲这个选题本身，只沾到同一个词必须是 false。" +
+			"只有 news、official、standard、professional 才可能保留。on_topic 表示是不是在讲 article_title 这篇文章本身，不是同一个部委或同一个域名。只共享规范、标准、工程这类词必须是 false。" +
 			"snippet 必须是页面原文里连续出现的一句，用来支撑 fact，不要改写，不要编造。" +
 			"下面这些一律判成对应类型，而且 on_topic 为 false：TXT小说下载、章节全文、全文阅读是 novel；小说帖、同人、虚构故事是 novel；词典、百科、例句、造句是 dictionary；贷款、借钱、信用卡是 ad；招聘、职位、月薪是 job；豆瓣图书、书评是 other；手机或数码论坛帖是 forum。" +
 			"软件下载、系统镜像、影视剧、视频站和应用商店是 other，on_topic 为 false。index 必须使用候选里的 index，不要改序号。" +
@@ -206,6 +206,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			break
 		}
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
+			"不要删掉已有段落、列表和表格，不要把表格压成一段话，序号必须从 1 连续编到最后，不要把资料清单的编号抄进正文。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
 			"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
 			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +

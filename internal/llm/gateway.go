@@ -30,6 +30,9 @@ type Provider struct {
 	ExtraHeaders map[string]string
 	ExtraParams  map[string]any
 	Timeout      time.Duration
+	// FirstToken aborts a call that produces no bytes within this duration.
+	// Outline and polish on a reasoning model use it so a silent call does not wait out the 60s cap.
+	FirstToken time.Duration
 }
 
 type Completion struct {
@@ -148,6 +151,9 @@ const FastModel = "grok-chat-fast"
 
 // FallbackModel is the model used as soon as a call times out or the gateway returns 524.
 const FallbackModel = "grok-4.20-0309-non-reasoning"
+
+// firstTokenTimeout is how long outline and polish wait for the first byte on grok-4.7.
+const firstTokenTimeout = 20 * time.Second
 
 func boundTimeout(requested, provider time.Duration) time.Duration {
 	timeout := requested
@@ -295,6 +301,10 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 	if g.Mock || strings.HasPrefix(provider.BaseURL, "mock://") {
 		return mockComplete(provider, messages)
 	}
+	provider = routeStage(provider, messages)
+	if provider.FirstToken > 0 {
+		stream = true
+	}
 	cacheKey := ""
 	if g.CacheTTL > 0 && !stream {
 		cacheKey = completionKey(provider, messages)
@@ -371,6 +381,7 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 		if fastFallback(status, err) && !switched && !strings.EqualFold(strings.TrimSpace(provider.Model), FallbackModel) {
 			switched = true
 			provider.Model = FallbackModel
+			provider.FirstToken = 0
 			effort = ""
 			retriedIdle = true
 			pendingFallback = true
@@ -507,6 +518,25 @@ func requestEffort(provider Provider, messages []map[string]string) string {
 		return "low"
 	}
 	return effort
+}
+
+// routeStage keeps grok-4.7 for outline and polish, and starts every other writing
+// stage on the non-reasoning model so a 60s timeout is not spent before the fallback.
+// Models that are not reasoning models, including test fixtures named "writer", stay as configured.
+func routeStage(provider Provider, messages []map[string]string) Provider {
+	if !reasoningModel(provider.Model) {
+		return provider
+	}
+	switch stageFromMessages(messages) {
+	case "大纲", "结构润色":
+		if provider.FirstToken <= 0 {
+			provider.FirstToken = firstTokenTimeout
+		}
+	case "正文", "扩写", "审核", "标题", "缩写", "事实核对", "栏目结构", "意象改写", "套话改写", "开头比较", "标题比较", "禁忌改写":
+		provider.Model = FallbackModel
+		provider.FirstToken = 0
+	}
+	return provider
 }
 
 func stageFromMessages(messages []map[string]string) string {
@@ -654,7 +684,7 @@ func (g *Gateway) callOpenAI(ctx context.Context, provider Provider, messages []
 	body["stream"] = stream
 	applyEffort(body, effort)
 	applyChatSchema(body, schema)
-	raw, status, err := g.post(ctx, OpenAIURL(provider.BaseURL), openAIHeaders(provider), body)
+	raw, status, err := g.post(ctx, OpenAIURL(provider.BaseURL), openAIHeaders(provider), body, provider.FirstToken)
 	if err != nil {
 		return Completion{}, status, err
 	}
@@ -698,7 +728,7 @@ func (g *Gateway) callAnthropic(ctx context.Context, provider Provider, messages
 	if len(systemParts) > 0 {
 		body["system"] = strings.Join(systemParts, "\n")
 	}
-	raw, status, err := g.post(ctx, AnthropicURL(provider.BaseURL), anthropicHeaders(provider), body)
+	raw, status, err := g.post(ctx, AnthropicURL(provider.BaseURL), anthropicHeaders(provider), body, provider.FirstToken)
 	if err != nil {
 		return Completion{}, status, err
 	}
@@ -736,7 +766,7 @@ func (g *Gateway) callResponses(ctx context.Context, provider Provider, messages
 			}
 		}
 	}
-	raw, status, err := g.post(ctx, ResponsesURL(provider.BaseURL), openAIHeaders(provider), body)
+	raw, status, err := g.post(ctx, ResponsesURL(provider.BaseURL), openAIHeaders(provider), body, provider.FirstToken)
 	if err != nil {
 		return Completion{}, status, err
 	}
@@ -767,31 +797,122 @@ func anthropicHeaders(provider Provider) map[string]string {
 	return headers
 }
 
-func (g *Gateway) post(ctx context.Context, url string, headers map[string]string, body map[string]any) ([]byte, int, error) {
+func (g *Gateway) post(ctx context.Context, url string, headers map[string]string, body map[string]any, firstToken time.Duration) ([]byte, int, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, 0, &Error{Message: "网络错误：" + err.Error()}
+	}
+	if firstToken > 0 {
+		req.Close = true
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	resp, err := g.Client.Do(req)
+	started := time.Now()
+	resp, err := g.do(ctx, req, firstToken)
 	if err != nil {
-		return nil, 0, &Error{Message: "网络错误：" + err.Error()}
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	remain := time.Duration(0)
+	if firstToken > 0 {
+		remain = firstToken - time.Since(started)
+		if remain <= 0 {
+			return nil, resp.StatusCode, &Error{Message: "首字超时"}
+		}
+	}
+	data, err := readLimited(resp.Body, remain)
 	if err != nil {
-		return nil, resp.StatusCode, &Error{Message: "网络错误：" + err.Error()}
+		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode >= 400 {
 		return data, resp.StatusCode, &Error{Message: fmt.Sprintf("HTTP %d：%s", resp.StatusCode, clip(string(data), 300))}
 	}
 	return data, resp.StatusCode, nil
+}
+
+// do waits for response headers. A first-token limit covers that wait, because a silent
+// model often sends nothing at all until the call cap.
+func (g *Gateway) do(ctx context.Context, req *http.Request, firstToken time.Duration) (*http.Response, error) {
+	if firstToken <= 0 {
+		resp, err := g.Client.Do(req)
+		if err != nil {
+			return nil, &Error{Message: "网络错误：" + err.Error()}
+		}
+		return resp, nil
+	}
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := g.Client.Do(req)
+		done <- result{resp, err}
+	}()
+	timer := time.NewTimer(firstToken)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, &Error{Message: "首字超时"}
+	case res := <-done:
+		if res.err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if errors.Is(res.err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(res.err.Error()), "timeout") {
+				return nil, &Error{Message: "首字超时"}
+			}
+			return nil, &Error{Message: "网络错误：" + res.err.Error()}
+		}
+		return res.resp, nil
+	}
+}
+
+// readLimited returns the body. When firstToken is set, the first byte must arrive
+// within that window; a silent reasoning model then falls back instead of waiting out the call cap.
+func readLimited(body io.Reader, firstToken time.Duration) ([]byte, error) {
+	src := io.LimitReader(body, 4<<20)
+	if firstToken <= 0 {
+		data, err := io.ReadAll(src)
+		if err != nil {
+			return nil, &Error{Message: "网络错误：" + err.Error()}
+		}
+		return data, nil
+	}
+	buf := make([]byte, 1)
+	type chunk struct {
+		n   int
+		err error
+	}
+	done := make(chan chunk, 1)
+	go func() {
+		n, err := src.Read(buf)
+		done <- chunk{n, err}
+	}()
+	timer := time.NewTimer(firstToken)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil, &Error{Message: "首字超时"}
+	case part := <-done:
+		if part.n == 0 && part.err != nil {
+			return nil, &Error{Message: "网络错误：" + part.err.Error()}
+		}
+		rest, err := io.ReadAll(src)
+		if err != nil {
+			return nil, &Error{Message: "网络错误：" + err.Error()}
+		}
+		return append(buf[:part.n], rest...), nil
+	}
 }
 
 func readOpenAI(raw []byte) (string, int, int, error) {

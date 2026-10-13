@@ -20,7 +20,7 @@ func (g *Gateway) callMapped(ctx context.Context, provider Provider, messages []
 	delete(body, "response_completion_tokens")
 	body["model"] = provider.Model
 	body["messages"] = messages
-	raw, status, err := g.post(ctx, strings.TrimRight(provider.BaseURL, "/"), openAIHeaders(provider), body)
+	raw, status, err := g.post(ctx, strings.TrimRight(provider.BaseURL, "/"), openAIHeaders(provider), body, provider.FirstToken)
 	if err != nil {
 		return Completion{}, status, err
 	}
