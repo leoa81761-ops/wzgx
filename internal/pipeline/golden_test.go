@@ -147,7 +147,7 @@ func TestRoadStandardDoesNotCountForResidentialCabling(t *testing.T) {
 	kept, dropped = applyJudgeScores(same, []any{
 		map[string]any{"index": 1, "score": 3, "page_type": "professional", "on_topic": true, "exact_topic": false, "snippet": "住宅综合布线先核对信息点"},
 	}, title)
-	if len(kept) != 0 || dropped[0]["reason"] != "和标题对不上" {
+	if len(kept) != 1 || str(kept[0]["title"]) != "住宅综合布线设计说明" {
 		t.Fatal(kept, dropped)
 	}
 }

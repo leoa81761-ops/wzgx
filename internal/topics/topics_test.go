@@ -84,6 +84,10 @@ func TestFitTitleFollowsTheColumnAndDropsTheComparison(t *testing.T) {
 	if kept != "综合布线验收时检修口留在哪？" {
 		t.Fatal(kept)
 	}
+	leaked := FitTitle("动态速递", "工程圈快报", "用几条行业消息讲清和读者的关系", "news", "弱电 智能化")
+	if strings.Contains(leaked, "动态速递") || strings.Contains(leaked, "速递") || !strings.Contains(leaked, "综合布线") {
+		t.Fatal(leaked)
+	}
 	family := FitTitle("代理机构信息登记", "家长里短", "用家里的一件小事讲一个能照做的提醒", "custom", "家庭 家长里短")
 	if strings.Contains(family, "代理") || !strings.Contains(family, "家") || !strings.Contains(family, "把") {
 		t.Fatal(family)

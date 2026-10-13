@@ -24,11 +24,22 @@ func vagueQuantity(text string) bool {
 	return vagueQuantityRe.MatchString(text)
 }
 
+// vagueAsExperience keeps a quantity only when the writer is reporting what they saw.
+// A bare 一般 or 往往 in the same sentence does not make 两轮以内 an experience.
+func vagueAsExperience(text string) bool {
+	for _, word := range []string{"我见过", "我一般", "我通常", "大多", "大概", "大约"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
 // StripVagueQuantities drops an unsourced time or round limit.
 // A sentence that is the writer's own experience, or that already cites [n], stays.
 func StripVagueQuantities(draft map[string]any) map[string]any {
 	return dropMatchingSentences(draft, func(sentence string) bool {
-		if !vagueQuantity(sentence) || experientialStat(sentence) || strings.Contains(sentence, "[") {
+		if !vagueQuantity(sentence) || vagueAsExperience(sentence) || strings.Contains(sentence, "[") {
 			return false
 		}
 		return true
@@ -91,8 +102,47 @@ func dropMatchingSentences(draft map[string]any, drop func(string) bool) map[str
 		}
 		section["list"] = items
 		cleanQA(section, rewrite)
+		rewriteTable(section, rewrite)
 	}
 	return draft
+}
+
+func rewriteTable(section map[string]any, rewrite func(string) string) {
+	table, _ := section["table"].(map[string]any)
+	if table == nil || rewrite == nil {
+		return
+	}
+	var headers []any
+	for _, item := range anyList(table["headers"]) {
+		headers = append(headers, strings.TrimSpace(rewrite(textOf(item))))
+	}
+	if len(headers) > 0 {
+		table["headers"] = headers
+	}
+	var rows []any
+	for _, raw := range anyList(table["rows"]) {
+		cells, ok := rowCells(raw)
+		if !ok {
+			rows = append(rows, raw)
+			continue
+		}
+		line := make([]any, len(cells))
+		empty := true
+		for i, cell := range cells {
+			text := strings.TrimSpace(rewrite(textOf(cell)))
+			if text != "" {
+				empty = false
+			}
+			line[i] = text
+		}
+		if !empty {
+			rows = append(rows, line)
+		}
+	}
+	if rows == nil {
+		rows = []any{}
+	}
+	table["rows"] = rows
 }
 
 func cleanQA(section map[string]any, rewrite func(string) string) {
@@ -573,10 +623,150 @@ func cleanQuestion(text string) string {
 }
 
 func cleanAnswer(text string) string {
-	text = strings.TrimSpace(text)
+	text = stripOneAnswer(text)
 	text = strings.Trim(text, "：: \t")
 	if loneAnswer(text) || text == "" {
 		return ""
 	}
 	return text
+}
+
+func stripOneAnswer(text string) string {
+	text = strings.TrimSpace(text)
+	for strings.HasPrefix(text, "答") {
+		next := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(text, "答"), "：: \t"))
+		if next == text {
+			break
+		}
+		text = next
+	}
+	return text
+}
+
+// StripAnswerPrefixes removes a leading 「答：」 from every sentence that will be stored.
+func StripAnswerPrefixes(draft map[string]any) map[string]any {
+	return mapSentences(draft, stripOneAnswer)
+}
+
+func mapSentences(draft map[string]any, edit func(string) string) map[string]any {
+	if draft == nil || edit == nil {
+		return draft
+	}
+	rewrite := func(text string) string {
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			return edit(strings.TrimSpace(text))
+		}
+		var kept []string
+		for _, part := range parts {
+			if next := strings.TrimSpace(edit(part)); next != "" {
+				kept = append(kept, next)
+			}
+		}
+		return strings.Join(kept, "")
+	}
+	for _, key := range []string{"summary", "closing"} {
+		if text := textOf(draft[key]); text != "" {
+			draft[key] = rewrite(text)
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			if text := strings.TrimSpace(rewrite(textOf(item))); text != "" {
+				paras = append(paras, text)
+			}
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		var items []any
+		for _, item := range anyList(section["list"]) {
+			if text := strings.TrimSpace(rewrite(textOf(item))); text != "" {
+				items = append(items, text)
+			}
+		}
+		if items == nil {
+			items = []any{}
+		}
+		section["list"] = items
+		cleanQA(section, rewrite)
+		rewriteTable(section, rewrite)
+	}
+	return draft
+}
+
+var sceneStem = regexp.MustCompile(`(?:孙子|孙女|奶奶|爷爷|孩子|宝宝|爸爸|妈妈).{0,12}(?:端着|拿着|抱着|看着|喊着|跑来|走来|走过来)`)
+
+// OnceScene keeps one family-scene sentence. Later variants of 孙子端着 are dropped.
+func OnceScene(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	seen := false
+	return mapSentences(draft, func(sentence string) string {
+		if lengthPad(sentence) || !sceneStem.MatchString(sentence) {
+			return sentence
+		}
+		if seen {
+			return ""
+		}
+		seen = true
+		return sentence
+	})
+}
+
+// OutlineHits counts outline points that address the title's single subject.
+func OutlineHits(outline map[string]any, title string) int {
+	if outline == nil {
+		return 0
+	}
+	core := coreSubject(title)
+	if utf8.RuneCountInString(core) < 2 {
+		return 0
+	}
+	hit := 0
+	for _, item := range anyList(outline["points"]) {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		if pointAddresses(textOf(row["heading"])+textOf(row["intent"]), core) {
+			hit++
+		}
+	}
+	return hit
+}
+
+// OutlineMisses reports that the outline does not cover the title.
+// Zero hits is a miss. A title with no concrete subject is left alone.
+func OutlineMisses(outline map[string]any, title string) bool {
+	points := anyList(outline["points"])
+	if outline == nil || len(points) < 2 {
+		return false
+	}
+	if utf8.RuneCountInString(coreSubject(title)) < 2 {
+		return false
+	}
+	hit := OutlineHits(outline, title)
+	if hit == 0 {
+		return true
+	}
+	return hit*5 < len(points)*3
+}
+
+func pointAddresses(text, core string) bool {
+	if strings.Contains(text, core) {
+		return true
+	}
+	runes := []rune(core)
+	if len(runes) < 2 {
+		return false
+	}
+	prefix := string(runes[:2])
+	if prefixStop(prefix) {
+		return false
+	}
+	return strings.Contains(text, prefix)
 }
