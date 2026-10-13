@@ -81,6 +81,15 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 	if !strings.Contains(qa, "<strong>材料怎么算？</strong>") || !strings.Contains(qa, "按现场清单。") {
 		t.Fatal(qa)
 	}
+	structured := RenderHTML(map[string]any{
+		"sections": []any{map[string]any{
+			"qa":         []any{map[string]any{"question": "招标文件看哪一页？", "answer": "先看投标人须知。"}},
+			"paragraphs": []any{"答："},
+		}},
+	}, "simple", false, false)
+	if !strings.Contains(structured, "<strong>招标文件看哪一页？</strong>") || !strings.Contains(structured, "先看投标人须知。") || strings.Contains(structured, "答：") {
+		t.Fatal(structured)
+	}
 	if DisplayURL("a.b.c") != "a点b点c" {
 		t.Fatal(DisplayURL("a.b.c"))
 	}

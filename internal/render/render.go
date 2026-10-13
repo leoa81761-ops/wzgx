@@ -114,6 +114,7 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 		if heading := strings.TrimSpace(asString(section["heading"])); heading != "" {
 			parts = append(parts, `<h2 style="`+theme["h2"]+`">`+html.EscapeString(heading)+`</h2>`)
 		}
+		parts = append(parts, renderQA(theme, section["qa"])...)
 		parts = append(parts, renderParagraphs(theme, section["paragraphs"])...)
 		var items []string
 		for _, item := range asList(section["list"]) {
@@ -275,6 +276,9 @@ func renderParagraphs(theme map[string]string, raw any) []string {
 	var parts []string
 	for i := 0; i < len(texts); i++ {
 		text := texts[i]
+		if loneAnswer(text) {
+			continue
+		}
 		if question, answer, ok := splitAnswer(text); ok {
 			parts = append(parts, boldLine(theme, question), paragraphLine(theme, answer))
 			continue
@@ -289,6 +293,29 @@ func renderParagraphs(theme map[string]string, raw any) []string {
 		parts = append(parts, paragraphLine(theme, text))
 	}
 	return parts
+}
+
+func renderQA(theme map[string]string, raw any) []string {
+	var parts []string
+	for _, item := range asList(raw) {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		question := strings.TrimSpace(asString(row["question"]))
+		answer := strings.TrimSpace(asString(row["answer"]))
+		if question == "" || answer == "" || loneAnswer(answer) {
+			continue
+		}
+		parts = append(parts, boldLine(theme, question), paragraphLine(theme, answer))
+	}
+	return parts
+}
+
+func loneAnswer(text string) bool {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "：: \t")
+	return text == "答"
 }
 
 func boldLine(theme map[string]string, text string) string {

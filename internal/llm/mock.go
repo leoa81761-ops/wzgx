@@ -22,10 +22,10 @@ const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据�
 const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
 const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。用这个账号自己的专业来写，遵守 direction、tone、signatures 和 persona_columns。" +
-	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。没有来源时不要写百分比、掉线率、版本号、以上、超过、一半以上、dB、米、倍，也不要写没有来源的数字比较，例如 15%、ONVIF 2.4、超过 3 dB、30 米、一半以上。数字只能写成亲历的范围，例如「我见过的项目里大多」。" +
+	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。没有来源时不要写百分比、掉线率、版本号、以上、超过、一半以上、dB、米、倍，也不要写没有来源的数字比较，例如 15%、ONVIF 2.4、超过 3 dB、30 米、一半以上。也不要写没有来源的含糊时限，例如「24小时内」「两轮以内」，除非写成自己的经验，例如「我见过的项目里大多两轮以内」。" +
 	"仍然要写具体：句子里要有数字、工具和场景，并用这个账号的口吻，技术号写现场，家庭号写家里的事。不要温馨、默契、从容这类暖场空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。文末来源会标成经验分享。" +
 	"如果已经有来源网址，不要标成经验分享，在用到该来源的句子后写 [n]。" +
-	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答先写 2 到 3 句开头，再至少五对，问句以问号结尾，答案用「答：」接上并且写成能照做的几句，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
+	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答先写 2 到 3 句开头，再至少五对，问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
 	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。不要写诊断、剂量、疗效或用药。"
 
 func lengthInstruction(stageLabel string, payload map[string]any) string {
@@ -34,11 +34,20 @@ func lengthInstruction(stageLabel string, payload map[string]any) string {
 			"section_heading 是这一节的小标题，sections 里只放这一节，heading 必须用 section_heading。" +
 			"section_intent 是这一节要写完的事。section_index 和 section_count 表示第几节、一共几节。" +
 			"这一节最多四段。section_target 是这一节的篇幅参考，写完 section_intent 就可以停，不要为了凑满预算重复同一句。" +
+			refillLine(payload) +
 			"字数统计小标题、段落、列表和表格单元格。不要把选题、栏目或题目嵌进「先打开……的检修口」这类套话。" +
-			"问答栏目这一节只写一对：问句以问号结尾，答案用「答：」接上。步骤栏目这一节的列表从 1 编到这一节的最后一项，不要用 section_index 当序号。表格放在 table 里，不要压成一段话。" +
+			"问答栏目这一节只写一对：问句放进 qa.question 并以问号结尾，答案放进 qa.answer，不要写成单独一行的「答：」。步骤栏目这一节的列表从 1 编到这一节的最后一项，不要用 section_index 当序号。表格放在 table 里，不要压成一段话。" +
 			"title 用 topic_title。只有最后一节写 closing，前面几节 closing 用空字符串。sources 保留已有来源，不要新造网址。"
 	}
 	return lengthRule
+}
+
+func refillLine(payload map[string]any) string {
+	text := strings.TrimSpace(asString(payload["refill"]))
+	if text == "" {
+		return ""
+	}
+	return text
 }
 
 func evidenceRule(payload map[string]any) string {
@@ -81,7 +90,7 @@ func columnRule(payload map[string]any) string {
 	case "steps", "step-by-step", "breakdown", "拆解":
 		b.WriteString("栏目是步骤：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。")
 	case "qa", "q&a", "faq", "问答":
-		b.WriteString("栏目是问答：开头先写 2 到 3 句场景，再至少五对。问句以问号结尾，答案用「答：」接在问号后面或单独成下一段，答案要写成能照做的几句；答案里不要再出现问号。")
+		b.WriteString("栏目是问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。")
 	}
 	return b.String()
 }
@@ -109,7 +118,7 @@ func voiceRule(payload map[string]any) string {
 	name := asString(payload["account_name"])
 	tone := asString(payload["tone"])
 	if strings.Contains(name+tone+asString(payload["direction"]), "奶奶") {
-		b.WriteString("这个号用奶奶的口气。只讲 reader_pain 这一件家里的事。亲历和口头禅全文最多两次，不要每一节都用「我在家见过」开头，也不要每一节都写成同一件回忆。不要换成通用教程，也不要换到另一件家务。")
+		b.WriteString("这个号用奶奶的口气。只讲 subtopic 和标题里的那一件事。具体细节必须来自题目本身，不要另编一个题目里没有的场景，也不要把同一个细节写进每一节。亲历和口头禅全文最多两次，不要每一节都用「我在家见过」开头。")
 	} else if strings.TrimSpace(tone) != "" || strings.TrimSpace(asString(payload["signatures"])) != "" {
 		b.WriteString("用 tone、signatures 和 account_name 里这个号自己的口气写，不要换成别的号的说法。")
 	}
@@ -208,7 +217,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if asString(payload["writing_mode"]) == "experience" {
 			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按这个账号的 direction、tone、signatures 和栏目结构重写成一篇完整稿。" +
 				"不要写外部机构、标准、新闻或网址，不要使用 [n]。现场的数量、工具和场景要写具体，不要用温馨、默契这类空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。" +
-				"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段，答案要写成能照做的几句；答案里不要再出现问号。问答必须相邻。" +
+				"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。" +
 				"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 				"news 或快报：没有可核对的新闻时不要编造日期和 [n]，按栏目定位写成经验分享。" +
 				"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。" +
@@ -219,7 +228,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
 			"不要删掉已有段落、列表和表格，不要把表格压成一段话，不要增加大纲里没有的步骤。每一节里的序号从 1 编到这一节的最后一项，不要接着上一节，也不要用第几节当序号。只改每个区块里的句子，表格和列表的结构保持原样。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
-			"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段，答案要写成能照做的几句；答案里不要再出现问号。问答必须相邻。" +
+			"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。" +
 			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 			"不要在句首机械地加「近日」，不要补空泛的「答：」，不要给没有来源的句子加 [1]。" +
 			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule + markerRule +
@@ -266,7 +275,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "选题" {
 			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。" +
-				"题目必须同时用上 column_positioning、tone、signatures 和 reader_pain。reader_pain 是这篇唯一的读者麻烦，不要换成「先看失败点」这种每个号都能套的空角度。" +
+				"题目必须同时用上 column_positioning、tone 和 signatures。具体细节必须来自 subtopic 本身，不要另编一个题目里没有的场景，也不要换成「先看失败点」这种每个号都能套的空角度。" +
 				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。题目要具体到对象和问题，例如「综合布线六类线测试失败常见原因」，不要写成「施工坑点：更稳妥的做法」这种栏目名加空角度。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。奶奶号只写这一件家务。"
 		}
 		if stageLabel == "大纲" {
@@ -292,8 +301,8 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	}
 	raw, _ := json.Marshal(body)
 	return []map[string]string{
-		{"role": "system", "content": system},
-		{"role": "user", "content": string(raw)},
+		{"role": "system", "content": "【编辑要求】\n" + system + "\n【编辑要求结束】"},
+		{"role": "user", "content": "【稿件数据】\n" + string(raw) + "\n【稿件数据结束】"},
 	}
 }
 
@@ -794,7 +803,7 @@ func userPayload(messages []map[string]string) map[string]any {
 			continue
 		}
 		var data map[string]any
-		if json.Unmarshal([]byte(messages[i]["content"]), &data) != nil || data == nil {
+		if json.Unmarshal([]byte(PayloadText(messages[i]["content"])), &data) != nil || data == nil {
 			return map[string]any{}
 		}
 		return data

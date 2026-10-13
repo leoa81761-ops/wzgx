@@ -128,6 +128,9 @@ type Built struct {
 	Repeated       bool
 	InventedStats  bool
 	Broken         bool
+	Stub           bool
+	OffTitle       bool
+	Leaked         bool
 	Searched       bool
 	OwnSearch      bool
 	TavilyNotice   string
@@ -1533,7 +1536,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		}
 		styleHint += w.PromptExtra
 	}
-	pain := topics.ReaderPain(topic.Column, picked.Positioning, picked.Structure, accountTheme(w, picked, topic)+" "+w.AccountName, w.Tone, w.Signatures, w.AccountName)
+	pain := accountPain(topic, picked, w)
 	if topics.GenericAngle(topic.Angle) {
 		topic.Angle = pain
 	}
@@ -1593,7 +1596,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	noteProgress(ctx, "topic", nil, topic, trace, tokens)
 	topicCtx, topicCancel := stageContext(ctx, budgetCall)
-	topicData, completion, err := gateway.CompleteJSON(topicCtx, llm.PreferFast(providers["topic"]), llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
+	topicData, completion, err := completeTopic(topicCtx, gateway, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
 	topicCancel()
 	if err != nil {
 		return fail(trace, "topic", completion, err)
@@ -1610,7 +1613,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		retryPayload["rejected_title"] = topicTitle
 		retryPayload["avoid_topics"] = topicMemoryLines
 		retryCtx, retryCancel := stageContext(ctx, budgetCall)
-		retried, retryCompletion, retryErr := gateway.CompleteJSON(retryCtx, llm.PreferFast(providers["topic"]), llm.StageMessages("选题", retryPayload), llm.StageSchema("选题"), validateTopic)
+		retried, retryCompletion, retryErr := completeTopic(retryCtx, gateway, providers["topic"], llm.StageMessages("选题", retryPayload), llm.StageSchema("选题"), validateTopic)
 		retryCancel()
 		tokens += retryCompletion.PromptTokens + retryCompletion.CompletionTokens
 		trace = append(trace, traceRows("topic", retryCompletion)...)
@@ -1716,7 +1719,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 				topic.Subtopic = subs[0]
 			}
 			topic = topics.Diverge(topic, subs, topics.AnglesFor(alt.Name, alt.Positioning, alt.Structure, topic.Angle), topicMemory(w.History, w.RecentTitles, w.RecentTopics))
-			pain = topics.ReaderPain(topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic)+" "+w.AccountName, w.Tone, w.Signatures, w.AccountName)
+			pain = accountPain(topic, alt, w)
 			if topics.GenericAngle(topic.Angle) {
 				topic.Angle = pain
 			}
@@ -1944,6 +1947,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.MaterializeMarkup(draft, outlineHeadings(base))
 	draft = editorial.RepairStructure(draft)
 	draft = keepBody(draft, assembled)
+	beforeRunes := content.BodyRunes(draft)
+	beforeSections := editorial.SubstantiveSections(draft)
+	repeatedBefore := editorial.MostlyRepeated(draft)
 	if experience && !sourcedPiece {
 		rewritten, rewriteTokens, rewriteTrace := rewriteInventedSentences(ctx, gateway, providers["draft"], draft)
 		draft = rewritten
@@ -1962,8 +1968,31 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.StayOnTitle(draft)
 	draft = editorial.StripHeadingPrefixes(draft)
 	draft = editorial.EnsureOpening(draft)
+	draft = editorial.DedupeSentences(draft)
+	draft = editorial.StripVagueQuantities(draft)
+	draft = editorial.StripPromptLeak(draft)
+	stub := false
+	if guttedArticle(beforeRunes, beforeSections, repeatedBefore, draft) {
+		refilled, refillTokens, refillTrace := refillGutted(ctx, gateway, providers["draft"], draftPayload, draft)
+		draft = refilled
+		tokens += refillTokens
+		trace = append(trace, refillTrace...)
+		if experience && !sourcedPiece {
+			draft = editorial.StripInventedStats(draft)
+			inventedStats = editorial.HardStat(draft)
+		}
+		draft = editorial.StripVagueQuantities(draft)
+		draft = editorial.StripPromptLeak(draft)
+		draft = editorial.DedupeSentences(draft)
+		if editorial.BelowFloor(draft) {
+			stub = true
+		}
+	}
+	draft = editorial.MaterializeQA(draft)
 	broken := editorial.BrokenGrammar(draft)
 	repeated := editorial.RepeatedBody(draft)
+	offTitle := editorial.OffTitle(draft)
+	leaked := editorial.PromptLeak(draft)
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
@@ -1975,7 +2004,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	html = editorial.RepairMarkup(html)
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, InventedStats: inventedStats, Broken: broken, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, InventedStats: inventedStats, Broken: broken, Stub: stub, OffTitle: offTitle, Leaked: leaked, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
 }
 
 // rewriteInventedSentences asks for a whole-sentence replacement of a figure that has no source.
@@ -2055,6 +2084,15 @@ func heldDelivery(built Built) (bool, string) {
 	}
 	if built.Broken {
 		note = joinNote(note, "正文有断句或空缺，未写入公众号草稿。")
+	}
+	if built.Stub {
+		note = joinNote(note, "正文被删得太短，未写入公众号草稿。")
+	}
+	if built.OffTitle {
+		note = joinNote(note, "正文大部分小节没有写标题里的那件事，未写入公众号草稿。")
+	}
+	if built.Leaked {
+		note = joinNote(note, "正文里夹进了编辑说明，未写入公众号草稿。")
 	}
 	return note != "", note
 }
@@ -5774,7 +5812,16 @@ func sectionHasBody(section map[string]any) bool {
 		}
 	}
 	table, _ := section["table"].(map[string]any)
-	return table != nil && len(asList(table["rows"])) > 0
+	if table != nil && len(asList(table["rows"])) > 0 {
+		return true
+	}
+	for _, item := range asList(section["qa"]) {
+		row, _ := item.(map[string]any)
+		if row != nil && strings.TrimSpace(str(row["answer"])) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func compactOutline(draft map[string]any) map[string]any {
@@ -6071,6 +6118,160 @@ func authFailed(err error) bool {
 	return strings.Contains(text, "40001") || strings.Contains(strings.ToLower(text), "invalid credential") || strings.Contains(text, "授权失效")
 }
 
+func accountPain(topic topics.Choice, picked columns.Column, w Input) string {
+	sub := strings.TrimSpace(topic.Subtopic)
+	if utf8.RuneCountInString(sub) >= 2 && !topics.GenericAngle(sub) {
+		return sub
+	}
+	return topics.ReaderPain(topic.Column, picked.Positioning, picked.Structure, accountTheme(w, picked, topic)+" "+w.AccountName, w.Tone, w.Signatures, w.AccountName)
+}
+
+// completeTopic calls the configured topic model, retries once on an empty or non-JSON reply, then uses the non-reasoning model.
+// A timeout already falls back inside that one call, so those errors are returned as they are.
+func completeTopic(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, messages []map[string]string, schema *llm.Schema, validate func(map[string]any) (map[string]any, error)) (map[string]any, llm.Completion, error) {
+	list := append([]llm.Provider{}, providers...)
+	var prior []map[string]any
+	var last llm.Completion
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		data, completion, err := gateway.CompleteJSON(ctx, list, messages, schema, validate)
+		completion.Attempts = append(prior, completion.Attempts...)
+		prior = completion.Attempts
+		last = completion
+		if err == nil {
+			return data, completion, nil
+		}
+		lastErr = err
+		if !topicOutputBad(err) {
+			return nil, completion, err
+		}
+	}
+	if len(list) == 0 || topicAlreadyFallback(list) {
+		return nil, last, lastErr
+	}
+	for i := range list {
+		list[i].Model = llm.FallbackModel
+		list[i].FirstToken = 0
+	}
+	data, completion, err := gateway.CompleteJSON(ctx, list, messages, schema, validate)
+	completion.Attempts = append(prior, completion.Attempts...)
+	return data, completion, err
+}
+
+func topicOutputBad(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "不是 JSON") || strings.Contains(msg, "选题缺少标题") || strings.Contains(msg, "没有返回文本")
+}
+
+func topicAlreadyFallback(list []llm.Provider) bool {
+	for _, provider := range list {
+		if provider.Model != llm.FallbackModel {
+			return false
+		}
+	}
+	return true
+}
+
+func guttedArticle(beforeRunes, beforeSections int, repeatedBefore bool, draft map[string]any) bool {
+	if repeatedBefore || draft == nil {
+		return false
+	}
+	afterRunes := content.BodyRunes(draft)
+	if afterRunes >= beforeRunes {
+		return false
+	}
+	// A short piece the model wrote that way is still delivered.
+	// Refill only when sentence drops took away the section count or the body of a full draft.
+	if beforeSections >= 3 && editorial.SubstantiveSections(draft) < 3 {
+		return true
+	}
+	return beforeRunes >= 600 && afterRunes < 600
+}
+
+func refillGutted(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any) (map[string]any, int, []map[string]any) {
+	if gateway == nil || len(providers) == 0 || draft == nil {
+		return draft, 0, nil
+	}
+	sections := outlineSections(payload)
+	out := draft
+	tokens := 0
+	var trace []map[string]any
+	for i, point := range sections {
+		heading := str(point["heading"])
+		if current := sectionByHeading(out, heading); current != nil && !editorial.Gutted(current) {
+			continue
+		}
+		req := cloneMap(payload)
+		req["section_index"] = i + 1
+		req["section_count"] = len(sections)
+		req["section_heading"] = heading
+		req["section_intent"] = str(point["intent"])
+		if n := intOf(point["word_budget"]); n > 0 {
+			req["section_target"] = n
+		}
+		req["section"] = point
+		req["refill"] = "这一节删掉没有来源的数字和断句之后空了。请用完整的句子重写这一节，把该写的做法写完。不要为了凑字数重复，也不要把删掉的数字补回来。"
+		callCtx, cancel := stageContext(ctx, budgetCall)
+		part, completion, err := gateway.CompleteJSON(callCtx, providers, llm.StageMessages("正文", req), llm.StageSchema("正文"), validateDraft)
+		cancel()
+		trace = append(trace, traceRows("refill", completion)...)
+		tokens += completion.PromptTokens + completion.CompletionTokens
+		if err != nil {
+			continue
+		}
+		picked := pickSection(part, heading, 0)
+		if picked == nil || !sectionHasBody(picked) {
+			continue
+		}
+		out = replaceSection(out, heading, i, picked)
+	}
+	return out, tokens, trace
+}
+
+func sectionByHeading(draft map[string]any, heading string) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		if heading == "" || strings.TrimSpace(str(section["heading"])) == heading {
+			return section
+		}
+	}
+	return nil
+}
+
+func replaceSection(draft map[string]any, heading string, index int, section map[string]any) map[string]any {
+	if draft == nil || section == nil {
+		return draft
+	}
+	if heading != "" {
+		section["heading"] = heading
+	}
+	slots := asList(draft["sections"])
+	for i, raw := range slots {
+		row, _ := raw.(map[string]any)
+		if row != nil && heading != "" && strings.TrimSpace(str(row["heading"])) == heading {
+			slots[i] = section
+			draft["sections"] = slots
+			return draft
+		}
+	}
+	if index >= 0 && index < len(slots) {
+		slots[index] = section
+	} else {
+		slots = append(slots, section)
+	}
+	draft["sections"] = slots
+	return draft
+}
+
 func validateTopic(data map[string]any) (map[string]any, error) {
 	title := strings.TrimSpace(str(data["title"]))
 	if title == "" {
@@ -6148,11 +6349,27 @@ func validateDraft(data map[string]any) (map[string]any, error) {
 				items = append(items, text)
 			}
 		}
+		var qa []any
+		for _, item := range asList(section["qa"]) {
+			row, _ := item.(map[string]any)
+			if row == nil || len(qa) >= 8 {
+				continue
+			}
+			question := strings.TrimSpace(str(row["question"]))
+			answer := strings.TrimSpace(str(row["answer"]))
+			if question == "" || answer == "" {
+				continue
+			}
+			qa = append(qa, map[string]any{"question": clip(question, 80), "answer": clip(answer, 400)})
+		}
 		heading := strings.TrimSpace(str(section["heading"]))
-		if heading == "" && len(paragraphs) == 0 {
+		if heading == "" && len(paragraphs) == 0 && len(items) == 0 && len(qa) == 0 {
 			continue
 		}
 		row := map[string]any{"heading": clip(heading, 40), "paragraphs": paragraphs, "list": items}
+		if len(qa) > 0 {
+			row["qa"] = qa
+		}
 		if table := normalizeTable(section["table"]); table != nil {
 			row["table"] = table
 		}

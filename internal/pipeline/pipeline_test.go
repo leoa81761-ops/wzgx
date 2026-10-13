@@ -1409,7 +1409,7 @@ func stageOf(req map[string]any) string {
 	last, _ := msgs[len(msgs)-1].(map[string]any)
 	content, _ := last["content"].(string)
 	var payload map[string]any
-	_ = json.Unmarshal([]byte(content), &payload)
+	_ = json.Unmarshal([]byte(llm.PayloadText(content)), &payload)
 	stage, _ := payload["环节"].(string)
 	return stage
 }
@@ -1476,7 +1476,7 @@ func writeSourceJudge(w http.ResponseWriter, req map[string]any) {
 	if len(msgs) > 0 {
 		last, _ := msgs[len(msgs)-1].(map[string]any)
 		content, _ := last["content"].(string)
-		_ = json.Unmarshal([]byte(content), &payload)
+		_ = json.Unmarshal([]byte(llm.PayloadText(content)), &payload)
 	}
 	var items []any
 	cands, _ := payload["candidates"].([]any)
@@ -2305,7 +2305,7 @@ func TestJudgeBatchesAtMostEight(t *testing.T) {
 		if len(msgs) > 0 {
 			last, _ := msgs[len(msgs)-1].(map[string]any)
 			content, _ := last["content"].(string)
-			_ = json.Unmarshal([]byte(content), &payload)
+			_ = json.Unmarshal([]byte(llm.PayloadText(content)), &payload)
 		}
 		cands, _ := payload["candidates"].([]any)
 		if len(cands) == 0 || len(cands) > 8 {

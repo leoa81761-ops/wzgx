@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/leoa81761-ops/wzgx/internal/llm"
 )
 
 func TestProbeAgainstFakeServers(t *testing.T) {
@@ -148,7 +150,7 @@ func stageOf(req map[string]any) string {
 	last, _ := msgs[len(msgs)-1].(map[string]any)
 	content, _ := last["content"].(string)
 	var payload map[string]any
-	_ = json.Unmarshal([]byte(content), &payload)
+	_ = json.Unmarshal([]byte(llm.PayloadText(content)), &payload)
 	stage, _ := payload["环节"].(string)
 	return stage
 }
