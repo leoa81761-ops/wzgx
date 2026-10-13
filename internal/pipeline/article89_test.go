@@ -241,7 +241,7 @@ func TestArticle90TopicTableAndSourceReasons(t *testing.T) {
 		t.Fatal(dropped)
 	}
 	var completion llm.Completion
-	stampSourceTrace(&completion, kept, dropped, false, 2, nil)
+	stampSourceTrace(&completion, kept, dropped, false, 2, nil, nil)
 	last := completion.Attempts[len(completion.Attempts)-1]
 	notes, _ := last["rejected"].([]string)
 	if len(notes) != 1 || !strings.Contains(notes[0], "小说下载") || !strings.Contains(notes[0], str(dropped[0]["reason"])) || !strings.Contains(notes[0], "https://www.example.com/novel") {

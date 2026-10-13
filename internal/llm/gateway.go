@@ -257,23 +257,19 @@ func (g *Gateway) CompleteFirst(ctx context.Context, providers []Provider, messa
 	return g.CompleteText(ctx, providers, messages, schema, true)
 }
 
-// CompleteResearch 单次调用不超过 60 秒。同一次调用里，40 秒内失败的 502、503 和连接错误会短暂停后再试，最多两次。
-// 超时或 524 立刻改用 grok-4.20-0309-non-reasoning。资料检索自己还会做一次更短的补救检索。
-// grok-chat-fast 和 non-reasoning 走流式。
+// CompleteResearch 单次调用不超过 20 秒。推理模型一开始就改用 grok-4.20-0309-non-reasoning。
+// 超时或 524 也立刻改用这个模型。同一次调用里，40 秒内失败的 502、503 和连接错误会短暂停后再试，最多两次。
+// 资料检索自己还会做一次更短的补救检索。grok-chat-fast 和 non-reasoning 走流式。
 func (g *Gateway) CompleteResearch(ctx context.Context, providers []Provider, messages []map[string]string) (Completion, error) {
 	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: g.researchTimeout(), attempts: 1, research: true})
 }
 
 func researchTransport(provider Provider, configured time.Duration) (bool, time.Duration) {
 	if configured <= 0 {
-		configured = 150 * time.Second
+		configured = 20 * time.Second
 	}
-	if configured > callTimeoutCap {
-		configured = callTimeoutCap
-	}
-	// grok-chat-fast was burning the whole 60s research budget and then failing.
-	// Give it 20s, then the timeout path falls back to the non-reasoning model.
-	if strings.Contains(strings.ToLower(provider.Model), "chat-fast") && configured > 20*time.Second {
+	// Every research call stops at 20s. A timeout then uses the non-reasoning model.
+	if configured > 20*time.Second {
 		configured = 20 * time.Second
 	}
 	return researchCanStream(provider), configured
@@ -289,9 +285,12 @@ func researchCanStream(provider Provider) bool {
 
 func (g *Gateway) researchTimeout() time.Duration {
 	if g != nil && g.ResearchTimeout > 0 {
+		if g.ResearchTimeout > 20*time.Second {
+			return 20 * time.Second
+		}
 		return g.ResearchTimeout
 	}
-	return 150 * time.Second
+	return 20 * time.Second
 }
 
 // CompleteText 按顺序调用供应商。stream 为 false 时请求体里写 stream:false。schema 为空时不附带 json_schema。
@@ -550,7 +549,7 @@ func requestEffort(provider Provider, messages []map[string]string) string {
 	return effort
 }
 
-// routeStage starts outline and polish on the non-reasoning model as well.
+// routeStage starts outline, polish, and research on the non-reasoning model.
 // grok-4.7 was spending the first-token budget before those stages produced a byte.
 // Models that are not reasoning models, including test fixtures named "writer", stay as configured.
 func routeStage(provider Provider, messages []map[string]string) Provider {
@@ -558,7 +557,7 @@ func routeStage(provider Provider, messages []map[string]string) Provider {
 		return provider
 	}
 	switch stageFromMessages(messages) {
-	case "大纲", "结构润色", "正文", "审核", "标题", "事实核对", "栏目结构", "意象改写", "套话改写", "开头比较", "标题比较", "禁忌改写", "选题判断", "检索词":
+	case "大纲", "结构润色", "正文", "审核", "标题", "事实核对", "栏目结构", "意象改写", "套话改写", "开头比较", "标题比较", "禁忌改写", "选题判断", "检索词", "资料检索":
 		provider.Model = FallbackModel
 		provider.FirstToken = 0
 	}

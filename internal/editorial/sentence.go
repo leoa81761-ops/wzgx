@@ -230,73 +230,10 @@ func ApplyRewrites(draft map[string]any, flagged []string, repl map[string]strin
 	return draft
 }
 
-// StayOnTitle drops a paragraph that switches to another subject the title does not name.
-// A paragraph that does not name a rival subject stays, so one detail is not copied into every section.
+// StayOnTitle drops a paragraph that shares no word with this article's title or topic.
+// When the title yields no words, or no paragraph matches, the draft is left as it is.
 func StayOnTitle(draft map[string]any) map[string]any {
-	if draft == nil {
-		return nil
-	}
-	title := textOf(draft["title"]) + textOf(draft["summary"])
-	type topic struct {
-		words []string
-	}
-	topics := []topic{
-		{[]string{"关节", "膝盖", "膝关节", "肩关节", "腰椎"}},
-		{[]string{"皮肤", "皱纹", "保湿", "面霜"}},
-		{[]string{"视力", "老花", "眼睛"}},
-		{[]string{"记忆", "记性", "健忘"}},
-		{[]string{"做饭", "炒菜", "灶台"}},
-		{[]string{"除尘", "灰尘"}},
-		{[]string{"绿植", "浇花", "花盆"}},
-		{[]string{"布线", "水晶头", "线槽"}},
-		{[]string{"监控", "摄像头"}},
-	}
-	var titled [][]string
-	for _, item := range topics {
-		if containsAny(title, item.words...) {
-			titled = append(titled, item.words)
-		}
-	}
-	if len(titled) == 0 {
-		return draft
-	}
-	onTitle := func(text string) bool {
-		for _, words := range titled {
-			if containsAny(text, words...) {
-				return true
-			}
-		}
-		return false
-	}
-	rival := func(text string) bool {
-		if onTitle(text) {
-			return false
-		}
-		for _, item := range topics {
-			if containsAny(title, item.words...) {
-				continue
-			}
-			if containsAny(text, item.words...) {
-				return true
-			}
-		}
-		return false
-	}
-	for _, section := range sectionsOf(draft) {
-		var paras []any
-		for _, item := range anyList(section["paragraphs"]) {
-			text := strings.TrimSpace(textOf(item))
-			if text == "" || rival(text) {
-				continue
-			}
-			paras = append(paras, text)
-		}
-		if paras == nil {
-			paras = []any{}
-		}
-		section["paragraphs"] = paras
-	}
-	return draft
+	return keepSubjectParagraphs(draft)
 }
 
 // EnsureOpening moves one prose paragraph out in front of the first heading.

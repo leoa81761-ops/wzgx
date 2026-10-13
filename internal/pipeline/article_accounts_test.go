@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/jobs"
@@ -287,6 +288,133 @@ func TestBothAccountsKeepTheirOwnTopic(t *testing.T) {
 	if strings.Count(weak.BodyHTML, "先看左上那一处") != 1 {
 		t.Fatal(weak.BodyHTML)
 	}
+}
+
+func TestJudgeShapesDoNotHoldAnEmptyTitle(t *testing.T) {
+	accounts := []struct {
+		name, direction string
+		seeds           []string
+	}{
+		{"弱电陈工", "弱电智能化", []string{"面板高度对不上", "信息点标签", "线槽盖板", "配线架端口", "弱电间记录"}},
+		{"奶奶不当家", "家庭日常", []string{"被子晒到窗台", "门口的拖鞋", "窗台的花", "晚饭前的碗", "灶台边的抹布"}},
+	}
+	type shape struct {
+		name  string
+		index int
+		body  func(titles []string) string
+	}
+	shapes := []shape{
+		{"index", 1, func(titles []string) string { return `{"winner":2}` }},
+		{"title", 2, func(titles []string) string { return `{"winner":"` + titles[2] + `"}` }},
+		{"json", 3, func(titles []string) string {
+			return `{"winner":{"title":"` + titles[3] + `"}}`
+		}},
+		{"twenty", 0, func(titles []string) string { return strings.Repeat("甲", 20) }},
+		{"thirty-six", 0, func(titles []string) string { return strings.Repeat("乙", 36) }},
+	}
+	n := 0
+	for _, account := range accounts {
+		for _, item := range shapes {
+			n++
+			titles := make([]string, len(account.seeds))
+			for i, seed := range account.seeds {
+				titles[i] = account.name + "：" + seed
+			}
+			body := item.body(titles)
+			if item.name == "twenty" && utf8.RuneCountInString(body) != 20 {
+				t.Fatal(utf8.RuneCountInString(body))
+			}
+			if item.name == "thirty-six" && utf8.RuneCountInString(body) != 36 {
+				t.Fatal(utf8.RuneCountInString(body))
+			}
+			var topicCalls int
+			var outlineTitle string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				var req map[string]any
+				_ = json.Unmarshal(raw, &req)
+				payload := payloadOf(req)
+				switch stageOf(req) {
+				case "选题":
+					topicCalls++
+					if _, ok := payload["recent_titles"]; !ok {
+						t.Errorf("选题缺少 recent_titles")
+					}
+					if _, ok := payload["avoid_topics"]; !ok {
+						t.Errorf("选题缺少 avoid_topics")
+					}
+					var cands []any
+					for _, title := range titles {
+						cands = append(cands, map[string]any{"title": title, "angle": title, "pain": title})
+					}
+					writeChoice(w, map[string]any{"title": titles[0], "angle": account.seeds[0], "candidates": cands})
+				case "选题判断":
+					writeRawContent(w, body)
+				case "大纲":
+					outlineTitle = str(payload["topic_title"])
+					writeChoice(w, map[string]any{"hook": "开头", "points": []any{
+						map[string]any{"heading": outlineTitle + "先看哪里", "intent": outlineTitle},
+						map[string]any{"heading": outlineTitle + "做完再收", "intent": outlineTitle},
+					}, "closing": "结束"})
+				case "正文":
+					heading := str(payload["section_heading"])
+					if heading == "" {
+						heading = outlineTitle
+					}
+					index := 0
+					switch num := payload["section_index"].(type) {
+					case float64:
+						index = int(num)
+					}
+					paragraph := "做完这一处再收。"
+					if index == 1 {
+						paragraph = "进场时先把要看的那一处摊开。"
+						if strings.Contains(account.name, "奶奶") {
+							paragraph = "起床后先把要收的一件摊开。"
+						}
+					}
+					writeChoice(w, map[string]any{
+						"title": outlineTitle, "summary": "摘要",
+						"sections": []any{map[string]any{
+							"heading": heading, "paragraphs": []any{paragraph}, "list": []any{},
+						}},
+						"closing": "结束", "sources": []any{},
+					})
+				case "标题":
+					writeChoice(w, map[string]any{"titles": []any{map[string]any{"title": outlineTitle}}})
+				default:
+					echoDraft(w, payload, map[string]any{
+						"title": outlineTitle, "summary": "摘要",
+						"sections": []any{map[string]any{"heading": outlineTitle, "paragraphs": []any{"做完这一处再收。"}, "list": []any{}}},
+						"closing":  "结束", "sources": []any{},
+					})
+				}
+			}))
+			email := "judge-" + strconv.Itoa(n) + "@example.com"
+			article := runAccountArticle(t, srv, email, account.name, account.direction)
+			srv.Close()
+			want := titles[item.index]
+			if topicCalls != 1 {
+				t.Fatalf("%s %s topic calls %d", account.name, item.name, topicCalls)
+			}
+			if outlineTitle == "" || outlineTitle != want {
+				t.Fatalf("%s %s outline %q want %q", account.name, item.name, outlineTitle, want)
+			}
+			if article.Title == "" || strings.Contains(article.DeliveryNote, "大纲没有覆盖标题") {
+				t.Fatalf("%s %s title %q note %q status %s", account.name, item.name, article.Title, article.DeliveryNote, article.Status)
+			}
+			if !strings.Contains(article.Title, account.seeds[item.index]) {
+				t.Fatalf("%s %s title %q", account.name, item.name, article.Title)
+			}
+		}
+	}
+}
+
+func writeRawContent(w http.ResponseWriter, content string) {
+	raw, _ := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"message": map[string]any{"content": content}}},
+	})
+	_, _ = w.Write(raw)
 }
 
 func runAccountArticle(t *testing.T, srv *httptest.Server, email, name, direction string) *model.Article {
