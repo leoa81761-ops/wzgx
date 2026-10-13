@@ -26,6 +26,19 @@ const experienceRule = "writing_mode 是 experience 且没有可引用的来源�
 	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少三对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
 	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。不要写诊断、剂量、疗效或用药。"
 
+func lengthInstruction(stageLabel string, payload map[string]any) string {
+	if stageLabel == "正文" && intOf(payload["section_target"]) > 0 {
+		return "这一次只写一个小节，不要写其他小节。" +
+			"section_heading 是这一节的小标题，sections 里只放这一节，heading 必须用 section_heading。" +
+			"section_intent 是这一节要写完的事。section_index 和 section_count 表示第几节、一共几节。" +
+			"这一节最多四段，把篇幅写进这些段落、列表和表格。字数统计小标题、段落、列表和表格单元格，要写到 section_target。整篇 word_target 由各节加起来达到，所以这一节请直接写满。" +
+			"用具体做法把字数写够。不要重复同一句，也不要把选题、栏目或题目嵌进「先打开……的检修口」这类套话。" +
+			"问答栏目这一节只写一对：问句以问号结尾，答案用「答：」接上。步骤栏目这一节只写这一步，序号用 section_index，例如「1. 」。" +
+			"title 用 topic_title。只有最后一节写 closing，前面几节 closing 用空字符串。sources 保留已有来源，不要新造网址。"
+	}
+	return lengthRule
+}
+
 func evidenceRule(payload map[string]any) string {
 	if asString(payload["writing_mode"]) == "experience" {
 		return experienceRule
@@ -256,7 +269,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。"
 		}
 		if stageLabel == "正文" || stageLabel == "审核" {
-			system += lengthRule + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
+			system += lengthInstruction(stageLabel, payload) + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。"
 		}
 		system += readerRule + motifRule(payload)
@@ -697,6 +710,14 @@ func draftFromPayload(payload map[string]any) map[string]any {
 	}
 	var sections []any
 	points, _ := outline["points"].([]any)
+	only := intOf(payload["section_index"])
+	if only > 0 {
+		if only-1 < len(points) {
+			points = []any{points[only-1]}
+		} else if heading := asString(payload["section_heading"]); heading != "" {
+			points = []any{map[string]any{"heading": heading, "intent": asString(payload["section_intent"]), "need_table": payload["need_table"]}}
+		}
+	}
 	leads := []string{
 		"验收以前先把现场条件核对齐。",
 		"午饭后只改一处措辞就发出。",
@@ -719,15 +740,19 @@ func draftFromPayload(payload map[string]any) map[string]any {
 		if point != nil && asString(point["heading"]) != "" {
 			heading = asString(point["heading"])
 		}
-		lead := leads[i%len(leads)]
-		if i == 0 {
+		slot := i
+		if only > 0 {
+			slot = only - 1
+		}
+		lead := leads[slot%len(leads)]
+		if slot == 0 {
 			lead += "语气是" + style + "。"
 		}
 		section := map[string]any{
 			"heading": heading,
 			"paragraphs": []any{
 				lead,
-				follows[i%len(follows)],
+				follows[slot%len(follows)],
 			},
 			"list": []any{"先做一个最小步骤", "做完后用一句话记下结果", "不追求一次到位", "语气是" + style},
 		}
@@ -743,11 +768,51 @@ func draftFromPayload(payload map[string]any) map[string]any {
 	if closing == "" {
 		closing = "今天先完成最小的一步。"
 	}
-	return map[string]any{
+	count := intOf(payload["section_count"])
+	if only > 0 && count > 0 && only < count {
+		closing = ""
+	}
+	draft := map[string]any{
 		"title": title, "alt_titles": []any{subtopic + "可以先做的一件小事", "关于" + subtopic + "，少做一件事"},
 		"summary":  "一篇关于" + direction + "／" + subtopic + "的短文，语气是" + style + "。",
 		"sections": sections, "closing": closing, "sources": []any{},
 	}
+	if need := intOf(payload["section_target"]); need > 0 {
+		draft = fillSection(draft, need, only*500)
+	}
+	return draft
+}
+
+// fillSection writes the section length into the four paragraphs a draft may keep.
+// Each addition is a different character, so the mock does not repeat a sentence.
+func fillSection(draft map[string]any, need, start int) map[string]any {
+	if draft == nil || need < 1 || content.BodyRunes(draft) >= need {
+		return draft
+	}
+	sections, _ := draft["sections"].([]any)
+	if len(sections) == 0 {
+		return draft
+	}
+	section, _ := sections[len(sections)-1].(map[string]any)
+	if section == nil {
+		return draft
+	}
+	paras, _ := section["paragraphs"].([]any)
+	for len(paras) < 4 {
+		paras = append(paras, "")
+	}
+	if len(paras) > 4 {
+		paras = paras[:4]
+	}
+	for i := 0; content.BodyRunes(draft) < need && i < 500; i++ {
+		at := i % len(paras)
+		text, _ := paras[at].(string)
+		paras[at] = text + padLine(start+i)
+		section["paragraphs"] = paras
+		sections[len(sections)-1] = section
+		draft["sections"] = sections
+	}
+	return draft
 }
 
 func cleanDraft(draft map[string]any) map[string]any {

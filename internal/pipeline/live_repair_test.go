@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/editorial"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
+	"github.com/leoa81761-ops/wzgx/internal/topics"
 )
 
 func TestSearchQueryUsesTopicEntities(t *testing.T) {
@@ -63,7 +65,7 @@ func TestExpandKeepsOriginalAndStopsWhenItDoesNotGrow(t *testing.T) {
 	}
 }
 
-func TestThinFactsUseTheColumnTemplate(t *testing.T) {
+func TestThinFactsAreHeldInsteadOfPadded(t *testing.T) {
 	var calls int
 	srv := expandServer(t, &calls, map[string]any{
 		"title": "短稿", "summary": "摘要",
@@ -79,21 +81,94 @@ func TestThinFactsUseTheColumnTemplate(t *testing.T) {
 	gw := llm.NewGateway(false, srv.Client())
 	out, _, _, still := fitBody(context.Background(), gw, []llm.Provider{{
 		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}, map[string]any{"word_target": 800, "writing_mode": "experience", "column_structure": "qa", "subtopic": "综合布线"}, draft, 800)
-	if calls != 0 || still {
+	}}, map[string]any{"word_target": 800, "writing_mode": "experience", "column_structure": "qa", "subtopic": "辟谣不吓人"}, draft, 800)
+	if calls == 0 || !still {
 		t.Fatalf("calls %d still %v runes %d", calls, still, content.BodyRunes(out))
 	}
 	blob := bodyPlain(out)
 	if !strings.Contains(blob, "只有一句现场记录。") {
 		t.Fatal(blob)
 	}
-	for _, heading := range []string{"一个现场案例", "可以照做的步骤", "容易踩的坑", "读者还会问"} {
-		if !strings.Contains(blob, heading) {
-			t.Fatal(heading, blob)
-		}
+	if strings.Contains(blob, "检修口") || strings.Contains(blob, "一个现场案例") || strings.Contains(blob, "读者还会问") {
+		t.Fatal(blob)
 	}
-	if content.BodyRunes(out) < 800*85/100 {
-		t.Fatal(content.BodyRunes(out))
+}
+
+func TestArticle73IsHeldBeforeTheDraftBox(t *testing.T) {
+	var lines []any
+	for i := 1; i <= 40; i++ {
+		lines = append(lines, "第"+itoa(i)+"处要先看什么？答：先打开辟谣不吓人的检修口，用螺丝把盖板固定住。")
+	}
+	draft := map[string]any{
+		"title":    "辟谣不吓人",
+		"sections": []any{map[string]any{"heading": "读者还会问", "paragraphs": lines, "list": []any{}}},
+		"closing":  "结束",
+	}
+	if !editorial.RepeatedBody(draft) {
+		t.Fatal("article 73")
+	}
+	held, note := heldDelivery(Built{Repeated: true})
+	if !held || !strings.Contains(note, "重复") || !strings.Contains(note, "未写入公众号草稿") {
+		t.Fatal(held, note)
+	}
+	if editorial.RepeatedBody(goldenSourcedDraft()) {
+		t.Fatal("golden draft")
+	}
+}
+
+func TestFirstDraftIsOneCallPerSection(t *testing.T) {
+	var calls int
+	var sum int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		msgs, _ := req["messages"].([]any)
+		system, _ := msgs[0].(map[string]any)
+		if !strings.Contains(str(system["content"]), "只写一个小节") {
+			t.Errorf("prompt %s", str(system["content"]))
+		}
+		last, _ := msgs[len(msgs)-1].(map[string]any)
+		var payload map[string]any
+		_ = json.Unmarshal([]byte(str(last["content"])), &payload)
+		if str(payload["环节"]) != "正文" {
+			t.Errorf("stage %s", str(payload["环节"]))
+		}
+		heading := str(payload["section_heading"])
+		target, _ := payload["section_target"].(float64)
+		sum += int(target)
+		calls++
+		writeChoice(w, map[string]any{
+			"title": "分节来写", "summary": "摘要",
+			"sections": []any{map[string]any{"heading": heading, "paragraphs": []any{"这一节专门写" + heading + "，把做法写具体。"}, "list": []any{}}},
+			"closing":  "结束", "sources": []any{},
+		})
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	payload := map[string]any{
+		"word_target": 800,
+		"topic_title": "分节来写",
+		"outline": map[string]any{"points": []any{
+			map[string]any{"heading": "先看清问题", "intent": "说明卡在哪里"},
+			map[string]any{"heading": "照着做", "intent": "写出步骤"},
+			map[string]any{"heading": "少踩一个坑", "intent": "提醒一处"},
+		}, "closing": "结束"},
+	}
+	out, _, _, _, err := writeSectionedDraft(context.Background(), gw, []llm.Provider{{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}, payload, topics.Choice{}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || sum != 800 {
+		t.Fatalf("calls %d target sum %d", calls, sum)
+	}
+	blob := bodyPlain(out)
+	for _, heading := range []string{"先看清问题", "照着做", "少踩一个坑"} {
+		if !strings.Contains(blob, heading) || !strings.Contains(blob, "这一节专门写"+heading) {
+			t.Fatal(blob)
+		}
 	}
 }
 

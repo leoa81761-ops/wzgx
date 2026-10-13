@@ -3,6 +3,7 @@ package editorial
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -593,6 +594,47 @@ func TestWordCapKeepsTheTitleWordAndIdenticalSentences(t *testing.T) {
 	capped := strings.Join(paragraphsOf(CapWordRepetition(filler, 4)), "")
 	if strings.Count(capped, "从容") > 4 {
 		t.Fatal(capped)
+	}
+}
+
+func TestArticle73RepeatedTemplateIsHeld(t *testing.T) {
+	var lines []any
+	for i := 1; i <= 40; i++ {
+		lines = append(lines, "第"+strconv.Itoa(i)+"处要先看什么？答：先打开辟谣不吓人的检修口，用螺丝把盖板固定住。")
+	}
+	draft := map[string]any{"sections": []any{map[string]any{"heading": "读者还会问", "paragraphs": lines}}}
+	if !RepeatedBody(draft) {
+		t.Fatal("article 73 must be held")
+	}
+	jammed := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"先打开辟谣不吓人的检修口，然后就收工。"}}}}
+	if !RepeatedBody(jammed) {
+		t.Fatal("a topic jammed into the template must be held")
+	}
+	var near []any
+	for i := 1; i <= 12; i++ {
+		near = append(near, "晚饭后把绘本放回第"+strconv.Itoa(i)+"格，再把椅子靠回桌边。")
+	}
+	if !RepeatedBody(map[string]any{"sections": []any{map[string]any{"paragraphs": near}}}) {
+		t.Fatal("near-duplicate sentences must be held")
+	}
+	twice := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{
+		"先把线槽盖板掀开，再核对编号。",
+		"先把线槽盖板掀开，再核对编号。",
+	}}}}
+	if RepeatedBody(twice) {
+		t.Fatal("twice is allowed")
+	}
+	pad := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{strings.Repeat("合适的正文。", 120)}}}}
+	if RepeatedBody(pad) {
+		t.Fatal("a short repeated sentence used as length padding is not article 73")
+	}
+	ordinary := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{
+		"进户先打开信息箱，把图纸摊开。",
+		"过线盒留在吊顶旁边，转弯不要挤死。",
+		"面板高度按开关那一排来。",
+	}}}}
+	if RepeatedBody(ordinary) {
+		t.Fatal(ordinary)
 	}
 }
 
