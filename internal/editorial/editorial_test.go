@@ -450,6 +450,88 @@ func TestLimitParagraphsSplitsLongStepsAndKeepsAnswers(t *testing.T) {
 	}
 }
 
+func TestRenumberCitationsFillsTheGap(t *testing.T) {
+	draft := map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"先看现场。[2]"}}},
+		"sources": []any{
+			map[string]any{"title": "没用上", "url": "https://www.example.com/a"},
+			map[string]any{"title": "布线说明", "url": "https://www.gov.cn/b"},
+		},
+	}
+	out := RenumberCitations(draft)
+	paras := paragraphsOf(out)
+	if len(paras) != 1 || !strings.Contains(paras[0], "[1]") || strings.Contains(paras[0], "[2]") {
+		t.Fatal(paras)
+	}
+	sources := out["sources"].([]any)
+	if len(sources) != 1 || sources[0].(map[string]any)["url"] != "https://www.gov.cn/b" {
+		t.Fatal(sources)
+	}
+}
+
+func TestSoftenHealthClaimsWithoutCitation(t *testing.T) {
+	draft := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{
+		"这个偏方可以治疗炎症。",
+		"剂量写在说明里。[1]",
+	}}}}
+	out := SoftenHealthClaims(draft)
+	paras := paragraphsOf(out)
+	joined := strings.Join(paras, "")
+	if strings.Contains(joined, "偏方") || strings.Contains(joined, "治疗") || !strings.Contains(joined, "生活习惯") {
+		t.Fatal(paras)
+	}
+	if !strings.Contains(joined, "剂量写在说明里。[1]") {
+		t.Fatal(paras)
+	}
+}
+
+func TestStripEnglishAndCapRepeats(t *testing.T) {
+	draft := map[string]any{
+		"title": "综合布线验收",
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"先用 HTTP 打开记录。This sentence should go. 再核对编号。",
+			"近日核对材料。",
+			"今天也要核对。",
+			"近日再看一遍现场编号是否一致。",
+			"近日最后再记一笔。",
+			"第一条写综合布线验收说明。",
+			"第二条也写综合布线验收说明。",
+			"第三条还是综合布线验收说明要补。",
+		}}},
+	}
+	out := StripEnglishLeaks(draft)
+	out = CapRepeatedPhrases(out, 2)
+	paras := paragraphsOf(out)
+	joined := strings.Join(paras, "")
+	if strings.Contains(joined, "This sentence") {
+		t.Fatal(paras)
+	}
+	if !strings.Contains(joined, "HTTP") {
+		t.Fatal(paras)
+	}
+	if strings.Count(joined, "近日") > 2 {
+		t.Fatal(paras)
+	}
+	if strings.Count(joined, "综合布线验收说明") > 2 {
+		t.Fatal(paras)
+	}
+}
+
+func TestDropOffTopicParagraph(t *testing.T) {
+	draft := map[string]any{
+		"title": "综合布线验收",
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"综合布线验收先看材料。",
+			"奶奶下午去喝茶。",
+		}}},
+	}
+	out := DropOffTopicParagraphs(draft)
+	paras := paragraphsOf(out)
+	if len(paras) != 1 || !strings.Contains(paras[0], "材料") {
+		t.Fatal(paras)
+	}
+}
+
 func dump(draft map[string]any) string {
 	buf, err := json.Marshal(draft)
 	if err != nil {

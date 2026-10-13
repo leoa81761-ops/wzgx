@@ -328,7 +328,7 @@ func DictionaryHost(raw string) bool {
 	}
 	for _, domain := range []string{
 		"json.cn", "dict.cn", "zdic.net", "zdic.com", "iciba.com", "youdao.com",
-		"hanyu.baidu.com", "cidianwang.com", "911cha.com",
+		"hanyu.baidu.com", "cidianwang.com", "911cha.com", "juzimi.com", "jukuu.com",
 		"baike.baidu.com", "baike.sogou.com", "baike.so.com", "baike.com",
 		"wikipedia.org", "zh.wikipedia.org",
 	} {
@@ -380,6 +380,182 @@ func ReferenceEntry(title string) bool {
 		}
 	}
 	return false
+}
+
+// LowValuePage is a hard drop for novels, job boards, book pages, loans, sentence dictionaries, and device forums.
+// A gov.cn host is left for the judge. title may be empty when only the URL is known.
+func LowValuePage(raw, title string) string {
+	host := sourceHost(raw)
+	if host == "gov.cn" || strings.HasSuffix(host, ".gov.cn") {
+		return ""
+	}
+	blob := strings.ToLower(raw + " " + title)
+	path := ""
+	if parsed, err := url.Parse(strings.TrimSpace(raw)); err == nil {
+		path = strings.ToLower(parsed.Path)
+	}
+	if novelPage(host, path, blob) {
+		return "小说或TXT"
+	}
+	if jobPage(host, path, blob) {
+		return "招聘页"
+	}
+	if doubanBook(host, path) {
+		return "豆瓣图书"
+	}
+	if loanPage(host, blob) {
+		return "贷款页"
+	}
+	if sentenceDict(host, blob) {
+		return "例句或词典"
+	}
+	if deviceForum(host, path, blob) {
+		return "数码论坛"
+	}
+	return ""
+}
+
+func novelPage(host, path, blob string) bool {
+	if strings.Contains(host, "biquge") || strings.Contains(host, "69shu") || strings.Contains(host, "shuquge") {
+		return true
+	}
+	for _, domain := range []string{"qidian.com", "zongheng.com", "17k.com", "jjwxc.net"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	if strings.HasSuffix(path, ".txt") || strings.Contains(path, "/txt/") || strings.Contains(path, "/novel/") {
+		return true
+	}
+	for _, word := range []string{"txt小说", "小说下载", "txt下载", "全文阅读", "章节目录", "章节全文"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func jobPage(host, path, blob string) bool {
+	for _, domain := range []string{"zhaopin.com", "51job.com", "liepin.com", "zhipin.com", "lagou.com", "jobui.com", "yingjiesheng.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	if strings.Contains(path, "/jobs") || strings.Contains(path, "/job/") || strings.HasSuffix(path, "/job") || strings.Contains(path, "/zhaopin") {
+		return true
+	}
+	for _, word := range []string{"招聘", "职位", "月薪", "简历"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func doubanBook(host, path string) bool {
+	if host == "book.douban.com" || strings.HasSuffix(host, ".book.douban.com") {
+		return true
+	}
+	if host == "douban.com" || strings.HasSuffix(host, ".douban.com") {
+		return strings.Contains(path, "/subject/")
+	}
+	return false
+}
+
+func loanPage(host, blob string) bool {
+	for _, domain := range []string{"rong360.com", "51credit.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	for _, word := range []string{"贷款", "借钱", "网贷", "信用卡申请", "借款"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func sentenceDict(host, blob string) bool {
+	if DictionaryHost(host) {
+		return false
+	}
+	for _, word := range []string{"例句", "造句"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func deviceForum(host, path, blob string) bool {
+	if strings.Contains(blob, "手机论坛") {
+		return true
+	}
+	forum := false
+	for _, domain := range []string{"zol.com.cn", "pconline.com.cn", "chiphell.com", "bbs.xiaomi.com", "club.huawei.com", "v2ex.com", "tieba.baidu.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			forum = true
+			break
+		}
+	}
+	if !forum {
+		return false
+	}
+	return strings.Contains(path, "/thread") || strings.Contains(path, "/forum")
+}
+
+// NormalizeSourceURL folds a URL so tracking parameters and a www prefix do not keep the same page twice.
+func NormalizeSourceURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" {
+		return strings.ToLower(raw)
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	if port := parsed.Port(); port != "" && port != "80" && port != "443" {
+		host += ":" + port
+	}
+	path := strings.TrimRight(parsed.EscapedPath(), "/")
+	query := parsed.Query()
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		low := strings.ToLower(key)
+		if strings.HasPrefix(low, "utm_") || low == "spm" || low == "from" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, key := range keys {
+		values := append([]string{}, query[key]...)
+		sort.Strings(values)
+		for _, value := range values {
+			parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		}
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme == "" {
+		scheme = "https"
+	}
+	out := scheme + "://" + host + path
+	if len(parts) > 0 {
+		out += "?" + strings.Join(parts, "&")
+	}
+	return out
+}
+
+// NormalizeSourceTitle folds a title so spacing does not keep the same page twice.
+func NormalizeSourceTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(title), " ")
 }
 
 // OffTopicPage is a hard drop for software-download, video or drama, and app-store pages.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -543,7 +544,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 			note = joinNote(note, "栏目结构和正文对不上，未写入公众号草稿。")
 		}
 		push = pushed{
-			Status: "held", HTML: built.HTML, RiskLevel: risk.Grade(w.Direction, built.Draft),
+			Status: "held", HTML: built.HTML, RiskLevel: draftRisk(w.Direction, built.Draft),
 			DeliveryNote: note,
 		}
 	} else {
@@ -1680,6 +1681,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft = settleExperience(draft, columnStructure, w.WordTarget)
 	} else {
 		draft = editorial.SupportCitations(draft)
+		draft = editorial.RenumberCitations(draft)
 	}
 	delete(draft, "_quality")
 	cited := citationMarks.MatchString(bodyPlain(draft))
@@ -1695,6 +1697,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			draft = settleExperience(draft, columnStructure, w.WordTarget)
 		} else {
 			draft = editorial.SupportCitations(draft)
+			draft = editorial.RenumberCitations(draft)
 		}
 		cited = citationMarks.MatchString(bodyPlain(draft))
 	}
@@ -1729,9 +1732,14 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if text := footnoteDisclaimer(w.Pack); text != "" {
 		footnotes = append(footnotes, text)
 	}
-	if level := risk.Grade(w.Direction, draft); level == "medium" || level == "high" {
+	level := risk.Grade(w.Direction, draft)
+	if draft != nil {
+		draft["_risk_level"] = level
+	}
+	if level == "medium" || level == "high" {
 		footnotes = append(footnotes, "涉及健康或专业判断时，请自行核对来源，本文不能替代专业意见。")
 	}
+	draft = editorial.SoftenHealthClaims(draft)
 	if w.CostNote != "" {
 		footnotes = append(footnotes, w.CostNote)
 	}
@@ -1758,6 +1766,28 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft["image_style"] = imageStyle
 	}
 	draft = editorial.ShapeCopy(draft)
+	if !experience {
+		draft = editorial.RenumberCitations(draft)
+		cited = citationMarks.MatchString(bodyPlain(draft))
+		if w.Tier != "free" && hadSources {
+			if cited {
+				saved := append([]any{}, asList(draft["sources"])...)
+				if applyCitations(draft) {
+					uncited = false
+					if str(draft["source_heading"]) == "延伸阅读" {
+						delete(draft, "source_heading")
+					}
+				} else {
+					draft["sources"] = saved
+					draft["source_heading"] = "延伸阅读"
+					uncited = true
+				}
+			} else {
+				draft["source_heading"] = "延伸阅读"
+				uncited = true
+			}
+		}
+	}
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
 		"stages": stageCharList(trace),
@@ -1798,8 +1828,18 @@ func wechatClient(deps Deps, appID, secret, refresh, mode, base string) wechat.C
 	return wechat.Build(appID, secret, mode, base, deps.HTTP, deps.Tokens)
 }
 
+func draftRisk(direction string, draft map[string]any) string {
+	if draft != nil {
+		if level, ok := draft["_risk_level"].(string); ok && level != "" {
+			delete(draft, "_risk_level")
+			return level
+		}
+	}
+	return risk.Grade(direction, draft)
+}
+
 func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
-	level := risk.Grade(w.Direction, article.Draft)
+	level := draftRisk(w.Direction, article.Draft)
 	if hold, note := risk.ShouldHold(level, w.Tier, len(asList(article.Draft["sources"])) > 0); hold {
 		return pushed{Status: "held", HTML: article.HTML, DeliveryNote: note, RiskLevel: level}, nil
 	}
@@ -2473,14 +2513,26 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	}
 	var engines []map[string]any
 	if len(sources) < 2 {
+		queries := backupQueries(payload)
+		foundRows := make([][]map[string]any, len(queries))
+		foundLogs := make([][]map[string]any, len(queries))
+		foundErr := make([]error, len(queries))
+		var searchWG sync.WaitGroup
+		for i, query := range queries {
+			searchWG.Add(1)
+			go func(i int, query string) {
+				defer searchWG.Done()
+				foundRows[i], foundLogs[i], foundErr[i] = backupHTMLSearch(ctx, gateway, query)
+			}(i, query)
+		}
+		searchWG.Wait()
 		var found []map[string]any
-		for _, query := range backupQueries(payload) {
-			rows, logged, searchErr := backupHTMLSearch(ctx, gateway, query)
-			engines = append(engines, logged...)
-			if searchErr != nil && len(logged) == 0 {
-				engines = append(engines, map[string]any{"engine": "backup", "query": query, "count": 0, "error": clip(searchErr.Error(), 180)})
+		for i, query := range queries {
+			engines = append(engines, foundLogs[i]...)
+			if foundErr[i] != nil && len(foundLogs[i]) == 0 {
+				engines = append(engines, map[string]any{"engine": "backup", "query": query, "count": 0, "error": clip(foundErr[i].Error(), 180)})
 			}
-			found = append(found, rows...)
+			found = append(found, foundRows[i]...)
 		}
 		rawCount += len(found)
 		if len(found) > 0 {
@@ -2804,6 +2856,8 @@ func takeSources(ctx context.Context, client *http.Client, content string, cited
 		dropped = append(dropped, map[string]any{"reason": "没有解析到来源"})
 	}
 	if sourcesHaveURL(kept) {
+		kept, extra = dedupeSources(kept, nil)
+		dropped = append(dropped, extra...)
 		return notes, kept, dropped, false
 	}
 	softKept, _ := policy.Relaxed().Split(raw)
@@ -2815,6 +2869,8 @@ func takeSources(ctx context.Context, client *http.Client, content string, cited
 				row["kept_relaxed"] = true
 			}
 		}
+		softKept, extra = dedupeSources(softKept, nil)
+		dropped = append(dropped, extra...)
 		return notes, softKept, dropped, true
 	}
 	return notes, nil, dropped, false
@@ -2837,7 +2893,7 @@ func enrichSources(ctx context.Context, client *http.Client, sources []map[strin
 			continue
 		}
 		fetched++
-		title, desc := llm.FetchPageMeta(ctx, client, raw)
+		title, desc, text := llm.FetchPageText(ctx, client, raw)
 		if title != "" {
 			source["title"] = title
 			source["fetched_title"] = title
@@ -2845,6 +2901,9 @@ func enrichSources(ctx context.Context, client *http.Client, sources []map[strin
 		if desc != "" && strings.TrimSpace(str(source["snippet"])) == "" {
 			source["snippet"] = desc
 			source["fetched_meta"] = desc
+		}
+		if text != "" {
+			source["fetched_text"] = text
 		}
 	}
 }
@@ -2878,6 +2937,10 @@ func filterSourceQuality(sources []map[string]any, _ string) (kept []map[string]
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": reason})
 			continue
 		}
+		if reason := content.LowValuePage(raw, title+" "+snippet); reason != "" {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": reason})
+			continue
+		}
 		if content.PrivateURL(raw) {
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "内网地址"})
 			continue
@@ -2902,6 +2965,8 @@ func stripRankScores(sources []map[string]any) {
 
 const judgeBatchSize = 8
 
+const judgeModel = "grok-4.7"
+
 const judgeRetryModel = "grok-4.20-0309-non-reasoning"
 
 const sourceFloor = 2
@@ -2914,28 +2979,55 @@ func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Pro
 		kept, dropped := rankFallback(sources, topic, true)
 		return kept, dropped, llm.Completion{Attempts: []map[string]any{{"ok": false, "error": "没有判断模型", "judge_raw": ""}}}
 	}
-	var completion llm.Completion
-	var rawLog strings.Builder
-	var kept, dropped, failed []map[string]any
-	judgedOK := false
+	if shouldFetchPages(providers) {
+		attachPageText(ctx, gateway.Client, sources)
+	}
+	type batchResult struct {
+		items  []any
+		raw    string
+		part   llm.Completion
+		batch  []map[string]any
+		failed bool
+	}
+	var batches []batchResult
 	for offset := 0; offset < len(sources); offset += judgeBatchSize {
 		end := offset + judgeBatchSize
 		if end > len(sources) {
 			end = len(sources)
 		}
-		batch := sources[offset:end]
-		items, raw, part := judgeBatch(ctx, gateway, providers, topic, batch, offset)
-		completion = mergeCompletion(completion, part)
+		batches = append(batches, batchResult{batch: sources[offset:end]})
+	}
+	var wg sync.WaitGroup
+	for i := range batches {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			offset := i * judgeBatchSize
+			items, raw, part := judgeBatch(ctx, gateway, providers, topic, batches[i].batch, offset)
+			batches[i].items = items
+			batches[i].raw = raw
+			batches[i].part = part
+			batches[i].failed = items == nil
+		}(i)
+	}
+	wg.Wait()
+	var completion llm.Completion
+	var rawLog strings.Builder
+	var kept, dropped, failed []map[string]any
+	judgedOK := false
+	for i, result := range batches {
+		offset := i * judgeBatchSize
+		completion = mergeCompletion(completion, result.part)
 		if rawLog.Len() > 0 {
 			rawLog.WriteString("\n")
 		}
-		rawLog.WriteString(raw)
-		if items == nil {
-			failed = append(failed, batch...)
+		rawLog.WriteString(result.raw)
+		if result.failed {
+			failed = append(failed, result.batch...)
 			continue
 		}
 		judgedOK = true
-		batchKept, batchDropped := applyJudgeScores(batch, alignJudgeItems(offset, batch, items))
+		batchKept, batchDropped := applyJudgeScores(result.batch, alignJudgeItems(offset, result.batch, result.items))
 		for _, source := range batchKept {
 			source["_from_judge"] = true
 		}
@@ -2947,6 +3039,8 @@ func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Pro
 		kept = append(kept, ranked...)
 		dropped = append(dropped, extra...)
 	}
+	kept, extra := dedupeSources(kept, nil)
+	dropped = append(dropped, extra...)
 	kept, dropped = capKept(kept, dropped)
 	rawText := clip(rawLog.String(), 1500)
 	if len(completion.Attempts) == 0 {
@@ -2956,19 +3050,94 @@ func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Pro
 	return kept, dropped, completion
 }
 
+func shouldFetchPages(providers []llm.Provider) bool {
+	if len(providers) == 0 {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(providers[0].BaseURL))
+	if base == "" || strings.HasPrefix(base, "mock://") {
+		return false
+	}
+	if strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") || strings.Contains(base, "[::1]") {
+		return false
+	}
+	return true
+}
+
+func attachPageText(ctx context.Context, client *http.Client, sources []map[string]any) {
+	if client == nil {
+		return
+	}
+	type job struct {
+		index int
+		url   string
+	}
+	var jobs []job
+	for i, source := range sources {
+		if len(jobs) >= 8 || source == nil {
+			continue
+		}
+		if strings.TrimSpace(str(source["fetched_text"])) != "" {
+			continue
+		}
+		raw := strings.TrimSpace(str(source["url"]))
+		if raw == "" || content.PrivateURL(raw) {
+			continue
+		}
+		jobs = append(jobs, job{index: i, url: raw})
+	}
+	if len(jobs) == 0 {
+		return
+	}
+	texts := make([]string, len(jobs))
+	var wg sync.WaitGroup
+	for n, item := range jobs {
+		wg.Add(1)
+		go func(n int, raw string) {
+			defer wg.Done()
+			_, _, text := llm.FetchPageText(ctx, client, raw)
+			texts[n] = text
+		}(n, item.url)
+	}
+	wg.Wait()
+	for n, item := range jobs {
+		if texts[n] != "" {
+			sources[item.index]["fetched_text"] = texts[n]
+		}
+	}
+}
+
+func judgeProviders(providers []llm.Provider) []llm.Provider {
+	if len(providers) == 0 {
+		return nil
+	}
+	base := providers[0]
+	if strings.EqualFold(strings.TrimSpace(base.Model), judgeModel) {
+		return []llm.Provider{base}
+	}
+	next := base
+	next.Model = judgeModel
+	return []llm.Provider{next}
+}
+
 func judgeBatch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic string, batch []map[string]any, offset int) ([]any, string, llm.Completion) {
 	candidates := make([]any, 0, len(batch))
 	for i, source := range batch {
 		title := strings.TrimSpace(str(source["title"]))
 		snippet := sourceSnippet(source)
-		candidates = append(candidates, map[string]any{
+		row := map[string]any{
 			"index": offset + i + 1, "title": title, "snippet": snippet, "url": str(source["url"]),
-		})
+		}
+		if page := strings.TrimSpace(str(source["fetched_text"])); page != "" {
+			row["page"] = clip(page, 400)
+		}
+		candidates = append(candidates, row)
 	}
 	payload := map[string]any{"topic": topic, "candidates": candidates}
 	messages := llm.StageMessages("来源判断", payload)
 	schema := llm.StageSchema("来源判断")
-	first, err := gateway.CompleteFirst(ctx, providers, messages, schema)
+	used := judgeProviders(providers)
+	first, err := gateway.CompleteFirst(ctx, used, messages, schema)
 	raw := strings.TrimSpace(first.Content)
 	if err != nil && raw == "" {
 		raw = err.Error()
@@ -2977,7 +3146,7 @@ func judgeBatch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provi
 		return items, raw, first
 	}
 	base := providers[0]
-	if strings.EqualFold(strings.TrimSpace(base.Model), judgeRetryModel) {
+	if len(used) > 0 && strings.EqualFold(strings.TrimSpace(used[0].Model), judgeRetryModel) {
 		return nil, raw, first
 	}
 	retry := base
@@ -3045,7 +3214,7 @@ func alignJudgeItems(offset int, batch []map[string]any, items []any) []any {
 		if item == nil {
 			continue
 		}
-		clone := map[string]any{"score": item["score"], "facts": item["facts"]}
+		clone := copyJudgeItem(item)
 		index := asInt(item["index"])
 		if index >= lo && index <= hi {
 			clone["index"] = index - offset
@@ -3148,9 +3317,13 @@ func normalizeJudgeItems(list []any) []any {
 		}
 		rated = true
 		index, present := judgeIndex(item)
-		normalized := map[string]any{"score": judgeScore(item), "facts": judgeFacts(item)}
+		normalized := copyJudgeItem(item)
+		normalized["score"] = judgeScore(item)
+		normalized["facts"] = judgeFacts(item)
 		if present {
 			normalized["index"] = index
+		} else {
+			delete(normalized, "index")
 		}
 		out = append(out, normalized)
 	}
@@ -3161,12 +3334,101 @@ func normalizeJudgeItems(list []any) []any {
 }
 
 func judgeRating(item map[string]any) bool {
-	for _, key := range []string{"score", "rating", "relevance", "facts", "fact", "key_facts", "points"} {
+	for _, key := range []string{"score", "rating", "relevance", "facts", "fact", "key_facts", "points", "page_type", "on_topic", "snippet"} {
 		if _, ok := item[key]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+func copyJudgeItem(item map[string]any) map[string]any {
+	out := map[string]any{"score": item["score"], "facts": item["facts"]}
+	if pageType := normalizePageType(item["page_type"]); pageType != "" {
+		out["page_type"] = pageType
+	}
+	if _, ok := item["on_topic"]; ok {
+		out["on_topic"] = onTopicValue(item["on_topic"])
+	}
+	if snippet := strings.TrimSpace(str(item["snippet"])); snippet != "" {
+		out["snippet"] = snippet
+	}
+	if fact := strings.TrimSpace(str(item["fact"])); fact != "" {
+		out["fact"] = fact
+	}
+	if _, ok := item["index"]; ok {
+		out["index"] = item["index"]
+	}
+	return out
+}
+
+func normalizePageType(v any) string {
+	raw := strings.TrimSpace(str(v))
+	if raw == "" {
+		return ""
+	}
+	folded := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(raw, " ", ""), "_", ""), "-", ""))
+	switch folded {
+	case "professionalarticle":
+		return "professional"
+	case "news", "official", "standard", "professional", "forum", "ad", "novel", "dictionary", "job", "ecommerce", "other":
+		return folded
+	}
+	switch raw {
+	case "新闻":
+		return "news"
+	case "官方":
+		return "official"
+	case "标准":
+		return "standard"
+	case "专业文章", "专业":
+		return "professional"
+	case "论坛":
+		return "forum"
+	case "广告":
+		return "ad"
+	case "小说":
+		return "novel"
+	case "词典":
+		return "dictionary"
+	case "招聘":
+		return "job"
+	case "电商":
+		return "ecommerce"
+	case "其他":
+		return "other"
+	default:
+		return folded
+	}
+}
+
+func onTopicValue(v any) bool {
+	switch typed := v.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes", "是":
+			return true
+		default:
+			return false
+		}
+	case float64:
+		return typed != 0
+	case int:
+		return typed != 0
+	default:
+		return false
+	}
+}
+
+func allowedPageType(pageType string) bool {
+	switch pageType {
+	case "news", "official", "standard", "professional":
+		return true
+	default:
+		return false
+	}
 }
 
 func judgeIndex(item map[string]any) (int, bool) {
@@ -3445,8 +3707,13 @@ func genericPhrase(text string) bool {
 
 func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]any, dropped []map[string]any) {
 	type rating struct {
-		score int
-		facts []any
+		score    int
+		facts    []any
+		pageType string
+		onTopic  bool
+		hasTopic bool
+		snippet  string
+		strict   bool
 	}
 	byIndex := map[int]rating{}
 	for order, raw := range items {
@@ -3472,7 +3739,21 @@ func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]
 				facts = append(facts, text)
 			}
 		}
-		byIndex[index] = rating{score: score, facts: facts}
+		if len(facts) == 0 {
+			if fact := strings.TrimSpace(str(item["fact"])); fact != "" {
+				facts = append(facts, fact)
+			}
+		}
+		_, hasType := item["page_type"]
+		_, hasTopic := item["on_topic"]
+		_, hasSnippet := item["snippet"]
+		byIndex[index] = rating{
+			score: score, facts: facts,
+			pageType: normalizePageType(item["page_type"]),
+			onTopic:  onTopicValue(item["on_topic"]), hasTopic: hasTopic,
+			snippet: strings.TrimSpace(str(item["snippet"])),
+			strict:  hasType || hasTopic || hasSnippet,
+		}
 	}
 	type scored struct {
 		source map[string]any
@@ -3484,21 +3765,35 @@ func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]
 			continue
 		}
 		rate, ok := byIndex[i+1]
-		if !ok || rate.score < judgeMinScore {
-			score := 0
-			if ok {
-				score = rate.score
-			}
+		if !ok {
 			dropped = append(dropped, map[string]any{
-				"url": str(source["url"]), "title": str(source["title"]), "score": score, "reason": "相关性不足",
+				"url": str(source["url"]), "title": str(source["title"]), "score": 0, "reason": "相关性不足",
+			})
+			continue
+		}
+		if rate.strict {
+			reason := judgeKeepReason(source, rate.pageType, rate.onTopic, rate.hasTopic, rate.snippet)
+			if reason != "" {
+				dropped = append(dropped, map[string]any{
+					"url": str(source["url"]), "title": str(source["title"]), "score": rate.score, "reason": reason,
+				})
+				continue
+			}
+		} else if rate.score < judgeMinScore {
+			dropped = append(dropped, map[string]any{
+				"url": str(source["url"]), "title": str(source["title"]), "score": rate.score, "reason": "相关性不足",
 			})
 			continue
 		}
 		if len(rate.facts) > 0 {
 			source["facts"] = rate.facts
 		}
-		source["rank_score"] = rate.score
-		ranked = append(ranked, scored{source: source, score: rate.score})
+		score := rate.score
+		if rate.strict && score < judgeMinScore {
+			score = judgeMinScore
+		}
+		source["rank_score"] = score
+		ranked = append(ranked, scored{source: source, score: score})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
 		return ranked[i].score > ranked[j].score
@@ -3516,6 +3811,69 @@ func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]
 		kept = append(kept, row.source)
 	}
 	return kept, dropped
+}
+
+func judgeKeepReason(source map[string]any, pageType string, onTopic, hasTopic bool, snippet string) string {
+	if !allowedPageType(pageType) {
+		return "页面类型不符"
+	}
+	if !hasTopic || !onTopic {
+		return "不在选题上"
+	}
+	if utf8.RuneCountInString(snippet) < 8 {
+		return "没有原句"
+	}
+	page := strings.TrimSpace(str(source["fetched_text"]))
+	if page == "" {
+		page = strings.TrimSpace(str(source["title"]) + str(source["snippet"]) + str(source["note"]) + str(source["fetched_meta"]))
+	}
+	if !snippetIn(snippet, page) {
+		return "原句对不上"
+	}
+	return ""
+}
+
+func snippetIn(snippet, page string) bool {
+	snippet = compactMatch(snippet)
+	page = compactMatch(page)
+	return snippet != "" && strings.Contains(page, snippet)
+}
+
+func compactMatch(text string) string {
+	return strings.Join(strings.Fields(text), "")
+}
+
+func dedupeSources(kept, dropped []map[string]any) ([]map[string]any, []map[string]any) {
+	seenURL := map[string]bool{}
+	seenTitle := map[string]bool{}
+	var out []map[string]any
+	for _, source := range kept {
+		if source == nil {
+			continue
+		}
+		urlKey := content.NormalizeSourceURL(str(source["url"]))
+		titleKey := content.NormalizeSourceTitle(str(source["title"]))
+		if urlKey != "" && seenURL[urlKey] {
+			dropped = append(dropped, map[string]any{
+				"url": str(source["url"]), "title": str(source["title"]), "score": source["rank_score"], "reason": "重复网址",
+			})
+			continue
+		}
+		if titleKey != "" && seenTitle[titleKey] {
+			dropped = append(dropped, map[string]any{
+				"url": str(source["url"]), "title": str(source["title"]), "score": source["rank_score"], "reason": "重复标题",
+			})
+			continue
+		}
+		if urlKey != "" {
+			seenURL[urlKey] = true
+		}
+		if titleKey != "" {
+			seenTitle[titleKey] = true
+		}
+		out = append(out, source)
+	}
+	return out, dropped
 }
 
 func sourceSnippet(source map[string]any) string {
@@ -3590,6 +3948,8 @@ func settleExperience(draft map[string]any, structure string, target int) map[st
 		return nil
 	}
 	draft = stripCiteMarks(draft)
+	draft = editorial.SoftenHealthClaims(draft)
+	draft = editorial.CapRepeatedPhrases(draft, 2)
 	draft = editorial.LimitParagraphs(draft, 4)
 	draft = dedupeExperience(draft, target)
 	if columns.NormalizeStructure(structure) != "custom" {
@@ -3853,6 +4213,9 @@ func draftParagraphs(draft map[string]any) []string {
 
 func polishDraft(draft map[string]any, w Input) map[string]any {
 	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
+	draft = editorial.DropOffTopicParagraphs(draft)
+	draft = editorial.StripEnglishLeaks(draft)
+	draft = editorial.CapRepeatedPhrases(draft, 2)
 	draft = editorial.RepairNearDuplicates(draft)
 	draft = editorial.DedupeBlocks(draft)
 	draft = editorial.DedupeTables(draft)
@@ -3925,9 +4288,14 @@ func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string
 			next = content.TrimToMax(next, target*120/100)
 			nextRunes = content.BodyRunes(next)
 		}
+		grew := false
 		if nextRunes > before && nextRunes <= high {
 			copySources(next, draft)
 			draft = next
+			grew = true
+		}
+		if !grew {
+			break
 		}
 	}
 	return draft, tokens, trace
@@ -4290,7 +4658,11 @@ func traceRows(stage string, completion llm.Completion) []map[string]any {
 func stageCharList(trace []map[string]any) []any {
 	var out []any
 	for _, row := range trace {
-		out = append(out, map[string]any{"stage": row["stage"], "chars": row["chars"]})
+		item := map[string]any{"stage": row["stage"], "chars": row["chars"]}
+		if ms, ok := row["ms"]; ok {
+			item["ms"] = ms
+		}
+		out = append(out, item)
 	}
 	return out
 }

@@ -60,6 +60,18 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 	if !strings.Contains(wide, "<table") || !strings.Contains(wide, "甲") || strings.Contains(wide, "甲：1") {
 		t.Fatal(wide)
 	}
+	compact := RenderHTML(map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "紧凑",
+			"table": map[string]any{
+				"headers": []string{"甲", "乙"},
+				"rows":    []any{[]string{"1", "2"}},
+			},
+		}},
+	}, "simple", false, true)
+	if !strings.Contains(compact, "<table") || !strings.Contains(compact, "<td") {
+		t.Fatal(compact)
+	}
 	qa := RenderHTML(map[string]any{
 		"sections": []any{map[string]any{"paragraphs": []any{"验收要看什么？答：先对照图纸。", "材料怎么算？", "答：按现场清单。"}}},
 	}, "simple", false, false)

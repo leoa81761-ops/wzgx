@@ -94,7 +94,7 @@ func RepairDraft(structure string, draft map[string]any) map[string]any {
 }
 
 // AlignStructure reshapes a draft so it matches the column template the checker uses.
-// Q&A may be one paragraph (问句以问号结尾，后面接「答：」，答案里不再出现问号) or two adjacent paragraphs.
+// Q&A needs at least three pairs. A pair is one paragraph (问句以问号结尾，后面接「答：」，答案里不再出现问号) or two adjacent paragraphs.
 // Steps need a number on every paragraph. News is left unchanged, because a date is not invented here.
 func AlignStructure(structure string, draft map[string]any) map[string]any {
 	if draft == nil {
@@ -177,7 +177,7 @@ func qaPaired(paragraphs []string) bool {
 			return false
 		}
 	}
-	return pairs > 0 && !pending
+	return pairs >= 3 && !pending
 }
 
 // combinedQA is one paragraph whose question mark comes before 答, with no question mark in the answer.
@@ -298,28 +298,84 @@ func alignQA(draft map[string]any) {
 	if len(sections) == 0 {
 		return
 	}
+	var texts []string
+	for _, raw := range sections {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		for _, item := range section["paragraphs"].([]any) {
+			if text := strings.TrimSpace(textOf(item)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	title := strings.TrimSpace(textOf(draft["title"]))
+	title = strings.TrimRight(title, "。？?！! ")
+	pairs := buildQAPairs(title, texts)
+	if len(pairs) < 3 {
+		return
+	}
 	section, _ := sections[0].(map[string]any)
 	if section == nil {
 		return
 	}
-	paras, _ := section["paragraphs"].([]any)
-	if !hasQuestion(paras) {
-		title := strings.TrimSpace(textOf(draft["title"]))
-		title = strings.TrimRight(title, "。？?！! ")
-		if title == "" {
-			return
-		}
-		paras = append([]any{title + "？"}, paras...)
-	}
-	if len(paras) >= 2 {
-		text, _ := paras[1].(string)
-		if !strings.Contains(text, "答") && !strings.Contains(text, "？") && !strings.Contains(text, "?") {
-			paras[1] = "答：" + text
-		}
+	paras := make([]any, len(pairs))
+	for i, pair := range pairs {
+		paras[i] = pair
 	}
 	section["paragraphs"] = paras
 	sections[0] = section
+	for i := 1; i < len(sections); i++ {
+		if later, ok := sections[i].(map[string]any); ok && later != nil {
+			later["paragraphs"] = []any{}
+		}
+	}
 	draft["sections"] = sections
+}
+
+func buildQAPairs(title string, texts []string) []string {
+	var existing, answers []string
+	for _, text := range texts {
+		if combinedQA(text) {
+			existing = append(existing, text)
+			continue
+		}
+		trimmed := strings.TrimSpace(text)
+		if strings.HasSuffix(trimmed, "？") || strings.HasSuffix(trimmed, "?") {
+			continue
+		}
+		answer := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "答："), "答:"))
+		answer = strings.TrimSpace(strings.TrimPrefix(answer, "答"))
+		if answer == "" {
+			continue
+		}
+		if strings.Contains(answer, "？") || strings.Contains(answer, "?") {
+			answer = strings.NewReplacer("？", "。", "?", "。").Replace(answer)
+		}
+		answers = append(answers, answer)
+	}
+	var questions []string
+	if title != "" {
+		questions = append(questions, title+"？")
+	}
+	for _, question := range []string{"这一步先看哪里？", "接着要核对什么？", "还有哪一处要对上？"} {
+		if len(questions) >= 3 {
+			break
+		}
+		questions = append(questions, question)
+	}
+	pairs := append([]string{}, existing...)
+	used := 0
+	for i := 0; len(pairs) < 3 && i < len(questions); i++ {
+		answer := "按现场核对。"
+		if used < len(answers) {
+			answer = answers[used]
+			used++
+		}
+		pairs = append(pairs, questions[i]+"答："+answer)
+	}
+	return pairs
 }
 
 func calmQAParagraph(text string) string {
@@ -343,20 +399,6 @@ func calmQAParagraph(text string) string {
 		return strings.NewReplacer("？", "。", "?", "。").Replace(text)
 	}
 	return text
-}
-
-func hasQuestion(paras []any) bool {
-	for _, item := range paras {
-		text, _ := item.(string)
-		if combinedQA(text) {
-			return true
-		}
-		trimmed := strings.TrimSpace(text)
-		if (strings.HasSuffix(trimmed, "？") || strings.HasSuffix(trimmed, "?")) && !strings.Contains(text, "答") {
-			return true
-		}
-	}
-	return false
 }
 
 func alignSteps(draft map[string]any) {

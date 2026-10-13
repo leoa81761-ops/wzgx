@@ -1812,6 +1812,437 @@ func looksLikeRule(line string) bool {
 	return true
 }
 
+// RenumberCitations walks the body in order and rewrites the first-seen marks to [1], [2], ...
+// Sources are reordered to match. A lone [2] becomes [1].
+func RenumberCitations(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	var order []int
+	seen := map[int]bool{}
+	note := func(text string) {
+		for _, mark := range citeMark.FindAllStringSubmatch(text, -1) {
+			n, _ := strconv.Atoi(mark[1])
+			if n <= 0 || seen[n] {
+				continue
+			}
+			seen[n] = true
+			order = append(order, n)
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		for _, item := range anyList(section["paragraphs"]) {
+			note(textOf(item))
+		}
+		for _, item := range anyList(section["list"]) {
+			note(textOf(item))
+		}
+	}
+	note(textOf(draft["closing"]))
+	note(textOf(draft["summary"]))
+	if len(order) == 0 {
+		return draft
+	}
+	mapping := map[int]int{}
+	for i, n := range order {
+		mapping[n] = i + 1
+	}
+	rewrite := func(text string) string {
+		return citeMark.ReplaceAllStringFunc(text, func(mark string) string {
+			sub := citeMark.FindStringSubmatch(mark)
+			if len(sub) < 2 {
+				return mark
+			}
+			n, _ := strconv.Atoi(sub[1])
+			next, ok := mapping[n]
+			if !ok {
+				return ""
+			}
+			return "[" + strconv.Itoa(next) + "]"
+		})
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			paras = append(paras, rewrite(textOf(item)))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		if len(anyList(section["list"])) > 0 {
+			var list []any
+			for _, item := range anyList(section["list"]) {
+				list = append(list, rewrite(textOf(item)))
+			}
+			section["list"] = list
+		}
+	}
+	if text := textOf(draft["closing"]); text != "" {
+		draft["closing"] = rewrite(text)
+	}
+	if text := textOf(draft["summary"]); text != "" {
+		draft["summary"] = rewrite(text)
+	}
+	old := anyList(draft["sources"])
+	next := make([]any, 0, len(order))
+	for _, n := range order {
+		if n-1 < 0 || n-1 >= len(old) || old[n-1] == nil {
+			continue
+		}
+		next = append(next, old[n-1])
+	}
+	if next == nil {
+		next = []any{}
+	}
+	draft["sources"] = next
+	return draft
+}
+
+var healthWords = []string{"治疗", "疗效", "降血压", "血糖", "癌症", "偏方", "剂量", "诊断", "服用", "治愈", "处方", "药品", "炎症"}
+
+// SoftenHealthClaims rewrites a health sentence that has no citation into a non-medical reminder.
+func SoftenHealthClaims(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	n := 0
+	rewrite := func(text string) string {
+		parts := mergeCiteTails(splitSentences(text))
+		if len(parts) == 0 {
+			return text
+		}
+		changed := false
+		for i, part := range parts {
+			if citeMark.MatchString(part) || !healthClaim(part) {
+				continue
+			}
+			if n%2 == 0 {
+				parts[i] = "这一步只是生活习惯上的提醒，不能代替医疗建议。"
+			} else {
+				parts[i] = "具体做法因人而异，这里只谈生活上的习惯，不涉及诊断或用药。"
+			}
+			n++
+			changed = true
+		}
+		if !changed {
+			return text
+		}
+		return strings.Join(parts, "")
+	}
+	applyText(draft, rewrite)
+	return draft
+}
+
+func mergeCiteTails(parts []string) []string {
+	var merged []string
+	for _, part := range parts {
+		bare := strings.TrimSpace(citeMark.ReplaceAllString(part, ""))
+		if bare == "" && len(merged) > 0 {
+			merged[len(merged)-1] += part
+			continue
+		}
+		merged = append(merged, part)
+	}
+	return merged
+}
+
+func healthClaim(text string) bool {
+	for _, word := range healthWords {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+var latinWord = regexp.MustCompile(`[A-Za-z]{4,}`)
+var latinLetter = regexp.MustCompile(`[A-Za-z]`)
+
+// StripEnglishLeaks drops a sentence that is only English, and removes long Latin words from the rest.
+func StripEnglishLeaks(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	clean := func(text string) string {
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			return stripLatinWords(text)
+		}
+		var kept []string
+		for _, part := range parts {
+			if englishLeak(part) {
+				continue
+			}
+			kept = append(kept, stripLatinWords(part))
+		}
+		return strings.Join(kept, "")
+	}
+	applyText(draft, clean)
+	return draft
+}
+
+func englishLeak(text string) bool {
+	if hasHan(text) {
+		return false
+	}
+	return len(latinLetter.FindAllString(text, -1)) >= 3
+}
+
+func stripLatinWords(text string) string {
+	text = latinWord.ReplaceAllStringFunc(text, func(word string) string {
+		switch strings.ToUpper(word) {
+		case "GB", "PDF", "ISO", "FAQ", "AI", "URL", "HTTP", "HTTPS", "WIFI", "APP":
+			return word
+		default:
+			return ""
+		}
+	})
+	return strings.Join(strings.Fields(text), " ")
+}
+
+var datedToken = regexp.MustCompile(`\d{4}年|\d{1,2}月\d{1,2}日`)
+
+// CapRepeatedPhrases keeps a date token or an 8-character phrase to at most limit occurrences.
+func CapRepeatedPhrases(draft map[string]any, limit int) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	if limit < 1 {
+		limit = 2
+	}
+	dates := map[string]int{}
+	phrases := map[string]int{}
+	sentences := map[string]int{}
+	rewrite := func(text string) string {
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			return text
+		}
+		var kept []string
+		for _, part := range parts {
+			part = stripExtraDates(part, dates, limit)
+			key := strings.TrimSpace(citeMark.ReplaceAllString(part, ""))
+			same := sentences[key] > 0
+			sentences[key]++
+			if !same && repeatedPhrase(part, phrases, limit) {
+				continue
+			}
+			if !same {
+				notePhrases(part, phrases)
+			}
+			if strings.TrimSpace(part) != "" {
+				kept = append(kept, part)
+			}
+		}
+		if len(kept) == 0 {
+			return ""
+		}
+		return strings.Join(kept, "")
+	}
+	applyText(draft, rewrite)
+	return draft
+}
+
+func stripExtraDates(text string, seen map[string]int, limit int) string {
+	for _, word := range []string{"近日", "今天", "昨天", "本周", "上周", "周一", "周二", "周三", "周四", "周五", "周六", "周日"} {
+		for strings.Contains(text, word) {
+			seen[word]++
+			if seen[word] <= limit {
+				break
+			}
+			text = strings.Replace(text, word, "", 1)
+		}
+	}
+	text = datedToken.ReplaceAllStringFunc(text, func(token string) string {
+		seen[token]++
+		if seen[token] <= limit {
+			return token
+		}
+		return ""
+	})
+	return strings.TrimSpace(text)
+}
+
+func repeatedPhrase(text string, seen map[string]int, limit int) bool {
+	for _, phrase := range hanPhrases(text, 8) {
+		if seen[phrase] >= limit {
+			return true
+		}
+	}
+	return false
+}
+
+func notePhrases(text string, seen map[string]int) {
+	noted := map[string]bool{}
+	for _, phrase := range hanPhrases(text, 8) {
+		if noted[phrase] {
+			continue
+		}
+		noted[phrase] = true
+		seen[phrase]++
+	}
+}
+
+func hanPhrases(text string, n int) []string {
+	var out []string
+	var buf []rune
+	flush := func() {
+		if len(buf) < n {
+			buf = nil
+			return
+		}
+		for i := 0; i+n <= len(buf); i++ {
+			out = append(out, string(buf[i:i+n]))
+		}
+		buf = nil
+	}
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+// DropOffTopicParagraphs removes a paragraph that shares no term with the title.
+func DropOffTopicParagraphs(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	terms, phrases := titleTerms(textOf(draft["title"]))
+	if len(terms) < 2 {
+		return draft
+	}
+	type slot struct {
+		section map[string]any
+		index   int
+		text    string
+		keep    bool
+	}
+	var slots []slot
+	for _, section := range sectionsOf(draft) {
+		paras := anyList(section["paragraphs"])
+		for i, item := range paras {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" {
+				continue
+			}
+			slots = append(slots, slot{section: section, index: i, text: text, keep: onTitle(text, terms, phrases)})
+		}
+	}
+	kept := 0
+	for _, slot := range slots {
+		if slot.keep {
+			kept++
+		}
+	}
+	if kept == 0 {
+		return draft
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" {
+				continue
+			}
+			if !onTitle(text, terms, phrases) {
+				continue
+			}
+			paras = append(paras, text)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
+func titleTerms(title string) (terms []string, phrases []string) {
+	skip := map[string]bool{"的": true, "了": true, "是": true, "在": true, "和": true, "与": true, "或": true, "等": true, "不": true, "也": true, "就": true, "都": true, "而": true, "及": true, "把": true, "被": true, "这": true, "那": true, "一个": true, "没有": true, "可以": true}
+	seen := map[string]bool{}
+	for _, run := range hanPhraseRuns(title) {
+		if len(run) >= 4 {
+			for i := 0; i+4 <= len(run); i++ {
+				phrases = append(phrases, string(run[i:i+4]))
+			}
+		}
+		for i := 0; i+2 <= len(run); i++ {
+			term := string(run[i : i+2])
+			if skip[term] || seen[term] {
+				continue
+			}
+			seen[term] = true
+			terms = append(terms, term)
+		}
+	}
+	return terms, phrases
+}
+
+func hanPhraseRuns(text string) [][]rune {
+	var out [][]rune
+	var buf []rune
+	flush := func() {
+		if len(buf) > 0 {
+			out = append(out, buf)
+			buf = nil
+		}
+	}
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+func onTitle(text string, terms, phrases []string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyText(draft map[string]any, rewrite func(string) string) {
+	for _, key := range []string{"title", "summary", "closing"} {
+		if text := textOf(draft[key]); text != "" {
+			draft[key] = rewrite(text)
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		if text := textOf(section["heading"]); text != "" {
+			section["heading"] = rewrite(text)
+		}
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(rewrite(textOf(item)))
+			if text == "" {
+				continue
+			}
+			paras = append(paras, text)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+}
+
 func clone(draft map[string]any) map[string]any {
 	buf, err := json.Marshal(draft)
 	if err != nil {
