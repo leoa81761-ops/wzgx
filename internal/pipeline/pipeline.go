@@ -2047,6 +2047,8 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		lengthShort = content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget)
 	}
 	repeated := editorial.RepeatedBody(draft)
+	draft = editorial.DedupeHashedBlocks(draft)
+	draft = editorial.RepairStructure(draft)
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
@@ -2914,7 +2916,9 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		rawCount += len(second.ResearchSources)
 	}
 	var engines []map[string]any
-	if len(sources) < 2 {
+	// Model citations are not a reason to skip search. A later judge can drop
+	// every one of them, and SearXNG would otherwise never see the query.
+	{
 		queries := backupQueries(payload)
 		foundRows := make([][]map[string]any, len(queries))
 		foundLogs := make([][]map[string]any, len(queries))
@@ -2932,7 +2936,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		for i, query := range queries {
 			engines = append(engines, foundLogs[i]...)
 			if foundErr[i] != nil && len(foundLogs[i]) == 0 {
-				engines = append(engines, map[string]any{"engine": "backup", "query": query, "count": 0, "error": clip(foundErr[i].Error(), 180)})
+				engines = append(engines, map[string]any{"engine": "backup", "provider": "backup", "query": query, "count": 0, "error": clip(foundErr[i].Error(), 180)})
 			}
 			found = append(found, foundRows[i]...)
 		}
@@ -3452,8 +3456,9 @@ const sourceKeepMax = 6
 
 const judgeMinScore = 2
 
-// filterSourceQuality hard-drops pages that cannot be a source. Relevance is the judge's job.
-func filterSourceQuality(sources []map[string]any, _ string) (kept []map[string]any, dropped []map[string]any) {
+// filterSourceQuality hard-drops pages that cannot be a source, including junk
+// hosts and pages that do not share the topic.
+func filterSourceQuality(sources []map[string]any, topic string) (kept []map[string]any, dropped []map[string]any) {
 	for _, source := range sources {
 		if source == nil {
 			continue
@@ -3485,6 +3490,10 @@ func filterSourceQuality(sources []map[string]any, _ string) (kept []map[string]
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "内网地址"})
 			continue
 		}
+		if !sourceRelevant(source, topic) {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "和选题无关"})
+			continue
+		}
 		if title == "" && strings.TrimSpace(snippet) == "" && !content.PublicPageURL(raw) {
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "没有标题"})
 			continue
@@ -3492,6 +3501,31 @@ func filterSourceQuality(sources []map[string]any, _ string) (kept []map[string]
 		kept = append(kept, source)
 	}
 	return kept, dropped
+}
+
+func sourceRelevant(source map[string]any, topic string) bool {
+	topic = strings.TrimSpace(topic)
+	if topic == "" || source == nil {
+		return true
+	}
+	blob := strings.TrimSpace(str(source["title"]) + str(source["snippet"]) + str(source["note"]) + str(source["fetched_meta"]) + str(source["name"]) + str(source["url"]))
+	if blob == "" {
+		return false
+	}
+	if content.SharesStandardNumber(topic, blob) {
+		return true
+	}
+	for _, phrase := range topicPhrases(topic) {
+		if strings.Contains(blob, phrase) {
+			return true
+		}
+	}
+	for _, term := range topicTerms(topic) {
+		if strings.Contains(blob, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripRankScores(sources []map[string]any) {
@@ -5344,9 +5378,10 @@ func sectionPlain(section map[string]any) string {
 	return b.String()
 }
 
-// writeSectionedDraft asks for one column section per call so the first draft
-// can reach word_target without local padding. A short result stays short and
-// is held later.
+// writeSectionedDraft asks for one JSON section per outline point, then keeps
+// those sections in outline order. Rendering walks that structure and does not
+// trust a later rewrite to put a table or a heading back where it belongs.
+// A short result stays short and is held later.
 func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, topic topics.Choice, trace []map[string]any, tokens int) (map[string]any, int, []map[string]any, llm.Completion, error) {
 	sections := outlineSections(payload)
 	target := intOf(payload["word_target"])
@@ -5384,16 +5419,20 @@ func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []
 			if assembled != nil && (callCtx.Err() != nil || budgetTight(ctx)) {
 				break
 			}
-			return assembled, tokens, trace, callCompletion, err
+			return compactOutline(assembled), tokens, trace, callCompletion, err
 		}
 		trace = append(trace, traceRows("draft", callCompletion)...)
 		assembled = absorbSection(assembled, part, str(point["heading"]), i, len(sections))
 		noteProgress(ctx, "draft", assembled, topic, trace, tokens)
 	}
+	assembled = compactOutline(assembled)
 	if assembled == nil {
 		if ctx.Err() != nil {
 			return nil, tokens, trace, completion, ctx.Err()
 		}
+		return nil, tokens, trace, completion, errStr("正文没有写出来")
+	}
+	if len(asList(assembled["sections"])) == 0 {
 		return nil, tokens, trace, completion, errStr("正文没有写出来")
 	}
 	return assembled, tokens, trace, completion, nil
@@ -5430,18 +5469,31 @@ func absorbSection(assembled, part map[string]any, heading string, index, count 
 	if heading != "" {
 		section["heading"] = heading
 	}
+	if !sectionHasBody(section) {
+		return assembled
+	}
 	text := strings.TrimSpace(sectionPlain(section))
+	if text != "" && assembled != nil && strings.Contains(bodyPlain(assembled), text) {
+		return assembled
+	}
 	if assembled == nil {
 		assembled = cloneMap(part)
 		if assembled == nil {
 			assembled = map[string]any{}
 		}
-		assembled["sections"] = []any{}
+		slots := make([]any, count)
+		assembled["sections"] = slots
 	}
-	if text != "" && strings.Contains(bodyPlain(assembled), text) {
-		return assembled
+	slots := asList(assembled["sections"])
+	for len(slots) < count {
+		slots = append(slots, nil)
 	}
-	assembled["sections"] = append(asList(assembled["sections"]), section)
+	if index >= 0 && index < len(slots) {
+		slots[index] = section
+	} else {
+		slots = append(slots, section)
+	}
+	assembled["sections"] = slots
 	if str(assembled["title"]) == "" {
 		assembled["title"] = str(part["title"])
 	}
@@ -5458,6 +5510,43 @@ func absorbSection(assembled, part map[string]any, heading string, index, count 
 		assembled["sources"] = []any{}
 	}
 	return assembled
+}
+
+func sectionHasBody(section map[string]any) bool {
+	if section == nil {
+		return false
+	}
+	for _, item := range asList(section["paragraphs"]) {
+		if strings.TrimSpace(str(item)) != "" {
+			return true
+		}
+	}
+	for _, item := range asList(section["list"]) {
+		if strings.TrimSpace(str(item)) != "" {
+			return true
+		}
+	}
+	table, _ := section["table"].(map[string]any)
+	return table != nil && len(asList(table["rows"])) > 0
+}
+
+func compactOutline(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	var kept []any
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if !sectionHasBody(section) {
+			continue
+		}
+		kept = append(kept, section)
+	}
+	if kept == nil {
+		kept = []any{}
+	}
+	draft["sections"] = kept
+	return draft
 }
 
 func pickSection(part map[string]any, heading string, index int) map[string]any {
@@ -5499,38 +5588,34 @@ func ensureInlineCitations(draft map[string]any) map[string]any {
 	if draft == nil || citationMarks.MatchString(bodyPlain(draft)) {
 		return draft
 	}
-	sources := asList(draft["sources"])
-	if !listedHaveURL(sources) {
+	if !listedHaveURL(asList(draft["sources"])) {
 		return draft
 	}
-	source, _ := sources[0].(map[string]any)
-	if source == nil {
-		return draft
+	// Mark a sentence the model already wrote. Do not invent a new one.
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		if markExisting(section, "paragraphs") || markExisting(section, "list") {
+			return draft
+		}
 	}
-	backing := strings.TrimSpace(str(source["title"]))
-	if backing == "" {
-		backing = strings.TrimSpace(str(source["snippet"]))
-	}
-	if backing == "" {
-		backing = strings.TrimSpace(str(source["note"]))
-	}
-	if backing == "" {
-		return draft
-	}
-	sentence := "按" + backing + "先核对这一处。[1]"
-	sections := asList(draft["sections"])
-	if len(sections) == 0 {
-		draft["sections"] = []any{map[string]any{"paragraphs": []any{sentence}, "list": []any{}}}
-		return draft
-	}
-	section, _ := sections[0].(map[string]any)
-	if section == nil {
-		return draft
-	}
-	section["paragraphs"] = append(asList(section["paragraphs"]), sentence)
-	sections[0] = section
-	draft["sections"] = sections
 	return draft
+}
+
+func markExisting(section map[string]any, key string) bool {
+	items := asList(section[key])
+	for i := len(items) - 1; i >= 0; i-- {
+		text := strings.TrimSpace(str(items[i]))
+		if text == "" {
+			continue
+		}
+		items[i] = strings.TrimRight(text, " \n") + "[1]"
+		section[key] = items
+		return true
+	}
+	return false
 }
 
 func angleChoices(using bool, col columns.Column, current string) []string {

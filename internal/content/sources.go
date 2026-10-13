@@ -355,6 +355,9 @@ func SearchResultURL(raw string) bool {
 	if strings.Contains(path, "dcpsptools") || strings.Contains(path, "/download") && query.Get("path") != "" {
 		return true
 	}
+	if (host == "std.samr.gov.cn" || strings.HasSuffix(host, ".std.samr.gov.cn")) && strings.Contains(path, "download") {
+		return true
+	}
 	if strings.Contains(path, "/search") || strings.Contains(path, "search/org") {
 		return true
 	}
@@ -572,6 +575,9 @@ func OffTopicPage(raw, title string) string {
 	if appStore(host, blob) {
 		return "应用商店"
 	}
+	if shopPage(host) {
+		return "网店"
+	}
 	return ""
 }
 
@@ -594,13 +600,22 @@ func softwareDownload(host, blob string) bool {
 }
 
 func videoOrDrama(host, blob string) bool {
-	for _, domain := range []string{"iqiyi.com", "youku.com", "v.qq.com", "mgtv.com", "le.com", "pptv.com", "tudou.com", "bilibili.com"} {
+	for _, domain := range []string{"iqiyi.com", "youku.com", "v.qq.com", "mgtv.com", "le.com", "pptv.com", "tudou.com", "bilibili.com", "youtube.com", "youtu.be"} {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}
 	}
 	for _, word := range []string{"电视剧", "在线观看", "韩剧", "美剧", "日剧", "追剧", "全集在线", "影视"} {
 		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func shopPage(host string) bool {
+	for _, domain := range []string{"taobao.com", "tmall.com", "tb.cn"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}
 	}

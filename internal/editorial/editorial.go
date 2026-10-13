@@ -2,6 +2,7 @@ package editorial
 
 import (
 	"encoding/json"
+	"hash/fnv"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1532,7 +1533,10 @@ func dropEmptySections(draft map[string]any) {
 		heading := strings.TrimSpace(textOf(section["heading"]))
 		paras := anyList(section["paragraphs"])
 		items := anyList(section["list"])
-		_, hasTable := section["table"].(map[string]any)
+		hasTable := false
+		if table, _ := section["table"].(map[string]any); table != nil && len(anyList(table["rows"])) > 0 {
+			hasTable = true
+		}
 		body := false
 		for _, item := range paras {
 			if strings.TrimSpace(textOf(item)) != "" {
@@ -1553,8 +1557,8 @@ func dropEmptySections(draft map[string]any) {
 		}
 		kept = append(kept, section)
 	}
-	if len(kept) == 0 {
-		return
+	if kept == nil {
+		kept = []any{}
 	}
 	draft["sections"] = kept
 }
@@ -2005,27 +2009,41 @@ var datedToken = regexp.MustCompile(`\d{4}年|\d{1,2}月\d{1,2}日`)
 // 「先打开辟谣不吓人的检修口」.
 var jammedTemplate = regexp.MustCompile(`先打开[^。！？!?\n]{1,24}的检修口|晚饭后先把[^。！？!?\n]{1,24}旁边的椅子挪开|用螺丝把盖板固定住`)
 
+// repeatMin is the shortest block or line that a second copy will hold.
+// Shorter sentences, including the length pad 「合适的正文。」, are ignored.
+const repeatMin = 15
+
 // RepeatedBody is the hard hold for a draft that would otherwise reach the
-// WeChat draft box. A body line or sentence of at least 12 characters may
-// appear twice. A third copy, a body whose 8-character phrases mostly recur,
-// or a topic jammed into a canned template is held.
+// WeChat draft box. Two copies of a paragraph, list, table, or line of at
+// least 15 characters are held. So is a body whose 8-character phrases mostly
+// recur, or a topic jammed into a canned template.
 func RepeatedBody(draft map[string]any) bool {
 	if draft == nil {
 		return false
 	}
 	var lines []string
+	var blocks []string
 	for _, section := range sectionsOf(draft) {
 		for _, item := range anyList(section["paragraphs"]) {
 			if text := strings.TrimSpace(textOf(item)); text != "" {
 				lines = append(lines, text)
+				blocks = append(blocks, text)
 			}
 		}
+		var items []string
 		for _, item := range anyList(section["list"]) {
 			if text := strings.TrimSpace(textOf(item)); text != "" {
 				lines = append(lines, text)
+				items = append(items, text)
 			}
 		}
+		if len(items) > 0 {
+			blocks = append(blocks, strings.Join(items, "\n"))
+		}
 		if table, _ := section["table"].(map[string]any); table != nil {
+			if blob := tableBlockText(table); blob != "" {
+				blocks = append(blocks, blob)
+			}
 			for _, item := range anyList(table["headers"]) {
 				if text := strings.TrimSpace(textOf(item)); text != "" {
 					lines = append(lines, text)
@@ -2042,37 +2060,60 @@ func RepeatedBody(draft map[string]any) bool {
 	}
 	if text := strings.TrimSpace(textOf(draft["closing"])); text != "" {
 		lines = append(lines, text)
+		blocks = append(blocks, text)
 	}
 	if jammedTemplate.MatchString(strings.Join(lines, "\n")) {
 		return true
 	}
-	lineCount := map[string]int{}
+	if repeatedBlocks(blocks) || repeatedLines(lines) {
+		return true
+	}
+	return false
+}
+
+func repeatedBlocks(parts []string) bool {
+	count := map[uint64]int{}
+	for _, part := range parts {
+		// A block made only of short sentences is a length pad, not a repeated line.
+		if !substantialLine(part) || utf8.RuneCountInString(normalizeBlock(part)) < repeatMin {
+			continue
+		}
+		count[blockHash(part)]++
+	}
+	for _, n := range count {
+		if n >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func repeatedLines(lines []string) bool {
+	count := map[uint64]int{}
 	sentenceCount := map[string]int{}
 	var longSentences []string
 	for _, line := range lines {
-		// A line made only of short sentences is not the article 73 failure.
+		// A line made only of short sentences is not a repeated block.
 		// Those fixtures repeat 「合适的正文。」 to reach a length target.
-		if substantialLine(line) {
-			if key := repeatKey(line); utf8.RuneCountInString(key) >= 12 {
-				lineCount[key]++
-			}
+		if substantialLine(line) && utf8.RuneCountInString(normalizeBlock(line)) >= repeatMin {
+			count[blockHash(line)]++
 		}
 		for _, sentence := range splitSentences(line) {
 			key := repeatKey(sentence)
-			if utf8.RuneCountInString(key) < 12 {
+			if utf8.RuneCountInString(key) < repeatMin {
 				continue
 			}
 			sentenceCount[key]++
 			longSentences = append(longSentences, key)
 		}
 	}
-	for _, n := range lineCount {
-		if n > 2 {
+	for _, n := range count {
+		if n >= 2 {
 			return true
 		}
 	}
 	for _, n := range sentenceCount {
-		if n > 2 {
+		if n >= 2 {
 			return true
 		}
 	}
@@ -2082,14 +2123,140 @@ func RepeatedBody(draft map[string]any) bool {
 func substantialLine(text string) bool {
 	parts := splitSentences(text)
 	if len(parts) == 0 {
-		return utf8.RuneCountInString(repeatKey(text)) >= 12
+		return utf8.RuneCountInString(repeatKey(text)) >= repeatMin
 	}
 	for _, part := range parts {
-		if utf8.RuneCountInString(repeatKey(part)) >= 12 {
+		if utf8.RuneCountInString(repeatKey(part)) >= repeatMin {
 			return true
 		}
 	}
 	return false
+}
+
+// DedupeHashedBlocks drops a later paragraph, list item, or table whose
+// normalized text hashes to one already kept. The repetition gate runs on the
+// draft before this, so two copies still hold and the stored body is clean.
+func DedupeHashedBlocks(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	seen := map[uint64]bool{}
+	keep := func(text string) bool {
+		sum := blockHash(text)
+		if sum == 0 {
+			return strings.TrimSpace(text) != ""
+		}
+		if seen[sum] {
+			return false
+		}
+		seen[sum] = true
+		return true
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" || !keep(text) {
+				continue
+			}
+			paras = append(paras, text)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		var list []any
+		for _, item := range anyList(section["list"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" || !keep(text) {
+				continue
+			}
+			list = append(list, text)
+		}
+		if list == nil {
+			list = []any{}
+		}
+		section["list"] = list
+		if table, _ := section["table"].(map[string]any); table != nil {
+			if blob := tableBlockText(table); blob == "" || !keep(blob) {
+				delete(section, "table")
+			}
+		}
+	}
+	if text := strings.TrimSpace(textOf(draft["closing"])); text != "" && !keep(text) {
+		draft["closing"] = ""
+	}
+	return draft
+}
+
+func tableBlockText(table map[string]any) string {
+	var parts []string
+	for _, item := range anyList(table["headers"]) {
+		if text := strings.TrimSpace(textOf(item)); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	for _, row := range anyList(table["rows"]) {
+		for _, cell := range anyList(row) {
+			if text := strings.TrimSpace(textOf(cell)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func normalizeBlock(text string) string {
+	text = citeMark.ReplaceAllString(text, "")
+	text = strings.TrimSpace(factIndex.ReplaceAllString(strings.TrimSpace(text), ""))
+	var b strings.Builder
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func blockHash(text string) uint64 {
+	norm := normalizeBlock(text)
+	if norm == "" {
+		return 0
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(norm))
+	sum := h.Sum64()
+	if sum == 0 {
+		return 1
+	}
+	return sum
+}
+
+// renumberContinuous rewrites the leading indexes inside one list to 1..n.
+// A list written as 1, 3, 5 or 1, 2, 1, 2 stays in that order and becomes continuous.
+func renumberContinuous(items []any) []any {
+	numbered := 0
+	for _, item := range items {
+		if _, ok := leadingIndex(textOf(item)); ok {
+			numbered++
+		}
+	}
+	if numbered < 2 {
+		return items
+	}
+	out := append([]any{}, items...)
+	n := 0
+	for i, item := range items {
+		text := strings.TrimSpace(textOf(item))
+		if _, ok := leadingIndex(text); !ok {
+			continue
+		}
+		n++
+		rest := strings.TrimSpace(factIndex.ReplaceAllString(text, ""))
+		out[i] = strconv.Itoa(n) + ". " + rest
+	}
+	return out
 }
 
 func repeatKey(text string) string {

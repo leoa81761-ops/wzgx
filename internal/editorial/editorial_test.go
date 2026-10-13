@@ -621,8 +621,8 @@ func TestArticle73RepeatedTemplateIsHeld(t *testing.T) {
 		"先把线槽盖板掀开，再核对编号。",
 		"先把线槽盖板掀开，再核对编号。",
 	}}}}
-	if RepeatedBody(twice) {
-		t.Fatal("twice is allowed")
+	if !RepeatedBody(twice) {
+		t.Fatal("two copies of a 15-character line must be held")
 	}
 	pad := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{strings.Repeat("合适的正文。", 120)}}}}
 	if RepeatedBody(pad) {
@@ -635,6 +635,57 @@ func TestArticle73RepeatedTemplateIsHeld(t *testing.T) {
 	}}}}
 	if RepeatedBody(ordinary) {
 		t.Fatal(ordinary)
+	}
+}
+
+func TestArticle74And75Blocks(t *testing.T) {
+	canned := []string{
+		"先打开检修口再看线槽。",
+		"用螺丝把线槽盖板固定住。",
+		"量一下插座离地的高度。",
+	}
+	thin := EnsureConcreteTips(StripWarmFiller(map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"今晚的气氛很温馨。"}}}}))
+	blob := fillerText(thin)
+	for _, line := range canned {
+		if strings.Contains(blob, line) {
+			t.Fatal(line)
+		}
+	}
+	block := "先打开检修口再看线槽，用螺丝把线槽盖板固定住，再量一下插座离地的高度。"
+	step := "贴一条胶带标出弱电箱的位置后再盘线。"
+	doubled := map[string]any{"sections": []any{
+		map[string]any{"heading": "先看线槽", "paragraphs": []any{block}, "list": []any{"1. " + step}},
+		map[string]any{"heading": "再看一遍", "paragraphs": []any{block}, "list": []any{"2. " + step}, "table": map[string]any{
+			"headers": []any{"项目", "做法"},
+			"rows":    []any{[]any{"线槽", "盖板固定住再量高度"}},
+		}},
+		map[string]any{"heading": "再看一遍", "paragraphs": []any{}, "table": map[string]any{
+			"headers": []any{"项目", "做法"},
+			"rows":    []any{[]any{"线槽", "盖板固定住再量高度"}},
+		}},
+	}}
+	if !RepeatedBody(doubled) {
+		t.Fatal("articles 74 and 75 repeat a whole block")
+	}
+	clean := DedupeHashedBlocks(doubled)
+	paras := paragraphsOf(clean)
+	if len(paras) != 1 || paras[0] != block {
+		t.Fatal(paras)
+	}
+	lists := 0
+	tables := 0
+	for _, section := range sectionsOf(clean) {
+		lists += len(anyList(section["list"]))
+		if section["table"] != nil {
+			tables++
+		}
+	}
+	if lists != 1 || tables != 1 {
+		t.Fatal(lists, tables)
+	}
+	once := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{block}}}}
+	if RepeatedBody(once) {
+		t.Fatal("one copy is not a repeat")
 	}
 }
 

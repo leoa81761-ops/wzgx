@@ -754,7 +754,7 @@ func draftFromPayload(payload map[string]any) map[string]any {
 				lead,
 				follows[slot%len(follows)],
 			},
-			"list": []any{"先做一个最小步骤", "做完后用一句话记下结果", "不追求一次到位", "语气是" + style},
+			"list": []any{"先做一个最小步骤", heading + "做完后用一句话记下结果", "不追求一次到位", "语气是" + style},
 		}
 		if point != nil && point["need_table"] == true {
 			section["table"] = map[string]any{

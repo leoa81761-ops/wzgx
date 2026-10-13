@@ -114,7 +114,12 @@ func TestExperienceTipsDropWarmFiller(t *testing.T) {
 	}}}}
 	out := EnsureConcreteTips(StripWarmFiller(draft))
 	text := fillerText(out)
-	if strings.Contains(text, "温馨") || strings.Contains(text, "默契") || ConcreteTips(out) < 5 {
-		t.Fatal(ConcreteTips(out), text)
+	if strings.Contains(text, "温馨") || strings.Contains(text, "默契") {
+		t.Fatal(text)
+	}
+	for _, line := range []string{"先打开检修口再看线槽。", "用螺丝把线槽盖板固定住。", "量一下插座离地的高度。"} {
+		if strings.Contains(text, line) {
+			t.Fatal(line)
+		}
 	}
 }

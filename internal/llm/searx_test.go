@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
 func TestPlanTargetsPutsUserTavilyThenSearxng(t *testing.T) {
@@ -174,6 +176,27 @@ func TestSearxngRedirectStaysOnItsHost(t *testing.T) {
 	_, _, err := guard.Search(context.Background(), srv.Client(), srv.URL, "综合布线", 0)
 	if err == nil || !strings.Contains(err.Error(), "跳转") {
 		t.Fatal(err)
+	}
+}
+
+func TestSearxngAllowlistIgnoresThePublicClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RawQuery, "engines=360search,sogou,sogou%20wechat") {
+			t.Errorf("engines %s", r.URL.RawQuery)
+		}
+		_, _ = io.WriteString(w, `{"results":[{"title":"综合布线验收","url":"https://www.gov.cn/a","content":"公开说明"}]}`)
+	}))
+	defer srv.Close()
+	guard := NewSearxGuard()
+	guard.rate = 100
+	guard.tokens = 3
+	guard.burst = 3
+	rows, meta, err := guard.Search(context.Background(), content.PublicClient(), srv.URL, "综合布线", 0)
+	if err != nil || len(rows) != 1 || rows[0]["url"] != "https://www.gov.cn/a" {
+		t.Fatal(rows, err)
+	}
+	if meta["provider"] != "searxng" || meta["engines"] != "360search,sogou,sogou wechat" {
+		t.Fatal(meta)
 	}
 }
 
