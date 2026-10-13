@@ -505,9 +505,6 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		}
 		return nil, &tracedError{err: err, trace: built.Trace}
 	}
-	if content.CopiedSpan(content.DraftText(built.Draft), content.SourceTexts(built.Draft)) {
-		return nil, &llm.Error{Message: "正文与参考来源有整段相同的表述"}
-	}
 	if deps.Gateway != nil && !deps.Gateway.Mock {
 		content.AnnotateAccess(ctx, deps.HTTP, built.Draft)
 	}
@@ -1575,16 +1572,11 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	draft = audited
-	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
-	draft = editorial.RepairNearDuplicates(draft)
-	draft = editorial.DedupeBlocks(draft)
-	draft = editorial.DedupeTables(draft)
-	draft = editorial.StripAudience(draft, w.Audience)
-	draft = editorial.DropSummaryEcho(draft)
-	draft = editorial.RewriteTaboos(draft, w.Taboos)
-	draft = editorial.StripMeta(draft)
-	draft = editorial.StripForeignScenes(draft, w.ForeignTitles)
-	draft = editorial.StripUnsourcedNames(draft)
+	draft = polishDraft(draft, w)
+	softened, tabooTokens, tabooTrace := softenTaboos(ctx, gateway, providers, draft, base, w.Taboos, w.CostNote)
+	draft = softened
+	tokens += tabooTokens
+	trace = append(trace, tabooTrace...)
 	offStructure := false
 	if usingColumn && columns.NormalizeStructure(picked.Structure) != "custom" {
 		rewritten, structTokens, structTrace, held := rewriteColumnStructure(ctx, gateway, providers, draft, base, picked.Structure, w.CostNote)
@@ -1593,6 +1585,28 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		trace = append(trace, structTrace...)
 		offStructure = held
 	}
+	topped, topTokens, topTrace := topUpLength(ctx, gateway, providers, draft, base, w.WordTarget, w.CostNote)
+	draft = polishDraft(topped, w)
+	tokens += topTokens
+	trace = append(trace, topTrace...)
+	if motifs := topics.RepeatedMotifs(w.RecentTitles); strings.TrimSpace(w.CostNote) == "" && bodyHasAny(draft, motifs) {
+		motifBase := cloneMap(base)
+		motifBase["avoid_motifs"] = motifs
+		rewritten, motifTokens, motifTrace := rewriteMotif(ctx, gateway, providers, draft, motifBase)
+		draft = rewritten
+		tokens += motifTokens
+		trace = append(trace, motifTrace...)
+	}
+	cleaned, clicheTokens, clicheTrace := rewriteCliches(ctx, gateway, providers, draft, base, w.CostNote)
+	draft = cleaned
+	tokens += clicheTokens
+	trace = append(trace, clicheTrace...)
+	rewrittenCopy, copyTokens, copyTrace := rewriteCopiedSpans(ctx, gateway, providers, draft, base, w.CostNote)
+	draft = editorial.RewriteTaboos(rewrittenCopy, w.Taboos)
+	draft = editorial.StripForeignScenes(draft, w.ForeignTitles)
+	draft = editorial.StripUnsourcedNames(draft)
+	tokens += copyTokens
+	trace = append(trace, copyTrace...)
 	draft = editorial.SupportCitations(draft)
 	delete(draft, "_quality")
 	cited := citationMarks.MatchString(bodyPlain(draft))
@@ -2640,9 +2654,11 @@ func enrichSources(ctx context.Context, client *http.Client, sources []map[strin
 		title, desc := llm.FetchPageMeta(ctx, client, raw)
 		if title != "" {
 			source["title"] = title
+			source["fetched_title"] = title
 		}
 		if desc != "" && strings.TrimSpace(str(source["snippet"])) == "" {
 			source["snippet"] = desc
+			source["fetched_meta"] = desc
 		}
 	}
 }
@@ -2658,6 +2674,10 @@ func filterSourceQuality(sources []map[string]any, topic string) (kept []map[str
 		title := strings.TrimSpace(str(source["title"]))
 		if templatePage(raw, title+" "+str(source["name"])) {
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "PPT模板或文库"})
+			continue
+		}
+		if content.DictionaryHost(raw) {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "词典站点"})
 			continue
 		}
 		if technical && content.OfficialHost(raw) {
@@ -2714,8 +2734,22 @@ func noisyTerm(text string) bool {
 }
 
 func relevantSource(text string, terms []string) bool {
+	need := 2
+	if len(terms) < need {
+		need = len(terms)
+	}
+	if need == 0 {
+		return false
+	}
+	hits := 0
+	seen := map[string]bool{}
 	for _, term := range terms {
-		if strings.Contains(text, term) {
+		if seen[term] || !strings.Contains(text, term) {
+			continue
+		}
+		seen[term] = true
+		hits++
+		if hits >= need {
 			return true
 		}
 	}
@@ -2796,6 +2830,132 @@ func draftParagraphs(draft map[string]any) []string {
 		}
 	}
 	return out
+}
+
+func polishDraft(draft map[string]any, w Input) map[string]any {
+	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
+	draft = editorial.RepairNearDuplicates(draft)
+	draft = editorial.DedupeBlocks(draft)
+	draft = editorial.DedupeTables(draft)
+	draft = editorial.StripAudience(draft, w.Audience)
+	draft = editorial.DropSummaryEcho(draft)
+	draft = editorial.RewriteTaboos(draft, w.Taboos)
+	draft = editorial.StripMeta(draft)
+	draft = editorial.StripForeignScenes(draft, w.ForeignTitles)
+	return editorial.StripUnsourcedNames(draft)
+}
+
+func bodyHasAny(draft map[string]any, words []string) bool {
+	if draft == nil || len(words) == 0 {
+		return false
+	}
+	text := bodyPlain(draft) + "\n" + str(draft["title"]) + "\n" + str(draft["summary"]) + "\n" + str(draft["closing"])
+	for _, word := range words {
+		if word != "" && strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func softenTaboos(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any, taboos, costNote string) (map[string]any, int, []map[string]any) {
+	if !editorial.HasTaboo(draft, taboos) {
+		return draft, 0, nil
+	}
+	if strings.TrimSpace(costNote) == "" && gateway != nil {
+		payload := cloneMap(base)
+		payload["draft"] = draft
+		payload["taboos"] = taboos
+		model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("禁忌改写", payload), llm.StageSchema("正文"), validateDraft)
+		trace := appendStage(nil, "taboo", completion, err)
+		if err == nil && model != nil && !editorial.HasTaboo(model, taboos) && !strings.Contains(bodyPlain(model), "这一步按现场记录来写") && content.BodyRunes(model)*2 >= content.BodyRunes(draft) {
+			copySources(model, draft)
+			return model, tokensOf(completion), trace
+		}
+		return editorial.RewriteTaboos(draft, taboos), tokensOf(completion), trace
+	}
+	return editorial.RewriteTaboos(draft, taboos), 0, nil
+}
+
+func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any, target int, costNote string) (map[string]any, int, []map[string]any) {
+	if gateway == nil || target <= 0 || strings.TrimSpace(costNote) != "" || draft == nil {
+		return draft, 0, nil
+	}
+	goal := target * 110 / 100
+	high := target * 130 / 100
+	if content.BodyRunes(draft) >= goal {
+		return draft, 0, nil
+	}
+	var tokens int
+	var trace []map[string]any
+	for pass := 0; pass < 2 && content.BodyRunes(draft) < goal; pass++ {
+		before := content.BodyRunes(draft)
+		shortfall := goal - before
+		if shortfall < 1 {
+			shortfall = 1
+		}
+		next, added, expandTrace := expandBody(ctx, gateway, pieceProviders(providers), base, draft, goal, shortfall, 0, nil)
+		tokens += added
+		trace = append(trace, expandTrace...)
+		nextRunes := content.BodyRunes(next)
+		if nextRunes > before && nextRunes <= high {
+			copySources(next, draft)
+			draft = next
+		}
+	}
+	return draft, tokens, trace
+}
+
+func rewriteCliches(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any, costNote string) (map[string]any, int, []map[string]any) {
+	if draft == nil || !bodyHasAny(draft, catalog.Cliches) {
+		return draft, 0, nil
+	}
+	fallback := func() map[string]any {
+		cleaned, _ := content.StripCliches(draft).(map[string]any)
+		if cleaned == nil {
+			return draft
+		}
+		return cleaned
+	}
+	if strings.TrimSpace(costNote) != "" || gateway == nil {
+		return fallback(), 0, nil
+	}
+	payload := cloneMap(base)
+	payload["draft"] = draft
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("套话改写", payload), llm.StageSchema("正文"), validateDraft)
+	trace := appendStage(nil, "cliche", completion, err)
+	if err == nil && model != nil && !bodyHasAny(model, catalog.Cliches) && content.BodyRunes(model)*2 >= content.BodyRunes(draft) {
+		copySources(model, draft)
+		return model, tokensOf(completion), trace
+	}
+	return fallback(), tokensOf(completion), trace
+}
+
+func rewriteCopiedSpans(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any, costNote string) (map[string]any, int, []map[string]any) {
+	windows := content.CopiedWindows(content.DraftText(draft), content.SourceTexts(draft))
+	if len(windows) == 0 || draft == nil {
+		return draft, 0, nil
+	}
+	if strings.TrimSpace(costNote) != "" || gateway == nil {
+		return draft, 0, nil
+	}
+	payload := cloneMap(base)
+	payload["draft"] = draft
+	listed := make([]any, len(windows))
+	for i, window := range windows {
+		listed[i] = window
+	}
+	payload["copied_spans"] = listed
+	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("表述改写", payload), llm.StageSchema("正文"), validateDraft)
+	trace := appendStage(nil, "copy", completion, err)
+	if err != nil || model == nil || content.BodyRunes(model)*2 < content.BodyRunes(draft) {
+		return draft, tokensOf(completion), trace
+	}
+	if content.CopiedSpan(content.DraftText(model), content.SourceTexts(draft)) {
+		return draft, tokensOf(completion), trace
+	}
+	copySources(model, draft)
+	return model, tokensOf(completion), trace
 }
 
 func addCitations(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {

@@ -110,13 +110,13 @@ func TestPublicClientRejectsLoopbackRedirect(t *testing.T) {
 	}
 }
 
-func TestPublicClientAllowsThreeRedirects(t *testing.T) {
+func TestPublicClientStopsAfterThreeHops(t *testing.T) {
 	client := PublicClient()
 	next, err := http.NewRequest(http.MethodGet, "https://1.1.1.1/next", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	via := make([]*http.Request, 3)
+	via := make([]*http.Request, 2)
 	for i := range via {
 		hop, err := http.NewRequest(http.MethodGet, "https://1.1.1.1/hop", nil)
 		if err != nil {

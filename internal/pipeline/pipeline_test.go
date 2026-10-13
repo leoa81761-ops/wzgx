@@ -309,7 +309,7 @@ func TestDraftExpandsOnceWhenShort(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "short@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 1 {
+	if expandCalls != 3 {
 		t.Fatalf("expand calls %d", expandCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
@@ -734,8 +734,7 @@ func TestFactCheckExpansionIsTrimmed(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		case "扩写":
-			t.Errorf("an in-band draft should not be expanded, got %s", stageOf(req))
-			writeChoice(w, longDraft)
+			writeChoice(w, map[string]any{"title": "核对后变长", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{inBand}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		case "缩写":
 			writeChoice(w, map[string]any{
 				"title": "核对后变长", "summary": "摘要",
@@ -817,7 +816,7 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "long@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 0 || condenseCalls < 1 {
+	if expandCalls != 2 || condenseCalls < 1 {
 		t.Fatalf("expand %d condense %d", expandCalls, condenseCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
@@ -831,7 +830,7 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 
 func TestDraftSkipsRewriteWhenInBand(t *testing.T) {
 	var expandCalls, condenseCalls int
-	text := strings.Repeat("合适的正文。", 130)
+	text := strings.Repeat("合适的正文。", 147)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
@@ -1726,6 +1725,8 @@ func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
 		{"title": "", "snippet": "弱电验收的公开说明", "url": "https://www.gov.cn/zhengce/1"},
 		{"title": "奶奶养生茶", "url": "https://www.gov.cn/tea"},
 		{"title": "", "url": "https://www.gov.cn/zhengce/untitled"},
+		{"title": "弱电验收词典", "url": "https://www.json.cn/ci"},
+		{"title": "验收说明", "url": "https://example.com/one"},
 	}, content.DefaultSourcePolicy(), "弱电 验收")
 	if len(kept) != 4 {
 		t.Fatal(kept)
@@ -1734,7 +1735,7 @@ func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
 	for _, row := range kept {
 		seen[str(row["url"])] = true
 	}
-	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || !seen["https://www.gov.cn/tea"] || !seen["https://www.gov.cn/zhengce/untitled"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] {
+	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || !seen["https://www.gov.cn/tea"] || !seen["https://www.gov.cn/zhengce/untitled"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] || seen["https://www.json.cn/ci"] || seen["https://example.com/one"] {
 		t.Fatal(kept, dropped)
 	}
 }

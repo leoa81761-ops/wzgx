@@ -153,7 +153,7 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 	}
 	expand := StageMessages("扩写", map[string]any{"word_target": 800, "expand_goal": 840})
 	expandSystem := expand[0]["content"]
-	if strings.Contains(expandSystem, "85% 到 130%") || !strings.Contains(expandSystem, "105%") || !strings.Contains(expandSystem, "110%") {
+	if strings.Contains(expandSystem, "85% 到 130%") || !strings.Contains(expandSystem, "105%") || !strings.Contains(expandSystem, "110%") || !strings.Contains(expandSystem, "[n]") {
 		t.Fatal(expandSystem)
 	}
 	draft := StageMessages("正文", map[string]any{"word_target": 1500, "avoid_motifs": []any{"温茶转圈"}})
@@ -161,7 +161,13 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 		t.Fatal(draft[0]["content"])
 	}
 	structure := StageMessages("栏目结构", map[string]any{"column_structure": "news"})
-	if !strings.Contains(structure[0]["content"], "不要在句首机械地加") || strings.Contains(structure[0]["content"], "答：按上面的问题") {
+	if !strings.Contains(structure[0]["content"], "不要在句首机械地加") || strings.Contains(structure[0]["content"], "答：按上面的问题") || !strings.Contains(structure[0]["content"], "[n]") {
 		t.Fatal(structure[0]["content"])
+	}
+	for _, stage := range []string{"缩写", "事实核对", "审核", "结构润色", "补引用", "意象改写"} {
+		messages := StageMessages(stage, map[string]any{"word_target": 800})
+		if !strings.Contains(messages[0]["content"], "[n]") {
+			t.Fatalf("%s prompt dropped citation markers: %s", stage, messages[0]["content"])
+		}
 	}
 }

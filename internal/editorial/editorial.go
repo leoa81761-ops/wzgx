@@ -745,7 +745,7 @@ func anyList(raw any) []any {
 }
 
 // RewriteTaboos drops sentences that contain a persona taboo and leaves the rest of the draft.
-// An empty paragraph becomes a neutral line so the task is not failed for mentioning the phrase.
+// An empty paragraph is removed. Bare 验收 and 中标 are not taboos, and no placeholder is inserted.
 func RewriteTaboos(draft map[string]any, taboos string) map[string]any {
 	words := tabooWords(taboos)
 	if draft == nil || len(words) == 0 {
@@ -766,7 +766,11 @@ func RewriteTaboos(draft map[string]any, taboos string) map[string]any {
 		}
 		var paras []any
 		for _, item := range anyList(section["paragraphs"]) {
-			paras = append(paras, rewriteTabooText(textOf(item), words))
+			text := rewriteTabooText(textOf(item), words)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			paras = append(paras, text)
 		}
 		if paras == nil {
 			paras = []any{}
@@ -824,7 +828,11 @@ func StripUnsourcedNames(draft map[string]any) map[string]any {
 		}
 		var paras []any
 		for _, item := range anyList(section["paragraphs"]) {
-			paras = append(paras, rewrite(textOf(item)))
+			text := rewrite(textOf(item))
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			paras = append(paras, text)
 		}
 		if paras == nil {
 			paras = []any{}
@@ -896,13 +904,36 @@ func tabooWords(text string) []string {
 		return r == ',' || r == '，' || r == '\n' || r == '、' || r == ';' || r == '；'
 	}) {
 		part = strings.TrimSpace(part)
-		if part == "" || seen[part] {
+		if part == "" || seen[part] || bareTopicWord(part) {
 			continue
 		}
 		seen[part] = true
 		out = append(out, part)
 	}
 	return out
+}
+
+// bareTopicWord is a subject word, not a promise. 验收 and 中标 stay in the article.
+func bareTopicWord(text string) bool {
+	switch text {
+	case "中标", "验收":
+		return true
+	default:
+		return false
+	}
+}
+
+// HasTaboo reports a promise phrase from the persona list. Bare 验收 and 中标 do not count.
+func HasTaboo(draft map[string]any, taboos string) bool {
+	words := tabooWords(taboos)
+	if draft == nil || len(words) == 0 {
+		return false
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		return false
+	}
+	return containsAny(string(raw), words...)
 }
 
 func rewriteTabooText(text string, words []string) string {
@@ -918,7 +949,7 @@ func rewriteTabooText(text string, words []string) string {
 		kept = append(kept, sentence)
 	}
 	if len(kept) == 0 {
-		return "这一步按现场记录来写。"
+		return ""
 	}
 	return strings.Join(kept, "")
 }
@@ -1113,7 +1144,11 @@ func StripMeta(draft map[string]any) map[string]any {
 		section["heading"] = rewriteTabooText(textOf(section["heading"]), words)
 		var paras []any
 		for _, item := range anyList(section["paragraphs"]) {
-			paras = append(paras, rewriteTabooText(textOf(item), words))
+			text := rewriteTabooText(textOf(item), words)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			paras = append(paras, text)
 		}
 		if paras == nil {
 			paras = []any{}
