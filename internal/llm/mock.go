@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
-	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
 const lengthRule = "word_target 只是篇幅参考。写完要说的事就可以停，不要为了凑字数重复或注水。" +
@@ -160,22 +159,6 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if asString(payload["query_mode"]) == "short" {
 			system += "这是补救检索。只写一条中文检索词，最多 3 条权威来源。"
 		}
-	case "扩写":
-		schema = StageSchema("正文")
-		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写。" +
-			"不要把原来的段落拉长注水，也不要整篇重写替换。只在原文后面追加新小节，保留原来的段落、列表和表格。" +
-			"新小节只能是这四类：现场案例、容易踩的坑、常见问题、收工前核对。每节写出具体数字、工具和场景，不要用同一句重复充字数。" +
-			"目标大约是 word_target 的 105%，收尾补写时按 expand_goal，大约是 word_target 的 110%。写到这个目标就停，不要为了凑到 130% 而注水。" +
-			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
-			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。列表和表格里的字都要算进去。" +
-			sourcedFacts + namedSourceRule + anecdoteRule + evidenceRule(payload) + columnRule(payload) +
-			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
-	case "缩写":
-		schema = StageSchema("正文")
-		system = "你是公众号编辑。当前正文偏长。请压缩到不少于 word_target、不超过 word_target 的 130%，删掉重复和空话，保留事实、步骤和 sources，不要新增材料或网址。" +
-			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。不要短于 word_target。" +
-			sourcedFacts + readerRule + evidenceRule(payload) +
-			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "标题":
 		system = "你是公众号标题编辑。请用输入里的语气，写 10 到 12 个彼此不同的标题。" +
 			"每个标题不超过 28 个字，不要写成叙述句，不要用逗号铺成一段话。" +
@@ -380,22 +363,6 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 			draft = MockForStage("正文", payload)
 		}
 		return cleanDraft(draft)
-	case "扩写":
-		draft, _ := payload["draft"].(map[string]any)
-		if draft == nil {
-			draft = draftFromPayload(payload)
-		}
-		return draft
-	case "缩写":
-		draft, _ := payload["draft"].(map[string]any)
-		if draft == nil {
-			draft = draftFromPayload(payload)
-		}
-		target := intOf(payload["word_target"])
-		if target < 1 {
-			target = 800
-		}
-		return content.TrimToMax(draft, target*130/100)
 	case "标题":
 		return mockTitles(payload)
 	case "结构润色":

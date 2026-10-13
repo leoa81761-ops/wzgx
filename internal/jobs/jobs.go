@@ -15,6 +15,9 @@ import (
 )
 
 func Create(ctx context.Context, st *store.Store, q db.Q, user *model.User, plan *model.WritingPlan, account *model.WxAccount, trigger string, now time.Time, regen *model.Article) (*model.ArticleTask, error) {
+	if user == nil || plan == nil || account == nil || account.UserID != user.ID || plan.UserID != user.ID || plan.WxAccountID != account.ID {
+		return nil, &quota.Error{Message: "这个公众号不属于当前账号"}
+	}
 	if err := st.LockUserQuota(ctx, q, user.ID); err != nil {
 		return nil, err
 	}

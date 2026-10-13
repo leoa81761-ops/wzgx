@@ -178,33 +178,6 @@ func TestCleanupKeepsTheBodyWithTheSections(t *testing.T) {
 	}
 }
 
-func TestCondenseRejectsBelowTheTarget(t *testing.T) {
-	long := strings.Repeat("原文说明引用这里[1]。", 80)
-	original := map[string]any{
-		"title":    "验收记录",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}},
-		"closing":  "结束。",
-		"sources":  []any{map[string]any{"name": "官网", "url": "https://www.gov.cn/a"}},
-	}
-	short := map[string]any{
-		"title":    "验收记录",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"压短后的说明仍见[1]。"}, "list": []any{}}},
-		"closing":  "结束。",
-		"sources":  []any{},
-	}
-	if content.BodyRunes(short) >= 800 {
-		t.Fatal(content.BodyRunes(short))
-	}
-	kept, ok := keepCondensed(original, short, 800)
-	if ok || content.BodyRunes(kept) != content.BodyRunes(original) {
-		t.Fatal(ok, content.BodyRunes(kept))
-	}
-	kept, ok = keepCondensed(original, short, 0)
-	if !ok || !strings.Contains(bodyPlain(kept), "压短后的说明仍见[1]。") {
-		t.Fatal(ok, kept)
-	}
-}
-
 func TestFamilyFooterIsNotTheMedicalLine(t *testing.T) {
 	home := footnoteDisclaimer(store.VerticalPack{Key: "family", Disclaimer: "本文仅供科普，不能替代医生诊疗意见。"})
 	if strings.Contains(home, "医生") || !strings.Contains(home, "家庭生活") {

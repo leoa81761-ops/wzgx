@@ -890,57 +890,6 @@ func TestSensitiveWordFromFinishPieceFailsTheDraft(t *testing.T) {
 	}
 }
 
-func TestCondenseKeepsSourcesAndRejectsNewClaims(t *testing.T) {
-	long := strings.Repeat("原文说明引用这里[1]。", 40)
-	original := func() map[string]any {
-		return map[string]any{
-			"title":    "验收记录",
-			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{long}, "list": []any{}}},
-			"closing":  "结束。",
-			"sources":  []any{map[string]any{"name": "官网", "title": "原文", "url": "https://www.gov.cn/a"}},
-		}
-	}
-	short := map[string]any{
-		"title":    "验收记录",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"压短后的说明仍见[1]。"}, "list": []any{}}},
-		"closing":  "结束。",
-		"sources":  []any{map[string]any{"name": "坏站", "title": "替换", "url": "https://evil.example/a"}},
-	}
-	changed := map[string]any{
-		"title":    "验收记录",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"压短后出现了99这个新数字。"}, "list": []any{}}},
-		"closing":  "结束。",
-		"sources":  []any{},
-	}
-	var mode string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if mode == "reject" {
-			writeChoice(w, changed)
-			return
-		}
-		writeChoice(w, short)
-	}))
-	defer srv.Close()
-	gateway := llm.NewGateway(false, srv.Client())
-	providers := map[string][]llm.Provider{"review": {{Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second}}}
-	kept, _, _ := condenseOnce(context.Background(), gateway, providers, original(), map[string]any{})
-	raw, _ := json.Marshal(kept)
-	text := string(raw)
-	if !strings.Contains(text, "压短后的说明仍见[1]。") || !strings.Contains(text, "https://www.gov.cn/a") || strings.Contains(text, "evil.example") {
-		t.Fatal(text)
-	}
-	mode = "reject"
-	rejected, _, trace := condenseOnce(context.Background(), gateway, providers, original(), map[string]any{})
-	raw, _ = json.Marshal(rejected)
-	text = string(raw)
-	if !strings.Contains(text, long) || strings.Contains(text, "99") || !strings.Contains(text, "https://www.gov.cn/a") {
-		t.Fatal(text)
-	}
-	if len(trace) == 0 || trace[0]["stage"] != "condense" || trace[0]["ok"] != true {
-		t.Fatalf("%#v", trace)
-	}
-}
-
 func TestDegradeSkipsRewriteAndTitles(t *testing.T) {
 	long := strings.Repeat("这是一段很长的说明文字。", 200)
 	short := strings.Repeat("压短后的说明。", 120)

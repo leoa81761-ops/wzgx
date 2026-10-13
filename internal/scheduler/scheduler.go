@@ -241,6 +241,11 @@ func (r *Runner) handlePlan(ctx context.Context, tx *db.Tx, plan *model.WritingP
 		plan.PauseReason = "授权失效"
 		return r.Deps.Store.UpdatePlan(ctx, tx, plan)
 	}
+	if account.UserID != plan.UserID {
+		plan.Status = "paused"
+		plan.PauseReason = "账号不匹配"
+		return r.Deps.Store.UpdatePlan(ctx, tx, plan)
+	}
 	if account.BindStatus != "active" {
 		plan.Status = "paused"
 		if account.BindStatus == "auth_invalid" {

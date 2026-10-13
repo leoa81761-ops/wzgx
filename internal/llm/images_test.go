@@ -151,11 +151,6 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 	if !strings.Contains(short[0]["content"], "补救检索") {
 		t.Fatal(short[0]["content"])
 	}
-	expand := StageMessages("扩写", map[string]any{"word_target": 800, "expand_goal": 840})
-	expandSystem := expand[0]["content"]
-	if strings.Contains(expandSystem, "85% 到 130%") || !strings.Contains(expandSystem, "105%") || !strings.Contains(expandSystem, "110%") || !strings.Contains(expandSystem, "[n]") {
-		t.Fatal(expandSystem)
-	}
 	draft := StageMessages("正文", map[string]any{"word_target": 1500, "avoid_motifs": []any{"温茶转圈"}})
 	if !strings.Contains(draft[0]["content"], "word_target") || !strings.Contains(draft[0]["content"], "JSON Schema") || !strings.Contains(draft[0]["content"], "机构名") || !strings.Contains(draft[0]["content"], "温茶转圈") {
 		t.Fatal(draft[0]["content"])
@@ -182,7 +177,7 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 	if !strings.Contains(judge[0]["content"], "JSON Schema") || !strings.Contains(judge[0]["content"], "items") || !strings.Contains(judge[0]["content"], "page_type") || !strings.Contains(judge[0]["content"], "小说") {
 		t.Fatal(judge[0]["content"])
 	}
-	for _, stage := range []string{"缩写", "事实核对", "审核", "结构润色", "补引用", "意象改写"} {
+	for _, stage := range []string{"事实核对", "审核", "结构润色", "补引用", "意象改写"} {
 		messages := StageMessages(stage, map[string]any{"word_target": 800})
 		if !strings.Contains(messages[0]["content"], "[n]") {
 			t.Fatalf("%s prompt dropped citation markers: %s", stage, messages[0]["content"])
