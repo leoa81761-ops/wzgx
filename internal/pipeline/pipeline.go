@@ -1845,11 +1845,15 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if usingColumn {
 		columnStructure = picked.Structure
 	}
-	if experience && !listedHaveURL(asList(draft["sources"])) && listedHaveURL(researchSources) {
-		draft["sources"] = researchSources
+	if experience {
+		draft["sources"] = keepKnownSources(asList(draft["sources"]), researchSources)
+		if !listedHaveURL(asList(draft["sources"])) && listedHaveURL(researchSources) {
+			draft["sources"] = researchSources
+		}
 	}
 	sourcedPiece := listedHaveURL(asList(draft["sources"]))
 	if experience && !sourcedPiece {
+		draft["sources"] = []any{}
 		draft = settleExperience(draft, columnStructure, w.WordTarget)
 	} else {
 		draft = editorial.SupportCitations(draft)
@@ -2823,8 +2827,8 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		rawCount += len(second.ResearchSources)
 	}
 	var engines []map[string]any
-	// Model citations are not a reason to skip search. A later judge can drop
-	// every one of them, and SearXNG would otherwise never see the query.
+	// Model citations are not a reason to skip the backup search. A later judge
+	// can drop every one of them. SearXNG is included only when an admin enabled it.
 	{
 		queries := backupQueries(payload)
 		foundRows := make([][]map[string]any, len(queries))
@@ -4666,6 +4670,35 @@ func factLines(source map[string]any) []string {
 		if text := strings.TrimSpace(str(raw)); text != "" {
 			out = append(out, text)
 		}
+	}
+	return out
+}
+
+// keepKnownSources drops URLs the model invented. Experience mode may only cite links the search already returned.
+func keepKnownSources(draftSources, research []any) []any {
+	allowed := map[string]bool{}
+	for _, raw := range research {
+		source, _ := raw.(map[string]any)
+		if source == nil {
+			continue
+		}
+		if u := strings.TrimSpace(str(source["url"])); u != "" {
+			allowed[u] = true
+		}
+	}
+	var out []any
+	for _, raw := range draftSources {
+		source, _ := raw.(map[string]any)
+		if source == nil {
+			continue
+		}
+		u := strings.TrimSpace(str(source["url"]))
+		if u != "" && allowed[u] {
+			out = append(out, source)
+		}
+	}
+	if out == nil {
+		return []any{}
 	}
 	return out
 }

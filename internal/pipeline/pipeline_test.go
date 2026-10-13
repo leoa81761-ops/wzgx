@@ -2457,6 +2457,21 @@ func TestExperienceDraftSplitsAndDedupes(t *testing.T) {
 	}
 }
 
+func TestExperienceKeepsOnlySourcesTheSearchReturned(t *testing.T) {
+	research := []any{map[string]any{"title": "现场记录", "url": "https://example.com/real"}}
+	draft := []any{
+		map[string]any{"title": "编造的标准", "url": "https://example.com/fake"},
+		map[string]any{"title": "现场记录", "url": "https://example.com/real"},
+	}
+	kept := keepKnownSources(draft, research)
+	if len(kept) != 1 || str(kept[0].(map[string]any)["url"]) != "https://example.com/real" {
+		t.Fatal(kept)
+	}
+	if len(keepKnownSources(draft, nil)) != 0 {
+		t.Fatal("invented urls stayed")
+	}
+}
+
 func TestStageBudgetsStayUnderTwelveMinutes(t *testing.T) {
 	sum := budgetCall*4 + budgetResearch
 	if sum > generationBudget || generationBudget > 12*time.Minute {

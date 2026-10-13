@@ -361,7 +361,7 @@ func (a *App) integrationView(ctx context.Context, docs map[string]integrate.Doc
 
 func searchTargets(cfg config.Settings) []llm.SearchTarget {
 	out := llm.PlanTargets(llm.ChainOptions{
-		SearxngURL:        cfg.SearxngURL,
+		SearxngURL:        cfg.ActiveSearxngURL(),
 		PlatformTavilyKey: cfg.TavilyAPIKey,
 		PlatformTavilyURL: cfg.TavilyAPIURL,
 		Provider:          cfg.ResearchSearchProvider,

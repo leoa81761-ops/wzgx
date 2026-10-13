@@ -66,6 +66,7 @@ type Settings struct {
 	ResearchSearchAPI         string
 	ResearchSearchKey         string
 	ResearchSearchProvider    string
+	SearxngEnabled            bool
 	SearxngURL                string
 	SearxngEngines            string
 	SearxngDailyCap           int
@@ -180,6 +181,7 @@ func Load() Settings {
 		ResearchSearchAPI:         strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_API")),
 		ResearchSearchKey:         os.Getenv("RESEARCH_SEARCH_KEY"),
 		ResearchSearchProvider:    strings.ToLower(strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_PROVIDER"))),
+		SearxngEnabled:            envBool("SEARXNG_ENABLED", false),
 		SearxngURL:                getenv("SEARXNG_URL", "http://searxng:8080"),
 		SearxngEngines:            getenv("SEARXNG_ENGINES", "sogou,bing,360search,sogou wechat"),
 		SearxngDailyCap:           nonNeg("SEARXNG_DAILY_CAP", 40),
@@ -208,6 +210,17 @@ func Load() Settings {
 		TplAPIBase:                getenv("WECHAT_TPL_API_BASE", "https://api.weixin.qq.com"),
 		TplFields:                 getenv("WECHAT_TPL_FIELDS", "thing1,thing2"),
 	}
+}
+
+// ActiveSearxngURL is the address to call. SearXNG stays off until an admin or SEARXNG_ENABLED turns it on.
+func (s Settings) ActiveSearxngURL() string {
+	if !s.SearxngEnabled {
+		return ""
+	}
+	if u := strings.TrimSpace(s.SearxngURL); u != "" {
+		return u
+	}
+	return "http://searxng:8080"
 }
 
 func (s Settings) SMSEnabled() bool {
