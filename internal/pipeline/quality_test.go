@@ -34,7 +34,7 @@ func TestExpandRetriesOnceWithTheShortfall(t *testing.T) {
 		calls++
 		msgs, _ := req["messages"].([]any)
 		blob, _ := json.Marshal(msgs)
-		if calls == 2 && strings.Contains(string(blob), "shortfall") {
+		if strings.Contains(string(blob), "shortfall") {
 			sawShortfall = true
 		}
 		writeChoice(w, map[string]any{
@@ -53,7 +53,7 @@ func TestExpandRetriesOnceWithTheShortfall(t *testing.T) {
 	out, _, _, still := fitBody(context.Background(), gw, []llm.Provider{{
 		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
 	}}, map[string]any{"word_target": 800}, draft, 800)
-	if calls != 3 || !sawShortfall || !still || content.BodyRunes(out) >= 800*85/100 {
+	if calls != 1 || !sawShortfall || !still || content.BodyRunes(out) >= 800*85/100 {
 		t.Fatalf("calls %d shortfall %v still %v runes %d", calls, sawShortfall, still, content.BodyRunes(out))
 	}
 }
@@ -109,7 +109,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 5 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 3 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }
@@ -154,7 +154,7 @@ func TestUncitedSourcesStayOutOfTheArticle(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if article.Status != "in_draft" || article.DraftMediaID == "" || !strings.Contains(article.BodyHTML, "经验分享") || !strings.Contains(article.BodyHTML, "www.gov.cn") || strings.Contains(article.BodyHTML, "参考来源") || strings.Contains(article.BodyHTML, "[1]") || strings.Contains(article.DeliveryNote, "没有引用") || strings.Contains(article.DeliveryNote, "无参考来源") {
+	if article.Status != "in_draft" || article.DraftMediaID == "" || strings.Contains(article.BodyHTML, "经验分享") || !strings.Contains(article.BodyHTML, "参考来源") || !strings.Contains(article.BodyHTML, "[1]") || !strings.Contains(article.BodyHTML, "www.gov.cn") || strings.Contains(article.DeliveryNote, "没有引用") || strings.Contains(article.DeliveryNote, "无参考来源") {
 		t.Fatal(article.Status, article.DraftMediaID, article.DeliveryNote, article.BodyHTML)
 	}
 }

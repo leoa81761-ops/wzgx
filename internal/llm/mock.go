@@ -21,7 +21,8 @@ const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据�
 
 const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
-const experienceRule = "writing_mode 是 experience：这是经验分享。不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。文末来源会标成经验分享。" +
+const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。不要编造外部机构、标准和新闻，不要使用 [n]。至少写出 5 条能照做的具体做法，带上动作和数量或工具，不要用温馨、默契这类空话。文末来源会标成经验分享。" +
+	"如果已经有来源网址，不要标成经验分享，在用到该来源的句子后写 [n]。" +
 	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少三对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
 	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。不要写诊断、剂量、疗效或用药。"
 
@@ -146,9 +147,11 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "扩写":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写。" +
+			"在原文后面追加新的小节，保留原来的段落、列表和表格，不要整篇重写替换。" +
+			"事实不够时按栏目补上案例、步骤、易错和问答，不要把同一段反复重写。" +
 			"目标大约是 word_target 的 105%，收尾补写时按 expand_goal，大约是 word_target 的 110%。写到这个目标就停，不要为了凑到 130% 而注水。" +
 			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
-			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
+			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。列表和表格里的字都要算进去。" +
 			sourcedFacts + namedSourceRule + anecdoteRule + evidenceRule(payload) + columnRule(payload) +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
@@ -249,7 +252,8 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "选题" {
-			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。"
+			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。" +
+				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。"
 		}
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthRule + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
@@ -328,6 +332,9 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		angle := asString(payload["angle"])
 		if angle == "" {
 			angle = "一个小做法"
+		}
+		if strings.Contains(angle, "两种做法") || strings.Contains(angle, "对比两种") {
+			angle = "一个具体问题"
 		}
 		full := title + "：" + angle
 		if len([]rune(full)) > 64 {

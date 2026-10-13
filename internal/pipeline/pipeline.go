@@ -1497,7 +1497,7 @@ func ApplyColumnChoice(choice topics.Choice, at time.Time, active []columns.Colu
 		choice.Subtopic = subs[len(history)%len(subs)]
 	}
 	choice.Column = col.Name
-	choice = topics.Diverge(choice, subs, topics.AngleOptions(choice.Angle), topicMemory(history, titles, covered))
+	choice = topics.Diverge(choice, subs, topics.AnglesFor(col.Name, col.Positioning, col.Structure, choice.Angle), topicMemory(history, titles, covered))
 	return choice, col, true
 }
 
@@ -1668,7 +1668,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if usingColumn {
 			subs = columns.Topics(picked.Name, picked.Positioning, w.Direction, w.Keywords)
 		}
-		shifted := topics.Diverge(topic, subs, topics.AngleOptions(topic.Angle), append(topicMemoryLines, topicTitle))
+		shifted := topics.Diverge(topic, subs, angleChoices(usingColumn, picked, topic.Angle), append(topicMemoryLines, topicTitle))
 		alt := clip(shifted.Subtopic+"："+shifted.Angle, 64)
 		if alt != "" && !topics.SameSubject(alt, topicMemoryLines) {
 			topic = shifted
@@ -1676,6 +1676,13 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			base["subtopic"] = topic.Subtopic
 			base["angle"] = topic.Angle
 			base["column"] = topic.Column
+		}
+	}
+	topicTitle = topics.FitTitle(topicTitle, topic.Column, picked.Positioning, picked.Structure, accountTheme(w, picked, topic))
+	if topics.ComparisonFrame(topic.Angle) {
+		if angles := angleChoices(usingColumn, picked, topic.Angle); len(angles) > 0 {
+			topic.Angle = angles[0]
+			base["angle"] = topic.Angle
 		}
 	}
 	base["topic_title"] = topicTitle
@@ -1732,7 +1739,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			if len(subs) > 0 {
 				topic.Subtopic = subs[0]
 			}
-			topic = topics.Diverge(topic, subs, topics.AngleOptions(topic.Angle), topicMemory(w.History, w.RecentTitles, w.RecentTopics))
+			topic = topics.Diverge(topic, subs, topics.AnglesFor(alt.Name, alt.Positioning, alt.Structure, topic.Angle), topicMemory(w.History, w.RecentTitles, w.RecentTopics))
 			base["column"] = topic.Column
 			base["subtopic"] = topic.Subtopic
 			base["angle"] = topic.Angle
@@ -1741,7 +1748,8 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			if text := strings.TrimSpace(alt.Positioning); text != "" {
 				base["column_positioning"] = text
 			}
-			base["topic_title"] = clip(topic.Subtopic+"："+topic.Angle, 64)
+			topicTitle = topics.FitTitle(clip(topic.Subtopic+"："+topic.Angle, 64), topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic))
+			base["topic_title"] = topicTitle
 			if alt.WordTarget > w.WordTarget {
 				w.WordTarget = alt.WordTarget
 				base["word_target"] = w.WordTarget
@@ -1911,10 +1919,15 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if usingColumn {
 		columnStructure = picked.Structure
 	}
-	if experience {
+	if experience && !listedHaveURL(asList(draft["sources"])) && listedHaveURL(researchSources) {
+		draft["sources"] = researchSources
+	}
+	sourcedPiece := listedHaveURL(asList(draft["sources"]))
+	if experience && !sourcedPiece {
 		draft = settleExperience(draft, columnStructure, w.WordTarget)
 	} else {
 		draft = editorial.SupportCitations(draft)
+		draft = editorial.CiteSupported(draft)
 		draft = editorial.RenumberCitations(draft)
 	}
 	delete(draft, "_quality")
@@ -1927,21 +1940,19 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if usingColumn {
 			draft = quality.AlignStructure(picked.Structure, draft)
 		}
-		if experience {
+		if experience && !sourcedPiece {
 			draft = settleExperience(draft, columnStructure, w.WordTarget)
 		} else {
 			draft = editorial.SupportCitations(draft)
+			draft = editorial.CiteSupported(draft)
 			draft = editorial.RenumberCitations(draft)
 		}
 		cited = citationMarks.MatchString(bodyPlain(draft))
 	}
 	uncited := false
-	if experience {
-		if !listedHaveURL(asList(draft["sources"])) && listedHaveURL(researchSources) {
-			draft["sources"] = researchSources
-		}
+	if experience && !sourcedPiece {
 		draft["source_heading"] = "经验分享"
-	} else if w.Tier != "free" && hadSources {
+	} else if w.Tier != "free" && (hadSources || sourcedPiece) {
 		if cited {
 			saved := append([]any{}, asList(draft["sources"])...)
 			if !applyCitations(draft) {
@@ -1959,7 +1970,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if usingColumn && columns.NormalizeStructure(picked.Structure) != "custom" {
 		offStructure = !quality.StructureOK(columns.NormalizeStructure(picked.Structure), draftParagraphs(draft))
 	}
-	footnotes := []any{"请发布前审阅。"}
+	footnotes := []any{}
 	if text := footnoteDisclaimer(w.Pack); text != "" {
 		footnotes = append(footnotes, text)
 	}
@@ -1997,10 +2008,25 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft["image_style"] = imageStyle
 	}
 	draft = editorial.ShapeCopy(draft)
-	if !experience {
+	draft = editorial.RepairStructure(draft)
+	if experience && !sourcedPiece {
+		draft = editorial.StripWarmFiller(draft)
+		draft = editorial.EnsureConcreteTips(draft)
+	}
+	if factsThin(base) && w.WordTarget > 0 && content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget) {
+		draft = appendColumnTemplate(draft, base, w.WordTarget*85/100)
+		draft = editorial.RepairStructure(draft)
+	}
+	if sourcedPiece && !citationMarks.MatchString(bodyPlain(draft)) {
+		draft = ensureInlineCitations(draft)
+	}
+	if str(draft["source_heading"]) == "经验分享" && listedHaveURL(asList(draft["sources"])) {
+		delete(draft, "source_heading")
+	}
+	if sourcedPiece || !experience {
 		draft = editorial.RenumberCitations(draft)
 		cited = citationMarks.MatchString(bodyPlain(draft))
-		if w.Tier != "free" && hadSources {
+		if w.Tier != "free" && (hadSources || sourcedPiece) {
 			if cited {
 				saved := append([]any{}, asList(draft["sources"])...)
 				if applyCitations(draft) {
@@ -2022,7 +2048,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.WordTarget > 0 {
 		lengthShort = content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget)
 	}
-	thin := thinExperience(draft, experience, strings.TrimSpace(topic.Column+" "+w.ColumnName))
+	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
 		"stages": stageCharList(trace),
@@ -2032,6 +2058,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if err != nil {
 		return Built{Trace: trace, Topic: topic}, err
 	}
+	html = editorial.RepairMarkup(html)
 	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Searched: searched}, nil
 }
 
@@ -3002,9 +3029,9 @@ func backupQueries(payload map[string]any) []string {
 	}
 	add(shortSearchQuery(payload))
 	add(focusedQuery(payload))
-	title := strings.TrimSpace(str(payload["topic_title"]))
+	title := stripComparison(strings.TrimSpace(str(payload["topic_title"])))
 	if title == "" {
-		title = strings.TrimSpace(str(payload["subtopic"]))
+		title = stripComparison(strings.TrimSpace(str(payload["subtopic"])))
 	}
 	if utf8.RuneCountInString(title) > 12 {
 		title = string([]rune(title)[:12])
@@ -3027,9 +3054,9 @@ func backupQueries(payload map[string]any) []string {
 }
 
 func focusedQuery(payload map[string]any) string {
-	title := strings.TrimSpace(str(payload["topic_title"]))
+	title := stripComparison(strings.TrimSpace(str(payload["topic_title"])))
 	if title == "" {
-		title = strings.TrimSpace(str(payload["subtopic"]))
+		title = stripComparison(strings.TrimSpace(str(payload["subtopic"])))
 	}
 	if title == "" {
 		return shortSearchQuery(payload)
@@ -3043,6 +3070,9 @@ func focusedQuery(payload map[string]any) string {
 		}
 	}, title)
 	title = strings.Join(strings.Fields(title), " ")
+	if topics.ComparisonFrame(title) || strings.TrimSpace(title) == "" {
+		return shortSearchQuery(payload)
+	}
 	if utf8.RuneCountInString(title) > 24 {
 		title = string([]rune(title)[:24])
 	}
@@ -3050,30 +3080,65 @@ func focusedQuery(payload map[string]any) string {
 }
 
 func shortSearchQuery(payload map[string]any) string {
-	title := strings.TrimSpace(str(payload["topic_title"]))
-	if utf8.RuneCountInString(title) > 18 {
-		title = string([]rune(title)[:18])
-	}
-	var extra []string
-	seen := map[string]bool{}
-	for _, term := range topicTerms(topicText(payload)) {
-		if len(extra) >= 3 {
-			break
-		}
-		if term == "" || seen[term] || strings.Contains(title, term) {
-			continue
-		}
-		seen[term] = true
-		extra = append(extra, term)
-	}
-	query := strings.TrimSpace(title + " " + strings.Join(extra, " "))
+	query := searchEntities(payload)
 	if query == "" {
-		query = strings.TrimSpace(topicText(payload))
+		query = stripComparison(strings.TrimSpace(topicText(payload)))
 	}
 	if utf8.RuneCountInString(query) > 32 {
 		query = string([]rune(query)[:32])
 	}
 	return strings.TrimSpace(query)
+}
+
+func searchEntities(payload map[string]any) string {
+	raw := stripComparison(strings.Join([]string{
+		str(payload["subtopic"]),
+		str(payload["topic_title"]),
+		str(payload["keywords"]),
+		str(payload["column_positioning"]),
+		str(payload["direction"]),
+	}, " "))
+	var parts []string
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ' ', '，', '。', '？', '?', '！', '、', '：', ':', '；', ';', '\n', '的', '了', '和', '与':
+			return true
+		default:
+			return false
+		}
+	}) {
+		part = strings.TrimSpace(part)
+		n := utf8.RuneCountInString(part)
+		if n < 2 || n > 12 || seen[part] || searchStop(part) {
+			continue
+		}
+		seen[part] = true
+		parts = append(parts, part)
+		if len(parts) == 4 {
+			break
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func searchStop(part string) bool {
+	switch part {
+	case "做法", "两种", "对比", "常见", "一个", "这个", "可以", "不要", "我们", "读者", "栏目", "定位", "今天", "什么", "怎么", "如何", "具体", "问题":
+		return true
+	}
+	return topics.ComparisonFrame(part)
+}
+
+func stripComparison(text string) string {
+	text = strings.NewReplacer(
+		"对比两种常见做法", " ",
+		"两种常见做法", " ",
+		"对比两种做法", " ",
+		"两种做法", " ",
+		"对比两种", " ",
+	).Replace(text)
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func httpClient(gateway *llm.Gateway) *http.Client {
@@ -4797,6 +4862,9 @@ func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string
 	if content.BodyRunes(draft) >= goal {
 		return draft, 0, nil
 	}
+	if factsThin(base) {
+		return appendColumnTemplate(draft, base, goal), 0, nil
+	}
 	limit := 2
 	if target >= 1200 {
 		limit = 4
@@ -5009,26 +5077,32 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 	tokens := 0
 	stillShort := false
 	if content.BodyRunes(draft) < floor {
-		passes := 3
-		if budgetFrom(ctx) != nil && budgetLeft(ctx) < 5*time.Second {
-			passes = 0
-		} else if budgetTight(ctx) {
-			passes = 1
-		}
-		for pass := 0; pass < passes && content.BodyRunes(draft) < floor; pass++ {
-			if pass > 0 && budgetTight(ctx) {
-				break
+		if factsThin(payload) {
+			draft = appendColumnTemplate(draft, payload, floor)
+		} else {
+			passes := 3
+			if budgetFrom(ctx) != nil && budgetLeft(ctx) < 5*time.Second {
+				passes = 0
+			} else if budgetTight(ctx) {
+				passes = 1
 			}
-			before := content.BodyRunes(draft)
-			shortfall := goal - before
-			if shortfall < 1 {
-				shortfall = 1
-			}
-			next, added, expandTrace := expandBody(ctx, gateway, providers, payload, draft, goal, shortfall, 0, nil)
-			tokens += added
-			trace = append(trace, expandTrace...)
-			if content.BodyRunes(next) > before {
-				draft = next
+			for pass := 0; pass < passes && content.BodyRunes(draft) < floor; pass++ {
+				if pass > 0 && budgetTight(ctx) {
+					break
+				}
+				before := content.BodyRunes(draft)
+				shortfall := goal - before
+				if shortfall < 1 {
+					shortfall = 1
+				}
+				next, added, expandTrace := expandBody(ctx, gateway, providers, payload, draft, goal, shortfall, 0, nil)
+				tokens += added
+				trace = append(trace, expandTrace...)
+				if content.BodyRunes(next) > before {
+					draft = next
+				} else {
+					break
+				}
 			}
 		}
 		stillShort = content.BodyRunes(draft) < low
@@ -5063,7 +5137,228 @@ func expandBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provi
 	if err != nil {
 		return draft, tokens, trace
 	}
-	return expanded, tokens + completion.PromptTokens + completion.CompletionTokens, trace
+	merged, _ := mergeExpansion(draft, expanded)
+	return merged, tokens + completion.PromptTokens + completion.CompletionTokens, trace
+}
+
+// mergeExpansion keeps the original text. A longer draft that still contains it is kept.
+// A rewrite that drops the original is appended as new sections, and only if the body grows.
+func mergeExpansion(original, next map[string]any) (map[string]any, bool) {
+	if original == nil || next == nil {
+		return original, false
+	}
+	before := content.BodyRunes(original)
+	if keepsOriginalText(original, next) && content.BodyRunes(next) > before {
+		copySources(next, original)
+		return next, true
+	}
+	merged := cloneDraft(original)
+	sections := asList(merged["sections"])
+	existing := bodyPlain(merged)
+	for _, raw := range asList(next["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		text := strings.TrimSpace(sectionPlain(section))
+		if text == "" || strings.Contains(existing, text) {
+			continue
+		}
+		sections = append(sections, section)
+		existing += "\n" + text
+	}
+	merged["sections"] = sections
+	if content.BodyRunes(merged) > before {
+		return merged, true
+	}
+	return original, false
+}
+
+func keepsOriginalText(original, next map[string]any) bool {
+	body := bodyPlain(next)
+	for _, bit := range significantBits(original) {
+		if !strings.Contains(body, bit) {
+			return false
+		}
+	}
+	return true
+}
+
+func significantBits(draft map[string]any) []string {
+	var out []string
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		for _, item := range asList(section["paragraphs"]) {
+			if text := strings.TrimSpace(str(item)); utf8.RuneCountInString(text) >= 2 {
+				out = append(out, text)
+			}
+		}
+		for _, item := range asList(section["list"]) {
+			if text := strings.TrimSpace(str(item)); utf8.RuneCountInString(text) >= 2 {
+				out = append(out, text)
+			}
+		}
+		if table, _ := section["table"].(map[string]any); table != nil {
+			for _, item := range asList(table["headers"]) {
+				if text := strings.TrimSpace(str(item)); utf8.RuneCountInString(text) >= 2 {
+					out = append(out, text)
+				}
+			}
+			for _, row := range asList(table["rows"]) {
+				for _, cell := range asList(row) {
+					if text := strings.TrimSpace(str(cell)); utf8.RuneCountInString(text) >= 2 {
+						out = append(out, text)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func sectionPlain(section map[string]any) string {
+	var b strings.Builder
+	for _, item := range asList(section["paragraphs"]) {
+		b.WriteString(str(item))
+	}
+	for _, item := range asList(section["list"]) {
+		b.WriteString(str(item))
+	}
+	return b.String()
+}
+
+func factsThin(payload map[string]any) bool {
+	return payload != nil && str(payload["writing_mode"]) == "experience"
+}
+
+func appendColumnTemplate(draft, payload map[string]any, goal int) map[string]any {
+	if draft == nil || goal < 1 || content.BodyRunes(draft) >= goal {
+		return draft
+	}
+	draft = cloneDraft(draft)
+	kind := strings.ToLower(strings.TrimSpace(str(payload["column_structure"])))
+	entity := templateEntity(payload)
+	titles := []string{"一个现场案例", "可以照做的步骤", "容易踩的坑", "读者还会问"}
+	sections := asList(draft["sections"])
+	for _, title := range titles {
+		if headingExists(sections, title) {
+			continue
+		}
+		sections = append(sections, map[string]any{"heading": title, "paragraphs": []any{}, "list": []any{}})
+	}
+	draft["sections"] = sections
+	for i := 0; content.BodyRunes(draft) < goal && i < 48; i++ {
+		addTemplateLine(draft, kind, templateLine(kind, entity, i), i)
+	}
+	return draft
+}
+
+func templateEntity(payload map[string]any) string {
+	for _, key := range []string{"subtopic", "direction", "column"} {
+		text := stripComparison(str(payload[key]))
+		if text != "" && !topics.ComparisonFrame(text) && utf8.RuneCountInString(text) <= 12 {
+			return text
+		}
+	}
+	return "这件事"
+}
+
+func templateLine(kind, entity string, i int) string {
+	n := itoa(i + 1)
+	switch kind {
+	case "qa", "q&a", "faq", "问答":
+		return "第" + n + "处要先看什么？答：先打开" + entity + "的检修口，用螺丝把盖板固定住。"
+	case "steps", "step-by-step", "breakdown", "拆解":
+		return n + ". 先打开" + entity + "的检修口，用螺丝把盖板固定住。"
+	case "news", "news-brief", "快报":
+		return "先打开" + entity + "的检修口，用螺丝把第" + n + "块盖板固定住。"
+	default:
+		return "晚饭后先把" + entity + "旁边的椅子挪开" + itoa(40+i) + "厘米，再让老人走这一段。"
+	}
+}
+
+func addTemplateLine(draft map[string]any, kind, line string, i int) {
+	sections := asList(draft["sections"])
+	if len(sections) == 0 {
+		return
+	}
+	at := i % len(sections)
+	section, _ := sections[at].(map[string]any)
+	if section == nil {
+		return
+	}
+	if kind == "news" || kind == "news-brief" || kind == "快报" {
+		section["list"] = append(asList(section["list"]), line)
+	} else {
+		section["paragraphs"] = append(asList(section["paragraphs"]), line)
+	}
+	sections[at] = section
+	draft["sections"] = sections
+}
+
+func headingExists(sections []any, heading string) bool {
+	for _, raw := range sections {
+		section, _ := raw.(map[string]any)
+		if section != nil && strings.TrimSpace(str(section["heading"])) == heading {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureInlineCitations(draft map[string]any) map[string]any {
+	if draft == nil || citationMarks.MatchString(bodyPlain(draft)) {
+		return draft
+	}
+	sources := asList(draft["sources"])
+	if !listedHaveURL(sources) {
+		return draft
+	}
+	source, _ := sources[0].(map[string]any)
+	if source == nil {
+		return draft
+	}
+	backing := strings.TrimSpace(str(source["title"]))
+	if backing == "" {
+		backing = strings.TrimSpace(str(source["snippet"]))
+	}
+	if backing == "" {
+		backing = strings.TrimSpace(str(source["note"]))
+	}
+	if backing == "" {
+		return draft
+	}
+	sentence := "按" + backing + "先核对这一处。[1]"
+	sections := asList(draft["sections"])
+	if len(sections) == 0 {
+		draft["sections"] = []any{map[string]any{"paragraphs": []any{sentence}, "list": []any{}}}
+		return draft
+	}
+	section, _ := sections[0].(map[string]any)
+	if section == nil {
+		return draft
+	}
+	section["paragraphs"] = append(asList(section["paragraphs"]), sentence)
+	sections[0] = section
+	draft["sections"] = sections
+	return draft
+}
+
+func angleChoices(using bool, col columns.Column, current string) []string {
+	if using {
+		return topics.AnglesFor(col.Name, col.Positioning, col.Structure, current)
+	}
+	return topics.AngleOptions(current)
+}
+
+func accountTheme(w Input, col columns.Column, topic topics.Choice) string {
+	return strings.Join([]string{
+		w.Direction, w.Keywords, w.Pack.Name, w.Pack.Keywords, w.Pack.Subtopics,
+		topic.Subtopic, topic.Column, col.Name, col.Positioning,
+	}, " ")
 }
 
 func loadSourcePolicy(ctx context.Context, st *store.Store, q db.Q) (content.SourcePolicy, error) {

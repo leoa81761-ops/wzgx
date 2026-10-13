@@ -214,7 +214,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 		t.Fatal("empty tag")
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") || strings.Contains(articles[0].BodyHTML, "made-up") {
+	if err != nil || len(articles) == 0 || strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "[1]") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") || strings.Contains(articles[0].BodyHTML, "made-up") {
 		html := ""
 		if len(articles) > 0 {
 			html = articles[0].BodyHTML
@@ -282,7 +282,7 @@ func TestResearchRetriesWhenEmpty(t *testing.T) {
 		t.Fatalf("research calls %d", researchCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
+	if err != nil || len(articles) == 0 || strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "[1]") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
 		t.Fatal(articles, err)
 	}
 }
@@ -592,7 +592,7 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := articles[0].BodyHTML
-	if !strings.Contains(html, "经验分享") || !strings.Contains(html, "www.gov.cn") || strings.Contains(html, "gov点cn") || strings.Contains(html, "xilu") || strings.Contains(html, "fyun") {
+	if strings.Contains(html, "经验分享") || !strings.Contains(html, "参考来源") || !strings.Contains(html, "[1]") || !strings.Contains(html, "www.gov.cn") || strings.Contains(html, "gov点cn") || strings.Contains(html, "xilu") || strings.Contains(html, "fyun") {
 		t.Fatal(html)
 	}
 }
@@ -673,7 +673,7 @@ func TestResearchRelaxesAllowlist(t *testing.T) {
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if !strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "news.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
+	if strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "[1]") || !strings.Contains(articles[0].BodyHTML, "news.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
 		t.Fatal(articles[0].BodyHTML)
 	}
 	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
@@ -720,7 +720,7 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := articles[0].BodyHTML
-	if !strings.Contains(html, "经验分享") || !strings.Contains(html, "news.example.com") || strings.Contains(html, "example点com") || strings.Contains(html, "xilu") {
+	if strings.Contains(html, "经验分享") || !strings.Contains(html, "参考来源") || !strings.Contains(html, "[1]") || !strings.Contains(html, "news.example.com") || strings.Contains(html, "example点com") || strings.Contains(html, "xilu") {
 		t.Fatal(html)
 	}
 	task, err := st.GetTask(ctx, nil, articles[0].TaskID)

@@ -70,6 +70,35 @@ func TestDivergeSkipsRepeatedAnglesAndMotifs(t *testing.T) {
 	}
 }
 
+func TestFitTitleFollowsTheColumnAndDropsTheComparison(t *testing.T) {
+	theme := "弱电 智能化 综合布线"
+	off := FitTitle("代理机构信息登记", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme)
+	if strings.Contains(off, "代理") || strings.Contains(off, "两种做法") || !strings.Contains(off, "？") || (!strings.Contains(off, "综合布线") && !strings.Contains(off, "弱电")) {
+		t.Fatal(off)
+	}
+	framed := FitTitle("综合布线的两种做法", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme)
+	if strings.Contains(framed, "两种做法") || !strings.Contains(framed, "？") {
+		t.Fatal(framed)
+	}
+	kept := FitTitle("综合布线验收时检修口留在哪？", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme)
+	if kept != "综合布线验收时检修口留在哪？" {
+		t.Fatal(kept)
+	}
+	family := FitTitle("代理机构信息登记", "家长里短", "用家里的一件小事讲一个能照做的提醒", "custom", "家庭 家长里短")
+	if strings.Contains(family, "代理") || !strings.Contains(family, "家") || !strings.Contains(family, "把") {
+		t.Fatal(family)
+	}
+	angles := AnglesFor("知识FAQ", "用问答把一个具体问题讲清楚", "qa", "对比两种常见做法")
+	for _, angle := range angles {
+		if ComparisonFrame(angle) {
+			t.Fatal(angles)
+		}
+	}
+	if AngleOptions("对比两种常见做法")[0] == "对比两种常见做法" {
+		t.Fatal(AngleOptions("对比两种常见做法"))
+	}
+}
+
 func TestVetoSkipsTagAndCalendarAdvances(t *testing.T) {
 	now := time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC)
 	first := Pick("职场成长", "free", nil, now)

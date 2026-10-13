@@ -815,7 +815,7 @@ func (g *Gateway) post(ctx context.Context, url string, headers map[string]strin
 		req.Header.Set(key, value)
 	}
 	started := time.Now()
-	resp, err := g.do(ctx, req, firstToken)
+	resp, err := g.do(req, firstToken, cancel)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -838,8 +838,9 @@ func (g *Gateway) post(ctx context.Context, url string, headers map[string]strin
 }
 
 // do waits for response headers. A first-token limit covers that wait, because a silent
-// model often sends nothing at all until the call cap.
-func (g *Gateway) do(ctx context.Context, req *http.Request, firstToken time.Duration) (*http.Response, error) {
+// model often sends nothing at all until the call cap. When that limit fires, the request
+// is canceled and any response body the request still returns is closed.
+func (g *Gateway) do(req *http.Request, firstToken time.Duration, cancel context.CancelFunc) (*http.Response, error) {
 	if firstToken <= 0 {
 		resp, err := g.Client.Do(req)
 		if err != nil {
@@ -856,17 +857,31 @@ func (g *Gateway) do(ctx context.Context, req *http.Request, firstToken time.Dur
 		resp, err := g.Client.Do(req)
 		done <- result{resp, err}
 	}()
+	abandon := func() {
+		go func() {
+			res := <-done
+			if res.resp != nil && res.resp.Body != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(res.resp.Body, 1<<20))
+				res.resp.Body.Close()
+			}
+		}()
+	}
 	timer := time.NewTimer(firstToken)
 	defer timer.Stop()
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-req.Context().Done():
+		abandon()
+		return nil, req.Context().Err()
 	case <-timer.C:
+		if cancel != nil {
+			cancel()
+		}
+		abandon()
 		return nil, &Error{Message: "首字超时"}
 	case res := <-done:
 		if res.err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+			if req.Context().Err() != nil {
+				return nil, req.Context().Err()
 			}
 			if errors.Is(res.err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(res.err.Error()), "timeout") {
 				return nil, &Error{Message: "首字超时"}

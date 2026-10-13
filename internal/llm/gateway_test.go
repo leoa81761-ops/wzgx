@@ -740,3 +740,63 @@ func TestOutlineFirstByteIsNotCut(t *testing.T) {
 		t.Fatalf("calls %d model %s content %q", calls, model, result.Content)
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type trackClose struct {
+	io.Reader
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (t *trackClose) Close() error {
+	t.once.Do(func() { close(t.closed) })
+	return nil
+}
+
+func TestFirstTokenClosesAbandonedBody(t *testing.T) {
+	closed := make(chan struct{})
+	var mu sync.Mutex
+	var calls int
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 1 {
+			time.Sleep(80 * time.Millisecond)
+			return &http.Response{
+				StatusCode: 200,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       &trackClose{Reader: strings.NewReader("late"), closed: closed},
+				Request:    req,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+			Request:    req,
+		}, nil
+	})}
+	gw := &Gateway{Client: client, Mock: false, MaxAttempts: 1, Backoff: time.Millisecond}
+	result, err := gw.Complete(context.Background(), Provider{
+		Name: "推理", Protocol: "openai", BaseURL: "https://example.test/v1", APIKey: "k", Model: "grok-4.7",
+		Timeout: 5 * time.Second, FirstToken: 30 * time.Millisecond,
+	}, StageMessages("大纲", map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("abandoned response body was not closed")
+	}
+	if result.Content != "ok" {
+		t.Fatal(result.Content)
+	}
+}

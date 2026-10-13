@@ -482,7 +482,9 @@ func AngleOptions(current string) []string {
 		seen[text] = true
 		out = append(out, text)
 	}
-	add(current)
+	if !ComparisonFrame(current) {
+		add(current)
+	}
 	var rest []string
 	for _, list := range catalog.Angles {
 		rest = append(rest, list...)
@@ -628,4 +630,161 @@ func split3(tag string) []string {
 		return nil
 	}
 	return []string{tag[:first], tag[first+1 : second], tag[second+1:]}
+}
+
+// ComparisonFrame reports the "两种做法" angle that was being forced onto every column.
+func ComparisonFrame(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.Contains(text, "两种做法") || strings.Contains(text, "对比两种")
+}
+
+// AnglesFor returns angles that match the column. Other columns keep the catalog list.
+func AnglesFor(column, positioning, structure, current string) []string {
+	if list := columnAngles(column, positioning, structure); len(list) > 0 {
+		return list
+	}
+	return AngleOptions(current)
+}
+
+func columnAngles(column, positioning, structure string) []string {
+	blob := column + positioning + structure
+	switch {
+	case familyColumn(blob):
+		return []string{"从一件家里的小事说起", "讲一个能照做的家庭提醒", "先讲家里的场景再给一个做法"}
+	case faqColumn(blob):
+		return []string{"问一个具体问题", "把现场会卡住的那一步问清楚", "用三问把这件事讲完"}
+	default:
+		return nil
+	}
+}
+
+func faqColumn(blob string) bool {
+	lower := strings.ToLower(blob)
+	return strings.Contains(lower, "faq") || strings.Contains(blob, "问答") || strings.HasSuffix(lower, "qa")
+}
+
+func familyColumn(blob string) bool {
+	return strings.Contains(blob, "家长里短") || strings.Contains(blob, "家里") || strings.Contains(blob, "家人") || strings.Contains(blob, "家庭")
+}
+
+// FitTitle keeps a title that matches the column and the account theme.
+// A comparison frame, or a title such as 代理机构信息登记 on a 弱电 account, is replaced.
+func FitTitle(title, column, positioning, structure, theme string) string {
+	title = strings.TrimSpace(title)
+	if title != "" && !ComparisonFrame(title) && onTheme(title, theme) && matchesColumn(title, column, positioning, structure) {
+		return title
+	}
+	return ColumnTopic(column, positioning, structure, theme)
+}
+
+// ColumnTopic is the fallback title for one column.
+func ColumnTopic(column, positioning, structure, theme string) string {
+	blob := column + positioning + structure
+	entity := longestThemeTerm(theme)
+	if entity == "" {
+		entity = strings.TrimSpace(column)
+	}
+	if entity == "" {
+		entity = "这件事"
+	}
+	switch {
+	case familyColumn(blob):
+		lead := entity
+		if !strings.Contains(lead, "家") {
+			lead = "家里"
+		}
+		return "晚饭后" + lead + "的老人先走这一段，家人把拐杖放在顺手的位置"
+	case faqColumn(blob):
+		return entity + "这一步，先看哪里？"
+	default:
+		if ComparisonFrame(entity) {
+			entity = "这件事"
+		}
+		return entity + "：先把能做的一步写清楚"
+	}
+}
+
+func matchesColumn(title, column, positioning, structure string) bool {
+	blob := column + positioning + structure
+	switch {
+	case familyColumn(blob):
+		return familyScene(title)
+	case faqColumn(blob):
+		return strings.Contains(title, "？") || strings.Contains(title, "?")
+	default:
+		return true
+	}
+}
+
+func familyScene(title string) bool {
+	hasFamily := false
+	for _, word := range []string{"家", "老人", "孩子", "爸", "妈", "爷", "奶", "娃"} {
+		if strings.Contains(title, word) {
+			hasFamily = true
+			break
+		}
+	}
+	if !hasFamily {
+		return false
+	}
+	for _, word := range []string{"把", "先", "用", "放", "打开", "关上", "量", "擦", "挪"} {
+		if strings.Contains(title, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func onTheme(title, theme string) bool {
+	terms := themeTerms(theme)
+	if len(terms) == 0 {
+		return true
+	}
+	for _, term := range terms {
+		if strings.Contains(title, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func longestThemeTerm(theme string) string {
+	best := ""
+	for _, term := range themeTerms(theme) {
+		if utf8.RuneCountInString(term) > utf8.RuneCountInString(best) {
+			best = term
+		}
+	}
+	return best
+}
+
+func themeTerms(theme string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(theme, func(r rune) bool {
+		switch r {
+		case ' ', '，', '。', '、', '\n', '；', ';', ',', '：', ':', '？', '?', '！', '的', '了', '和', '与', '把', '用':
+			return true
+		default:
+			return false
+		}
+	}) {
+		part = strings.TrimSpace(part)
+		n := utf8.RuneCountInString(part)
+		if n < 2 || n > 12 || seen[part] || genericTheme(part) || ComparisonFrame(part) {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
+}
+
+func genericTheme(text string) bool {
+	switch text {
+	case "知识", "问题", "具体", "问答", "栏目", "定位", "分享", "经验", "一个", "做法", "今天", "常见", "怎么", "如何", "读者", "自己", "什么", "进行", "通过", "可以", "不要", "我们", "这个", "重点", "几条", "清楚", "讲清", "以及", "或者":
+		return true
+	default:
+		return false
+	}
 }

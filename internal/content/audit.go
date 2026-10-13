@@ -57,23 +57,38 @@ func ShortOfTarget(runes, target int) bool {
 
 func tableRunes(table map[string]any) int {
 	n := runesOf(table["headers"])
-	rows, _ := table["rows"].([]any)
-	for _, raw := range rows {
-		row, _ := raw.([]any)
-		for _, cell := range row {
-			n += utf8.RuneCountInString(asText(cell))
+	switch rows := table["rows"].(type) {
+	case []any:
+		for _, raw := range rows {
+			n += runesOf(raw)
+		}
+	case []string:
+		for _, cell := range rows {
+			n += utf8.RuneCountInString(cell)
 		}
 	}
 	return n
 }
 
 func runesOf(raw any) int {
-	list, _ := raw.([]any)
-	n := 0
-	for _, item := range list {
-		n += utf8.RuneCountInString(asText(item))
+	switch list := raw.(type) {
+	case []any:
+		n := 0
+		for _, item := range list {
+			n += runesOf(item)
+		}
+		return n
+	case []string:
+		n := 0
+		for _, item := range list {
+			n += utf8.RuneCountInString(item)
+		}
+		return n
+	case string:
+		return utf8.RuneCountInString(list)
+	default:
+		return utf8.RuneCountInString(asText(raw))
 	}
-	return n
 }
 
 func asText(v any) string {
