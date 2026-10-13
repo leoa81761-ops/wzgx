@@ -794,11 +794,67 @@ func familyColumn(blob string) bool {
 	return strings.Contains(blob, "家长里短") || strings.Contains(blob, "家里") || strings.Contains(blob, "家人") || strings.Contains(blob, "家庭")
 }
 
+// TemplateLeak reports a column label or empty shell such as 动态速递 that is not a subject.
+func TemplateLeak(title string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return false
+	}
+	for _, word := range templateWords {
+		if strings.Contains(title, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// RejectTemplateTitle keeps a concrete title. A template word is replaced by the fitted topic.
+func RejectTemplateTitle(title, fallback, column, positioning, structure, theme string) string {
+	title = strings.TrimSpace(title)
+	if title != "" && !TemplateLeak(title) {
+		return title
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback != "" && !TemplateLeak(fallback) {
+		return fallback
+	}
+	return FitTitle("", column, positioning, structure, theme)
+}
+
+// ConcreteTopic is one trade subject for this account, never a column label.
+func ConcreteTopic(theme string) string {
+	for _, word := range tradeWords {
+		if strings.Contains(theme, word) {
+			return word
+		}
+	}
+	if weakAccount(theme) {
+		return "综合布线"
+	}
+	return ""
+}
+
+var templateWords = []string{"动态速递", "工程圈快报", "方案拆解", "知识FAQ", "速递"}
+
+var tradeWords = []string{"综合布线", "六类线", "水晶头", "视频监控", "门禁对讲", "门禁", "光纤", "桥架", "线槽", "配线", "监控", "机房"}
+
+func weakAccount(text string) bool {
+	return strings.Contains(text, "弱电") || strings.Contains(text, "智能化") || strings.Contains(text, "工程")
+}
+
+func weakLabelOnly(text string) bool {
+	cleaned := text
+	for _, word := range []string{"弱电", "智能化", "工程", "知识", "问题", "栏目", "分享"} {
+		cleaned = strings.ReplaceAll(cleaned, word, "")
+	}
+	return utf8.RuneCountInString(strings.TrimSpace(cleaned)) < 2
+}
+
 // FitTitle keeps a title that matches the column and the account theme.
-// A comparison frame, or a title such as 代理机构信息登记 on a 弱电 account, is replaced.
+// A comparison frame, a template word such as 动态速递, or a title such as 代理机构信息登记 on a 弱电 account, is replaced.
 func FitTitle(title, column, positioning, structure, theme string) string {
 	title = strings.TrimSpace(title)
-	if title != "" && !ComparisonFrame(title) && !VagueTitle(title) && onTheme(title, theme) && matchesColumn(title, column, positioning, structure) {
+	if title != "" && !ComparisonFrame(title) && !VagueTitle(title) && !TemplateLeak(title) && onTheme(title, theme) && matchesColumn(title, column, positioning, structure) {
 		return title
 	}
 	return ColumnTopic(column, positioning, structure, theme)
@@ -822,17 +878,53 @@ func ColumnTopic(column, positioning, structure, theme string) string {
 		}
 		return "晚饭后" + lead + "的老人先走这一段，家人把拐杖放在顺手的位置"
 	case faqColumn(blob):
-		return entity + "这一步，先看哪里？"
+		return concreteLead(entity, theme, blob) + "这一步，先看哪里？"
 	default:
 		subject := specificSubject(theme)
-		if subject == "" || ComparisonFrame(subject) || VagueTitle(subject) {
-			subject = entity
+		if !usableSubject(subject, theme, blob) {
+			subject = concreteLead(entity, theme, blob)
 		}
-		if subject == "" || ComparisonFrame(subject) || VagueTitle(subject) {
+		if !usableSubject(subject, theme, blob) {
 			subject = "这件事"
 		}
 		return subject
 	}
+}
+
+func usableSubject(subject, theme, blob string) bool {
+	if subject == "" || ComparisonFrame(subject) || VagueTitle(subject) || TemplateLeak(subject) || weakLabelOnly(subject) {
+		return false
+	}
+	if weakAccount(theme+" "+blob) && !hasTrade(subject) {
+		return false
+	}
+	return true
+}
+
+func hasTrade(text string) bool {
+	for _, word := range tradeWords {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func concreteLead(entity, theme, blob string) string {
+	if concrete := ConcreteTopic(theme + " " + blob); concrete != "" && !TemplateLeak(concrete) && !weakLabelOnly(concrete) {
+		return concrete
+	}
+	entity = strings.TrimSpace(entity)
+	if entity != "" && !TemplateLeak(entity) && !weakLabelOnly(entity) && !genericTheme(entity) {
+		return entity
+	}
+	if weakAccount(theme + " " + blob) {
+		return "综合布线"
+	}
+	if entity == "" {
+		return "这件事"
+	}
+	return entity
 }
 
 // VagueTitle reports a column label plus an empty angle, such as 施工坑点：更稳妥的做法.
@@ -843,7 +935,7 @@ func VagueTitle(title string) bool {
 		return true
 	}
 	cleaned := title
-	for _, phrase := range append([]string{"施工坑点", "先看失败点"}, genericAngles...) {
+	for _, phrase := range append(append([]string{"施工坑点", "先看失败点"}, genericAngles...), templateWords...) {
 		cleaned = strings.ReplaceAll(cleaned, phrase, "")
 	}
 	cleaned = strings.Trim(cleaned, "：:，, 、？? ")
@@ -916,7 +1008,7 @@ func onTheme(title, theme string) bool {
 			return true
 		}
 	}
-	return false
+	return weakAccount(theme) && hasTrade(title)
 }
 
 func longestThemeTerm(theme string) string {

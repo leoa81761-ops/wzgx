@@ -111,11 +111,12 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 		if section == nil {
 			continue
 		}
-		if heading := strings.TrimSpace(asString(section["heading"])); heading != "" {
+		heading := strings.TrimSpace(asString(section["heading"]))
+		if heading != "" {
 			parts = append(parts, `<h2 style="`+theme["h2"]+`">`+html.EscapeString(heading)+`</h2>`)
 		}
-		parts = append(parts, renderQA(theme, section["qa"])...)
-		parts = append(parts, renderParagraphs(theme, section["paragraphs"])...)
+		parts = append(parts, renderParagraphs(theme, section["paragraphs"], heading)...)
+		parts = append(parts, renderQA(theme, section["qa"], heading)...)
 		var items []string
 		for _, item := range asList(section["list"]) {
 			text := strings.TrimSpace(asString(item))
@@ -126,7 +127,7 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 		if len(items) > 0 && !compact {
 			var lis strings.Builder
 			for i, item := range items {
-				lis.WriteString(`<li style="` + theme["li"] + `">` + html.EscapeString(strconv.Itoa(i+1)+". "+stripLeadNumber(item)) + `</li>`)
+				lis.WriteString(`<li style="` + theme["li"] + `">` + html.EscapeString(strconv.Itoa(i+1)+". "+stripAnswerMarks(stripLeadNumber(item))) + `</li>`)
 			}
 			parts = append(parts, `<ul style="`+theme["ul"]+`">`+lis.String()+`</ul>`)
 		}
@@ -255,7 +256,7 @@ func renderTable(theme map[string]string, table map[string]any) string {
 		for i := 0; i < len(headers); i++ {
 			value := ""
 			if i < len(row) {
-				value = row[i]
+				value = stripAnswerMarks(row[i])
 			}
 			b.WriteString(`<td style="` + cell + `">` + html.EscapeString(value) + `</td>`)
 		}
@@ -265,7 +266,7 @@ func renderTable(theme map[string]string, table map[string]any) string {
 	return b.String()
 }
 
-func renderParagraphs(theme map[string]string, raw any) []string {
+func renderParagraphs(theme map[string]string, raw any, heading string) []string {
 	var texts []string
 	for _, paragraph := range asList(raw) {
 		text := strings.TrimSpace(asString(paragraph))
@@ -274,29 +275,48 @@ func renderParagraphs(theme map[string]string, raw any) []string {
 		}
 	}
 	var parts []string
+	skipped := false
 	for i := 0; i < len(texts); i++ {
 		text := texts[i]
 		if loneAnswer(text) {
 			continue
 		}
 		if question, answer, ok := splitAnswer(text); ok {
+			if !skipped && questionRepeats(question, heading) {
+				skipped = true
+				parts = append(parts, paragraphLine(theme, answer))
+				continue
+			}
+			skipped = true
 			parts = append(parts, boldLine(theme, question), paragraphLine(theme, answer))
 			continue
 		}
 		if isQuestionLine(text) && i+1 < len(texts) {
 			if answer, ok := stripAnswerLead(texts[i+1]); ok {
+				if !skipped && questionRepeats(text, heading) {
+					skipped = true
+					parts = append(parts, paragraphLine(theme, answer))
+					i++
+					continue
+				}
+				skipped = true
 				parts = append(parts, boldLine(theme, text), paragraphLine(theme, answer))
 				i++
 				continue
 			}
+		}
+		if !skipped && questionRepeats(text, heading) {
+			skipped = true
+			continue
 		}
 		parts = append(parts, paragraphLine(theme, text))
 	}
 	return parts
 }
 
-func renderQA(theme map[string]string, raw any) []string {
+func renderQA(theme map[string]string, raw any, heading string) []string {
 	var parts []string
+	first := true
 	for _, item := range asList(raw) {
 		row, _ := item.(map[string]any)
 		if row == nil {
@@ -307,9 +327,21 @@ func renderQA(theme map[string]string, raw any) []string {
 		if question == "" || answer == "" || loneAnswer(answer) {
 			continue
 		}
+		if first && questionRepeats(question, heading) {
+			first = false
+			parts = append(parts, paragraphLine(theme, answer))
+			continue
+		}
+		first = false
 		parts = append(parts, boldLine(theme, question), paragraphLine(theme, answer))
 	}
 	return parts
+}
+
+func questionRepeats(question, heading string) bool {
+	q := strings.Trim(strings.TrimSpace(question), "？?！!。 ")
+	h := strings.Trim(strings.TrimSpace(heading), "？?！!。 ")
+	return q != "" && q == h
 }
 
 func loneAnswer(text string) bool {
@@ -319,11 +351,45 @@ func loneAnswer(text string) bool {
 }
 
 func boldLine(theme map[string]string, text string) string {
-	return `<p style="` + theme["p"] + `"><strong>` + html.EscapeString(text) + `</strong></p>`
+	return `<p style="` + theme["p"] + `"><strong>` + html.EscapeString(stripAnswerMarks(text)) + `</strong></p>`
 }
 
 func paragraphLine(theme map[string]string, text string) string {
-	return `<p style="` + theme["p"] + `">` + html.EscapeString(text) + `</p>`
+	return `<p style="` + theme["p"] + `">` + html.EscapeString(stripAnswerMarks(text)) + `</p>`
+}
+
+func stripAnswerMarks(text string) string {
+	runes := []rune(strings.TrimSpace(text))
+	var b strings.Builder
+	for i := 0; i < len(runes); i++ {
+		if runes[i] != '答' || !answerBoundary(runes, i) {
+			b.WriteRune(runes[i])
+			continue
+		}
+		j := i + 1
+		if j >= len(runes) || (runes[j] != '：' && runes[j] != ':') {
+			b.WriteRune(runes[i])
+			continue
+		}
+		j++
+		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t') {
+			j++
+		}
+		i = j - 1
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func answerBoundary(runes []rune, i int) bool {
+	if i == 0 {
+		return true
+	}
+	switch runes[i-1] {
+	case '。', '！', '？', '!', '?', '\n', '；', ';':
+		return true
+	default:
+		return false
+	}
 }
 
 func isQuestionLine(text string) bool {

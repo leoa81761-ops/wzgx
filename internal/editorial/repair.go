@@ -326,6 +326,20 @@ func rowCells(raw any) ([]any, bool) {
 			out[i] = cell
 		}
 		return out, true
+	case string:
+		text := strings.TrimSpace(row)
+		if text == "" {
+			return nil, false
+		}
+		if !strings.Contains(text, "|") {
+			return []any{text}, true
+		}
+		parts := strings.Split(strings.Trim(text, "|"), "|")
+		out := make([]any, 0, len(parts))
+		for _, part := range parts {
+			out = append(out, strings.TrimSpace(part))
+		}
+		return out, true
 	default:
 		return nil, false
 	}
@@ -674,7 +688,10 @@ func splitMarkdownRow(line string) []string {
 }
 
 func escapeLite(text string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+	text = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+	text = strings.ReplaceAll(text, "&lt;strong&gt;", "<strong>")
+	text = strings.ReplaceAll(text, "&lt;/strong&gt;", "</strong>")
+	return text
 }
 
 func unescapeLite(text string) string {

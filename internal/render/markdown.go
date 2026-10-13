@@ -40,14 +40,21 @@ func Markdown(article map[string]any) string {
 
 func sectionMarkdown(section map[string]any) string {
 	var b strings.Builder
+	heading := strings.TrimSpace(asString(section["heading"]))
+	skipped := false
 	for _, item := range asList(section["paragraphs"]) {
 		text := strings.TrimSpace(asString(item))
 		if text == "" {
 			continue
 		}
-		b.WriteString(text)
+		if !skipped && questionRepeats(text, heading) {
+			skipped = true
+			continue
+		}
+		b.WriteString(stripAnswerMarks(text))
 		b.WriteString("\n\n")
 	}
+	writeSectionQA(&b, section["qa"], heading)
 	var items []string
 	for _, item := range asList(section["list"]) {
 		text := strings.TrimSpace(asString(item))
@@ -59,7 +66,7 @@ func sectionMarkdown(section map[string]any) string {
 		for i, item := range items {
 			b.WriteString(strconv.Itoa(i + 1))
 			b.WriteString(". ")
-			b.WriteString(stripLeadNumber(item))
+			b.WriteString(stripAnswerMarks(stripLeadNumber(item)))
 			b.WriteByte('\n')
 		}
 		b.WriteByte('\n')
@@ -71,6 +78,33 @@ func sectionMarkdown(section map[string]any) string {
 		}
 	}
 	return b.String()
+}
+
+func writeSectionQA(b *strings.Builder, raw any, heading string) {
+	first := true
+	for _, item := range asList(raw) {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		question := strings.TrimSpace(asString(row["question"]))
+		answer := stripAnswerMarks(strings.TrimSpace(asString(row["answer"])))
+		if question == "" || answer == "" {
+			continue
+		}
+		if first && questionRepeats(question, heading) {
+			first = false
+			b.WriteString(answer)
+			b.WriteString("\n\n")
+			continue
+		}
+		first = false
+		b.WriteString("**")
+		b.WriteString(stripAnswerMarks(question))
+		b.WriteString("**\n\n")
+		b.WriteString(answer)
+		b.WriteString("\n\n")
+	}
 }
 
 func markdownTable(table map[string]any) string {

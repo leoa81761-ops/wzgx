@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -1239,6 +1240,22 @@ func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string]
 		best, alts = promoteTitle(best, alts, winner)
 	}
 	title, altAny := chosenTitle(best, alts, w.SpecifiedTitle, str(draft["title"]), fallbackTitle)
+	title = topics.RejectTemplateTitle(title, fallbackTitle, str(base["column"]), str(base["column_positioning"]), str(base["column_structure"]), str(base["direction"])+" "+str(base["keywords"])+" "+str(base["topic_title"])+" "+fallbackTitle)
+	var keptAlts []any
+	for _, item := range altAny {
+		text := ""
+		switch row := item.(type) {
+		case string:
+			text = row
+		case map[string]any:
+			text = str(row["title"])
+		}
+		if topics.TemplateLeak(text) {
+			continue
+		}
+		keptAlts = append(keptAlts, item)
+	}
+	altAny = keptAlts
 	draft["title"] = title
 	draft["alt_titles"] = altAny
 	return draft, tokens, trace
@@ -1640,7 +1657,14 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			base["column"] = topic.Column
 		}
 	}
-	topicTitle = topics.FitTitle(topicTitle, topic.Column, picked.Positioning, picked.Structure, accountTheme(w, picked, topic))
+	theme := accountTheme(w, picked, topic)
+	topicTitle = topics.FitTitle(topicTitle, topic.Column, picked.Positioning, picked.Structure, theme)
+	if topics.TemplateLeak(topic.Subtopic) {
+		if concrete := topics.ConcreteTopic(theme); concrete != "" {
+			topic.Subtopic = concrete
+			base["subtopic"] = concrete
+		}
+	}
 	if topics.GenericAngle(topicTitle) || strings.Contains(topicTitle, "先看失败点") {
 		topicTitle = clip(pain, 64)
 	}
@@ -1732,7 +1756,14 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			if text := strings.TrimSpace(alt.Positioning); text != "" {
 				base["column_positioning"] = text
 			}
-			topicTitle = topics.FitTitle(clip(topic.Subtopic+"："+topic.Angle, 64), topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic))
+			altTheme := accountTheme(w, alt, topic)
+			topicTitle = topics.FitTitle(clip(topic.Subtopic+"："+topic.Angle, 64), topic.Column, alt.Positioning, alt.Structure, altTheme)
+			if topics.TemplateLeak(topic.Subtopic) {
+				if concrete := topics.ConcreteTopic(altTheme); concrete != "" {
+					topic.Subtopic = concrete
+					base["subtopic"] = concrete
+				}
+			}
 			if topics.GenericAngle(topicTitle) || strings.Contains(topicTitle, "先看失败点") {
 				topicTitle = clip(pain, 64)
 			}
@@ -1766,6 +1797,20 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		subject = topicTitle
 	}
 	outline = anchorHeadings(outline, subject)
+	if editorial.OutlineMisses(outline, topicTitle) {
+		retryCtx, retryCancel := stageContext(ctx, budgetCall)
+		retried, retryCompletion, retryErr := gateway.CompleteJSON(retryCtx, providers["outline"], llm.StageMessages("大纲", outlinePayload), llm.StageSchema("大纲"), validateOutline)
+		retryCancel()
+		tokens += retryCompletion.PromptTokens + retryCompletion.CompletionTokens
+		trace = append(trace, traceRows("outline", retryCompletion)...)
+		if retryErr == nil {
+			retried = assignOutlineBudgets(retried, w.WordTarget)
+			retried = anchorHeadings(retried, subject)
+			if editorial.OutlineHits(retried, topicTitle) > editorial.OutlineHits(outline, topicTitle) {
+				outline = retried
+			}
+		}
+	}
 	base["outline"] = outline
 	noteProgress(ctx, "draft", nil, topic, trace, tokens)
 	draftPayload := cloneMap(outlinePayload)
@@ -1989,6 +2034,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		}
 	}
 	draft = editorial.MaterializeQA(draft)
+	draft = editorial.OnceScene(draft)
+	draft = editorial.StripAnswerPrefixes(draft)
+	draft = editorial.StripVagueQuantities(draft)
+	draft = editorial.LiftTables(draft)
 	broken := editorial.BrokenGrammar(draft)
 	repeated := editorial.RepeatedBody(draft)
 	offTitle := editorial.OffTitle(draft)
@@ -4624,16 +4673,51 @@ func judgeKeepReason(source map[string]any, title, pageType string, onTopic, has
 	if page == "" {
 		page = strings.TrimSpace(str(source["title"]) + str(source["snippet"]) + str(source["note"]) + str(source["fetched_meta"]))
 	}
-	if !snippetIn(snippet, page) {
+	if !snippetIn(snippet, page) && !snippetClose(snippet, page) {
 		return "原句对不上"
 	}
-	if hasExact && !exact {
-		return "和标题对不上"
-	}
-	if strings.TrimSpace(title) != "" && !sharesTitleTerm(title, source) {
+	if !titleAgrees(title, source, page, exact, hasExact) {
 		return "和标题对不上"
 	}
 	return ""
+}
+
+func titleAgrees(title string, source map[string]any, page string, exact, hasExact bool) bool {
+	if strings.TrimSpace(title) == "" {
+		return true
+	}
+	if sharesTitleTerm(title, source) || sameSubjectFamily(title, source, page) {
+		return true
+	}
+	// A judge flag does not keep a page that shares neither the title nor the subject.
+	if hasExact && exact {
+		return false
+	}
+	return false
+}
+
+func sameSubjectFamily(title string, source map[string]any, page string) bool {
+	blob := page + str(source["title"]) + str(source["snippet"]) + str(source["note"])
+	families := [][]string{
+		{"综合布线", "布线", "六类", "超五类", "光纤", "水晶头", "信息点", "配线", "桥架", "线槽", "机房", "弱电", "网线"},
+		{"监控", "摄像", "录像", "门禁", "可视对讲", "对讲"},
+	}
+	for _, family := range families {
+		titleHit := false
+		pageHit := false
+		for _, word := range family {
+			if strings.Contains(title, word) {
+				titleHit = true
+			}
+			if strings.Contains(blob, word) {
+				pageHit = true
+			}
+		}
+		if titleHit && pageHit {
+			return true
+		}
+	}
+	return false
 }
 
 // sharesTitleTerm requires a distinctive term from the article title in the source title or snippet.
@@ -4676,6 +4760,28 @@ func snippetIn(snippet, page string) bool {
 	snippet = compactMatch(snippet)
 	page = compactMatch(page)
 	return snippet != "" && strings.Contains(page, snippet)
+}
+
+func snippetClose(snippet, page string) bool {
+	snippet = compactMatch(snippet)
+	page = compactMatch(page)
+	if utf8.RuneCountInString(snippet) < 8 || page == "" {
+		return false
+	}
+	phrases := topicPhrases(snippet)
+	if len(phrases) < 2 {
+		return false
+	}
+	hits := 0
+	for _, phrase := range phrases {
+		if strings.Contains(page, phrase) {
+			hits++
+			if hits >= 2 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func compactMatch(text string) string {
@@ -5025,7 +5131,20 @@ func stampSourceTrace(completion *llm.Completion, sources []map[string]any, drop
 		last["scored"] = scored
 	}
 	if len(dropped) > 0 {
+		var notes []string
+		for _, row := range dropped {
+			if row == nil {
+				continue
+			}
+			if strings.TrimSpace(str(row["reason"])) == "" {
+				row["reason"] = "未说明"
+			}
+			line := str(row["title"]) + " | " + str(row["url"]) + " | " + str(row["reason"])
+			notes = append(notes, line)
+			log.Printf("来源未采用 %s", line)
+		}
 		last["dropped"] = dropped
+		last["rejected"] = notes
 	}
 }
 
@@ -6550,7 +6669,7 @@ func normalizeTable(raw any) map[string]any {
 		if len(rows) >= 8 {
 			break
 		}
-		cells, _ := rawRow.([]any)
+		cells := tableRowCells(rawRow)
 		if cells == nil {
 			continue
 		}
@@ -6574,6 +6693,32 @@ func normalizeTable(raw any) map[string]any {
 		return nil
 	}
 	return map[string]any{"headers": headers, "rows": rows}
+}
+
+func tableRowCells(raw any) []any {
+	switch row := raw.(type) {
+	case []any:
+		return row
+	case []string:
+		out := make([]any, len(row))
+		for i, cell := range row {
+			out[i] = cell
+		}
+		return out
+	case string:
+		text := strings.TrimSpace(row)
+		if text == "" || !strings.Contains(text, "|") {
+			return nil
+		}
+		parts := strings.Split(strings.Trim(text, "|"), "|")
+		var out []any
+		for _, part := range parts {
+			out = append(out, strings.TrimSpace(part))
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func str(v any) string {

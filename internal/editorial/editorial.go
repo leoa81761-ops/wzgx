@@ -1486,6 +1486,36 @@ func factText(raw any) string {
 	}
 }
 
+// LiftTables turns a markdown table left in a paragraph into section.table.
+// A later restore can put that paragraph back, so this runs again before render.
+func LiftTables(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, section := range sectionsOf(draft) {
+		if section["table"] != nil {
+			continue
+		}
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" {
+				continue
+			}
+			if table := tableFromParagraph(text); table != nil {
+				section["table"] = table
+				continue
+			}
+			paras = append(paras, text)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
 // ShapeCopy repairs formatting the model drops: a run-on with no sentence breaks,
 // a markdown or label table left as one paragraph, an empty subheading, a reader
 // addressed as if they had sent something in, and a buzzword repeated past twice.
@@ -1532,14 +1562,27 @@ func StripHeadingPrefixes(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
 	}
-	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ", "知识", "家长里短", "栏目", "老年人常"}
+	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ", "知识", "家长里短", "栏目", "老年人常", "动态速递", "工程圈快报", "速递"}
 	if label := strings.TrimSpace(textOf(draft["column_label"])); label != "" {
 		prefixes = append(prefixes, columnStems(label)...)
 	}
 	for _, section := range sectionsOf(draft) {
-		section["heading"] = stripLabelPrefix(textOf(section["heading"]), prefixes)
+		heading := stripLabelPrefix(textOf(section["heading"]), prefixes)
+		if templateHeading(heading) {
+			heading = ""
+		}
+		section["heading"] = heading
 	}
 	return draft
+}
+
+func templateHeading(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "动态速递", "工程圈快报", "方案拆解", "知识FAQ", "速递":
+		return true
+	default:
+		return false
+	}
 }
 
 func stripLabelPrefix(text string, prefixes []string) string {
@@ -2342,6 +2385,9 @@ func repairRunOn(text string) string {
 
 func tableFromParagraph(text string) map[string]any {
 	text = strings.TrimSpace(text)
+	if loc := factIndex.FindStringIndex(text); loc != nil {
+		text = strings.TrimSpace(text[loc[1]:])
+	}
 	if strings.Contains(text, "|") {
 		if table := markdownTable(text); table != nil {
 			return table
@@ -2378,8 +2424,23 @@ func tableFromParagraph(text string) map[string]any {
 }
 
 func markdownTable(text string) map[string]any {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if text == "" || !strings.Contains(text, "|") {
+		return nil
+	}
+	if !strings.Contains(text, "\n") && strings.Contains(text, "---") {
+		if table := flatRuleTable(text); table != nil {
+			return table
+		}
+	}
 	var lines []string
-	for _, line := range strings.Split(text, "\n") {
+	rawLines := []string{text}
+	if strings.Contains(text, "\n") {
+		rawLines = strings.Split(text, "\n")
+	} else if strings.Contains(text, "||") {
+		rawLines = strings.Split(text, "||")
+	}
+	for _, line := range rawLines {
 		line = strings.TrimSpace(line)
 		if line == "" || !strings.Contains(line, "|") {
 			continue
@@ -2449,6 +2510,57 @@ func looksLikeRule(line string) bool {
 		}
 	}
 	return true
+}
+
+// flatRuleTable reads a markdown table whose newlines were removed,
+// such as "| 项目 | 说明 | | --- | --- | | 线序 | 按568B |".
+func flatRuleTable(text string) map[string]any {
+	var items []string
+	for _, cell := range splitPipes(text) {
+		cell = strings.TrimSpace(cell)
+		if cell == "" {
+			continue
+		}
+		items = append(items, cell)
+	}
+	rule := -1
+	for i, cell := range items {
+		if looksLikeRule(cell) {
+			rule = i
+			break
+		}
+	}
+	if rule < 2 {
+		return nil
+	}
+	headers := items[:rule]
+	var body []string
+	for _, cell := range items[rule:] {
+		if looksLikeRule(cell) {
+			continue
+		}
+		body = append(body, cell)
+	}
+	width := len(headers)
+	if width < 2 || len(body) < width {
+		return nil
+	}
+	var rows []any
+	for i := 0; i+width <= len(body); i += width {
+		line := make([]any, width)
+		for j := 0; j < width; j++ {
+			line[j] = body[i+j]
+		}
+		rows = append(rows, line)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	head := make([]any, width)
+	for i, cell := range headers {
+		head[i] = cell
+	}
+	return map[string]any{"headers": head, "rows": rows}
 }
 
 // RenumberCitations walks the body in order and rewrites the first-seen marks to [1], [2], ...
