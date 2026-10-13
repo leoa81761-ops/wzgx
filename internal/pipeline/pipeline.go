@@ -1615,6 +1615,8 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		built.Topic = topic
 		return built, failErr
 	}
+	topicMemoryLines := topicMemory(w.History, w.RecentTitles, w.RecentTopics)
+	base["avoid_topics"] = topicMemoryLines
 	noteProgress(ctx, "topic", nil, topic, trace, tokens)
 	topicCtx, topicCancel := stageContext(ctx, budgetCall)
 	topicData, completion, err := completeTopic(topicCtx, gateway, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
@@ -1627,24 +1629,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	topicTitle := clip(str(topicData["title"]), 64)
 	if topicTitle == "" {
 		topicTitle = clip(topic.Subtopic+"："+topic.Angle, 64)
-	}
-	topicMemoryLines := topicMemory(w.History, w.RecentTitles, w.RecentTopics)
-	if topics.SameSubject(topicTitle, topicMemoryLines) {
-		retryPayload := cloneMap(base)
-		retryPayload["rejected_title"] = topicTitle
-		retryPayload["avoid_topics"] = topicMemoryLines
-		retryCtx, retryCancel := stageContext(ctx, budgetCall)
-		retried, retryCompletion, retryErr := completeTopic(retryCtx, gateway, providers["topic"], llm.StageMessages("选题", retryPayload), llm.StageSchema("选题"), validateTopic)
-		retryCancel()
-		tokens += retryCompletion.PromptTokens + retryCompletion.CompletionTokens
-		trace = append(trace, traceRows("topic", retryCompletion)...)
-		if retryErr == nil {
-			next := clip(str(retried["title"]), 64)
-			if next != "" && !topics.SameSubject(next, append(topicMemoryLines, topicTitle)) {
-				topicTitle = next
-				topicData = retried
-			}
-		}
 	}
 	if topics.SameSubject(topicTitle, topicMemoryLines) {
 		subs := []string{topic.Subtopic}
@@ -1662,6 +1646,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		}
 	}
 	topicTitle = chooseJudgedTitle(ctx, gateway, providers["topic"], base, topicData, topicTitle, &tokens, &trace)
+	if strings.TrimSpace(topicTitle) == "" {
+		return fail(trace, "topic", llm.Completion{}, errStr("选题没有标题"))
+	}
 	if topics.ComparisonFrame(topic.Angle) {
 		if angles := angleChoices(usingColumn, picked, topic.Angle); len(angles) > 0 {
 			topic.Angle = angles[0]
@@ -1750,13 +1737,17 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			if text := strings.TrimSpace(alt.Positioning); text != "" {
 				base["column_positioning"] = text
 			}
-			topicTitle = clip(str(base["topic_title"]), 64)
-			if topicTitle == "" {
-				topicTitle = clip(topic.Subtopic+"："+topic.Angle, 64)
+			rebuilt := clip(str(base["topic_title"]), 64)
+			if rebuilt == "" {
+				rebuilt = clip(topic.Subtopic+"："+topic.Angle, 64)
 			}
-			if kept := topics.FitTitle(topicTitle, topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic)); kept != "" {
-				topicTitle = kept
+			if kept := topics.FitTitle(rebuilt, topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic)); kept != "" {
+				rebuilt = kept
 			}
+			if strings.TrimSpace(rebuilt) == "" {
+				rebuilt = topicTitle
+			}
+			topicTitle = rebuilt
 			base["topic_title"] = topicTitle
 			if alt.WordTarget > w.WordTarget {
 				w.WordTarget = alt.WordTarget
@@ -1769,6 +1760,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		} else {
 			noDatedNews = true
 		}
+	}
+	if strings.TrimSpace(topicTitle) == "" {
+		return fail(trace, "topic", llm.Completion{}, errStr("选题没有标题"))
 	}
 	noteProgress(ctx, "outline", nil, topic, trace, tokens)
 	outlinePayload := cloneMap(base)
@@ -2970,10 +2964,11 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		rawCount += len(second.ResearchSources)
 	}
 	var engines []map[string]any
+	var queries []string
 	// Model citations are not a reason to skip the backup search. A later judge
 	// can drop every one of them. SearXNG is included only when an admin enabled it.
 	{
-		queries := searchQueries(ctx, gateway, providers, payload)
+		queries = searchQueries(ctx, gateway, providers, payload)
 		foundRows := make([][]map[string]any, len(queries))
 		foundLogs := make([][]map[string]any, len(queries))
 		foundErr := make([]error, len(queries))
@@ -3034,7 +3029,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			merged.Content = first.Content
 		}
 		sources = preferMaps(sources, payload)
-		stampSourceTrace(&merged, sources, dropped, relaxed, rawCount, engines)
+		stampSourceTrace(&merged, sources, dropped, relaxed, rawCount, engines, queries)
 		stripRankScores(sources)
 		if sourcesHaveURL(sources) || err2 == nil || (err1 == nil && err2 == nil) {
 			return notes, anySources(sources), merged, nil
@@ -3044,7 +3039,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		}
 	}
 	if err2 != nil {
-		stampSourceTrace(&merged, nil, dropped, relaxed, rawCount, engines)
+		stampSourceTrace(&merged, nil, dropped, relaxed, rawCount, engines, queries)
 		return "", nil, merged, err2
 	}
 	stripRankScores(sources)
@@ -3139,7 +3134,7 @@ func searchWithoutModel(ctx context.Context, gateway *llm.Gateway, payload map[s
 	client := httpClient(gateway)
 	notes, sources, dropped, relaxed := takeSources(ctx, client, "", rows, policy, topic)
 	merged := llm.Completion{ProviderName: "检索"}
-	stampSourceTrace(&merged, sources, dropped, relaxed, len(rows), engines)
+	stampSourceTrace(&merged, sources, dropped, relaxed, len(rows), engines, queries)
 	stripRankScores(sources)
 	return notes, anySources(sources), merged, nil
 }
@@ -3206,11 +3201,10 @@ func searchQueries(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		return got
 	}
 	if gateway != nil && len(providers) > 0 {
-		data, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("检索词", payload), llm.StageSchema("检索词"), validateQueries)
+		data, _, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("检索词", payload), llm.StageSchema("检索词"), validateQueries)
 		if err == nil {
-			if got := cleanQueries(data["queries"]); len(got) > 0 {
+			if got := queriesOnTopic(cleanQueries(data["queries"]), payload); len(got) > 0 {
 				payload["search_queries"] = got
-				_ = completion
 				return got
 			}
 		}
@@ -3220,6 +3214,72 @@ func searchQueries(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		payload["search_queries"] = got
 	}
 	return got
+}
+
+// queriesOnTopic keeps a model query only when it shares a slice of the chosen topic.
+// A direction fragment such as 弱电条文 is dropped unless those characters are in the topic.
+func queriesOnTopic(queries []string, payload map[string]any) []string {
+	needles := topicNeedles(chosenTopic(payload))
+	if len(needles) == 0 {
+		return nil
+	}
+	var out []string
+	for _, query := range queries {
+		if queryHits(query, needles) {
+			out = append(out, query)
+		}
+	}
+	return out
+}
+
+func chosenTopic(payload map[string]any) string {
+	raw := strings.TrimSpace(str(payload["topic_title"]))
+	if vagueSearch(raw) || singleWordQuery(raw) {
+		raw = strings.TrimSpace(str(payload["subtopic"]))
+	}
+	if vagueSearch(raw) || singleWordQuery(raw) {
+		return ""
+	}
+	return raw
+}
+
+func topicNeedles(topic string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, run := range hanRuns(topic) {
+		n := 3
+		if len(run) < 3 {
+			n = len(run)
+		}
+		if n < 2 {
+			continue
+		}
+		if len(run) < 3 {
+			if !seen[string(run)] {
+				seen[string(run)] = true
+				out = append(out, string(run))
+			}
+			continue
+		}
+		for i := 0; i+3 <= len(run); i++ {
+			needle := string(run[i : i+3])
+			if seen[needle] {
+				continue
+			}
+			seen[needle] = true
+			out = append(out, needle)
+		}
+	}
+	return out
+}
+
+func queryHits(query string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(query, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateQueries(data map[string]any) (map[string]any, error) {
@@ -5053,7 +5113,7 @@ func templatePage(raw, title string) bool {
 	return false
 }
 
-func stampSourceTrace(completion *llm.Completion, sources []map[string]any, dropped []map[string]any, relaxed bool, raw int, engines []map[string]any) {
+func stampSourceTrace(completion *llm.Completion, sources []map[string]any, dropped []map[string]any, relaxed bool, raw int, engines []map[string]any, queries []string) {
 	if completion == nil {
 		return
 	}
@@ -5067,6 +5127,10 @@ func stampSourceTrace(completion *llm.Completion, sources []map[string]any, drop
 	last["raw"] = raw
 	last["kept"] = len(sources)
 	last["relaxed"] = relaxed
+	if len(queries) > 0 {
+		last["queries"] = queries
+		log.Printf("检索词 %s", strings.Join(queries, " | "))
+	}
 	if len(engines) > 0 {
 		last["engines"] = engines
 	}
@@ -6219,22 +6283,23 @@ func ChooseTopic(ctx context.Context, gateway *llm.Gateway, providers []llm.Prov
 
 func chooseJudgedTitle(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, base, topicData map[string]any, fallback string, tokens *int, trace *[]map[string]any) string {
 	cands := topicCandidateMaps(topicData)
-	column := str(base["column"])
 	if len(cands) < 2 {
-		if kept := topics.FitTitle(fallback, column, str(base["column_positioning"]), str(base["column_structure"]), str(base["direction"])); kept != "" {
-			return kept
+		title := strings.TrimSpace(fallback)
+		if title == "" && len(cands) == 1 {
+			title = strings.TrimSpace(str(cands[0]["title"]))
 		}
-		return clip(strings.TrimSpace(fallback), 64)
+		return clip(title, 64)
 	}
-	payload := cloneMap(base)
-	list := make([]any, 0, len(cands))
-	for _, cand := range cands {
-		list = append(list, cand)
-	}
-	payload["candidates"] = list
-	winner := ""
+	var judged map[string]any
+	raw := ""
 	if gateway != nil && len(providers) > 0 {
-		data, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("选题判断", payload), llm.StageSchema("选题判断"), validateTopicJudge)
+		payload := cloneMap(base)
+		list := make([]any, 0, len(cands))
+		for _, cand := range cands {
+			list = append(list, cand)
+		}
+		payload["candidates"] = list
+		completion, err := gateway.CompleteText(ctx, providers, llm.StageMessages("选题判断", payload), llm.StageSchema("选题判断"), false)
 		if tokens != nil {
 			*tokens += completion.PromptTokens + completion.CompletionTokens
 		}
@@ -6242,28 +6307,240 @@ func chooseJudgedTitle(ctx context.Context, gateway *llm.Gateway, providers []ll
 			*trace = append(*trace, traceRows("topic_judge", completion)...)
 		}
 		if err == nil {
-			winner = strings.TrimSpace(str(data["winner"]))
+			raw = completion.Content
+			judged, _ = llm.ParseJSONContent(raw)
 		}
 	}
-	for _, cand := range cands {
-		title := strings.TrimSpace(str(cand["title"]))
-		if winner != "" && title == winner {
-			return clip(title, 64)
+	title := interpretJudge(raw, judged, cands)
+	if title == "" {
+		title = bestScoredTitle(judged, topicData, cands)
+	}
+	if title == "" && len(cands) > 0 {
+		title = strings.TrimSpace(str(cands[0]["title"]))
+	}
+	if title == "" {
+		title = strings.TrimSpace(fallback)
+	}
+	return clip(title, 64)
+}
+
+// interpretJudge reads an index, a candidate title, or JSON from a short or odd judge reply.
+// A number outside the candidate list is not an index. The raw text is never used as a new title.
+func interpretJudge(raw string, data map[string]any, cands []map[string]any) string {
+	return interpretJudgeDepth(raw, data, cands, 0)
+}
+
+func interpretJudgeDepth(raw string, data map[string]any, cands []map[string]any, depth int) string {
+	if depth > 3 {
+		return ""
+	}
+	if data != nil {
+		for _, key := range []string{"winner", "title", "index", "choice", "selected"} {
+			if title := judgeValue(data[key], cands, depth); title != "" {
+				return title
+			}
 		}
 	}
-	for _, cand := range cands {
-		title := strings.TrimSpace(str(cand["title"]))
-		if topics.FitTitle(title, column, "", "", "") != "" {
-			return clip(title, 64)
+	return judgeValue(strings.TrimSpace(raw), cands, depth)
+}
+
+func judgeValue(v any, cands []map[string]any, depth int) string {
+	switch n := v.(type) {
+	case float64:
+		return titleAt(int(n), cands)
+	case int:
+		return titleAt(n, cands)
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return ""
 		}
+		return titleAt(int(i), cands)
+	case map[string]any:
+		for _, key := range []string{"title", "winner", "index", "choice"} {
+			if title := judgeValue(n[key], cands, depth+1); title != "" {
+				return title
+			}
+		}
+		return ""
+	case string:
+		text := strings.TrimSpace(n)
+		text = strings.Trim(text, "\"'`「」『』")
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return ""
+		}
+		if i, ok := parseJudgeIndex(text); ok {
+			if title := titleAt(i, cands); title != "" {
+				return title
+			}
+		}
+		if strings.Contains(text, "{") {
+			if parsed, err := llm.ParseJSONContent(text); err == nil {
+				if title := interpretJudgeDepth("", parsed, cands, depth+1); title != "" {
+					return title
+				}
+			}
+		}
+		return matchCandidateTitle(text, cands)
+	default:
+		return ""
 	}
-	if title := strings.TrimSpace(fallback); title != "" {
-		return clip(title, 64)
+}
+
+func parseJudgeIndex(text string) (int, bool) {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "。．.、)）]】 ")
+	text = strings.TrimPrefix(text, "第")
+	text = strings.TrimSuffix(text, "个")
+	text = strings.TrimSuffix(text, "条")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, false
 	}
-	if len(cands) > 0 {
-		return clip(str(cands[0]["title"]), 64)
+	n := 0
+	for _, r := range text {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
+}
+
+func titleAt(n int, cands []map[string]any) string {
+	if len(cands) == 0 {
+		return ""
+	}
+	if n >= 1 && n <= len(cands) {
+		return strings.TrimSpace(str(cands[n-1]["title"]))
+	}
+	if n == 0 {
+		return strings.TrimSpace(str(cands[0]["title"]))
 	}
 	return ""
+}
+
+func matchCandidateTitle(text string, cands []map[string]any) string {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "。！？?!.，,、 ")
+	if text == "" {
+		return ""
+	}
+	for _, cand := range cands {
+		title := strings.TrimSpace(str(cand["title"]))
+		if title != "" && title == text {
+			return title
+		}
+	}
+	best := ""
+	for _, cand := range cands {
+		title := strings.TrimSpace(str(cand["title"]))
+		if utf8.RuneCountInString(title) < 4 {
+			continue
+		}
+		if strings.Contains(text, title) && utf8.RuneCountInString(title) > utf8.RuneCountInString(best) {
+			best = title
+		}
+	}
+	if best != "" {
+		return best
+	}
+	if utf8.RuneCountInString(text) < 4 {
+		return ""
+	}
+	matches := 0
+	best = ""
+	for _, cand := range cands {
+		title := strings.TrimSpace(str(cand["title"]))
+		if title != "" && strings.Contains(title, text) {
+			matches++
+			if best == "" || utf8.RuneCountInString(title) < utf8.RuneCountInString(best) {
+				best = title
+			}
+		}
+	}
+	if matches == 1 {
+		return best
+	}
+	return ""
+}
+
+func bestScoredTitle(judged, topicData map[string]any, cands []map[string]any) string {
+	if len(cands) == 0 {
+		return ""
+	}
+	bestI := -1
+	bestS := 0.0
+	record := func(i int, score float64) {
+		if i < 0 || i >= len(cands) {
+			return
+		}
+		if bestI < 0 || score > bestS {
+			bestI = i
+			bestS = score
+		}
+	}
+	noteScore := func(row map[string]any, fallback int) {
+		if row == nil {
+			return
+		}
+		score, ok := asFloat(row["score"])
+		if !ok {
+			return
+		}
+		if title := matchCandidateTitle(str(row["title"]), cands); title != "" {
+			for i, cand := range cands {
+				if str(cand["title"]) == title {
+					record(i, score)
+					return
+				}
+			}
+		}
+		if n, ok := asFloat(row["index"]); ok {
+			idx := int(n)
+			if idx >= 1 && idx <= len(cands) {
+				record(idx-1, score)
+				return
+			}
+		}
+		record(fallback, score)
+	}
+	if judged != nil {
+		for i, item := range asList(judged["scores"]) {
+			if score, ok := asFloat(item); ok {
+				record(i, score)
+			}
+		}
+		for i, item := range asList(judged["candidates"]) {
+			row, _ := item.(map[string]any)
+			noteScore(row, i)
+		}
+	}
+	for i, item := range asList(topicData["candidates"]) {
+		row, _ := item.(map[string]any)
+		noteScore(row, i)
+	}
+	if bestI < 0 {
+		return ""
+	}
+	return strings.TrimSpace(str(cands[bestI]["title"]))
+}
+
+func asFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func topicCandidateMaps(data map[string]any) []map[string]any {
@@ -6289,13 +6566,6 @@ func topicCandidateMaps(data map[string]any) []map[string]any {
 		add(str(row["title"]), str(row["angle"]), str(row["pain"]))
 	}
 	return out
-}
-
-func validateTopicJudge(data map[string]any) (map[string]any, error) {
-	if strings.TrimSpace(str(data["winner"])) == "" {
-		return nil, errStr("选题判断没有选出标题")
-	}
-	return data, nil
 }
 
 func monthHint(at time.Time) string {

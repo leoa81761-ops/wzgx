@@ -51,7 +51,7 @@ func StageSchema(stageLabel string) *Schema {
 		return &Schema{Name: "topic_judge", Body: objectSchema(
 			[]string{"winner"},
 			map[string]any{
-				"winner": strField("从 candidates 里选出的标题，必须和某一条 title 完全相同。按人设是否贴、读者的具体麻烦是否清楚、标题是否能写成一篇来选"),
+				"winner": strField("选出的结果：某一条 title 的原文，或从 1 开始的序号。按人设是否贴、读者的具体麻烦是否清楚、标题是否能写成一篇来选"),
 			},
 		)}
 	case "检索词":

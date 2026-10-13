@@ -3502,72 +3502,9 @@ func hanPhrases(text string, n int) []string {
 	return out
 }
 
-// DropOffTopicParagraphs removes a paragraph that shares no term with the title.
-// KeepOneSubject drops paragraphs that wander into a second household or job topic.
-// A paragraph that does not name another topic is kept. The majority topic stays.
+// KeepOneSubject drops a paragraph that shares no word with this article's title or topic.
 func KeepOneSubject(draft map[string]any) map[string]any {
-	if draft == nil {
-		return nil
-	}
-	subject := textOf(draft["title"]) + textOf(draft["summary"])
-	type domain struct {
-		name  string
-		words []string
-	}
-	domains := []domain{
-		{"做饭", []string{"做饭", "炒菜", "菜谱", "下锅", "灶台", "厨房"}},
-		{"除尘", []string{"除尘", "灰尘", "抹布"}},
-		{"植物", []string{"绿植", "养花", "浇花", "花盆"}},
-		{"布线", []string{"布线", "水晶头", "线槽"}},
-		{"监控", []string{"监控", "摄像头", "录像机"}},
-	}
-	match := func(text string) string {
-		for _, item := range domains {
-			for _, word := range item.words {
-				if strings.Contains(text, word) {
-					return item.name
-				}
-			}
-		}
-		return ""
-	}
-	allowed := map[string]bool{}
-	if name := match(subject); name != "" {
-		allowed[name] = true
-	}
-	if len(allowed) == 0 {
-		counts := map[string]int{}
-		best, bestN := "", 0
-		for _, section := range sectionsOf(draft) {
-			for _, item := range anyList(section["paragraphs"]) {
-				if name := match(textOf(item)); name != "" {
-					counts[name]++
-					if counts[name] > bestN {
-						best, bestN = name, counts[name]
-					}
-				}
-			}
-		}
-		if best == "" {
-			return draft
-		}
-		allowed[best] = true
-	}
-	for _, section := range sectionsOf(draft) {
-		var paras []any
-		for _, item := range anyList(section["paragraphs"]) {
-			text := textOf(item)
-			if name := match(text); name != "" && !allowed[name] {
-				continue
-			}
-			paras = append(paras, text)
-		}
-		if paras == nil {
-			paras = []any{}
-		}
-		section["paragraphs"] = paras
-	}
-	return draft
+	return keepSubjectParagraphs(draft)
 }
 
 func DropOffTopicParagraphs(draft map[string]any) map[string]any {
@@ -3612,6 +3549,50 @@ func DropOffTopicParagraphs(draft map[string]any) map[string]any {
 				continue
 			}
 			if !onTitle(text, terms, phrases) {
+				continue
+			}
+			paras = append(paras, text)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
+// keepSubjectParagraphs uses words taken from this draft's title, summary, and topic.
+// It does not carry a list of other subjects. A draft with no such words is left alone.
+// If nothing in the body shares those words, the draft is also left alone.
+func keepSubjectParagraphs(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	terms, phrases := titleTerms(textOf(draft["title"]) + textOf(draft["summary"]) + textOf(draft["topic"]) + textOf(draft["topic_title"]))
+	if len(terms) == 0 {
+		return draft
+	}
+	matched, total := 0, 0
+	for _, section := range sectionsOf(draft) {
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" {
+				continue
+			}
+			total++
+			if onTitle(text, terms, phrases) {
+				matched++
+			}
+		}
+	}
+	if matched == 0 || matched == total {
+		return draft
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" || !onTitle(text, terms, phrases) {
 				continue
 			}
 			paras = append(paras, text)

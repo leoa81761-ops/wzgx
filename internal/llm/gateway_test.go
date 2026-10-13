@@ -557,21 +557,46 @@ func TestResearchChatFastStreamsAndKeepsFinalCitations(t *testing.T) {
 	}
 }
 
-func TestResearchCallsCapAt60Seconds(t *testing.T) {
+func TestResearchReasoningStartsOnFallback(t *testing.T) {
+	var model string
+	var stream any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		model, _ = body["model"].(string)
+		stream = body["stream"]
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索完成"}}]}`))
+	}))
+	defer srv.Close()
+	gw := NewGateway(false, srv.Client())
+	gw.ResearchTimeout = 5 * time.Second
+	_, err := gw.CompleteResearch(context.Background(), []Provider{{
+		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-4.7", Timeout: 30 * time.Second,
+	}}, StageMessages("资料检索", map[string]any{"topic_title": "面板高度对不上"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != FallbackModel || stream != true {
+		t.Fatalf("model %s stream %#v", model, stream)
+	}
+}
+
+func TestResearchCallsCapAt20Seconds(t *testing.T) {
 	stream, timeout := researchTransport(Provider{Protocol: "openai", Model: "grok-chat-fast"}, 150*time.Second)
 	if !stream || timeout != 20*time.Second {
 		t.Fatalf("chat-fast %v %s", stream, timeout)
 	}
 	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "grok-4.7"}, 150*time.Second)
-	if stream || timeout != 60*time.Second {
+	if stream || timeout != 20*time.Second {
 		t.Fatalf("grok-4.7 %v %s", stream, timeout)
 	}
 	stream, timeout = researchTransport(Provider{Protocol: "responses", Model: "grok-4.7"}, 90*time.Second)
-	if stream || timeout != 60*time.Second {
+	if stream || timeout != 20*time.Second {
 		t.Fatalf("short %v %s", stream, timeout)
 	}
-	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "grok-chat-fast"}, 30*time.Second)
-	if !stream || timeout != 20*time.Second {
+	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "writer"}, 8*time.Second)
+	if stream || timeout != 8*time.Second {
 		t.Fatalf("configured short %v %s", stream, timeout)
 	}
 }
