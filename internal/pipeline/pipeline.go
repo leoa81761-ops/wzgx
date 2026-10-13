@@ -125,6 +125,7 @@ type Built struct {
 	NoDatedNews    bool
 	Thin           bool
 	Repeated       bool
+	InventedStats  bool
 	Searched       bool
 	OwnSearch      bool
 	TavilyNotice   string
@@ -1900,6 +1901,11 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft["image_style"] = imageStyle
 	}
 	draft = editorial.ShapeCopy(draft)
+	inventedStats := false
+	if experience && !sourcedPiece {
+		draft = editorial.StripInventedStats(draft)
+		inventedStats = editorial.HardStat(draft)
+	}
 	draft = editorial.RepairStructure(draft)
 	if experience && !sourcedPiece {
 		draft = editorial.StripWarmFiller(draft)
@@ -1950,7 +1956,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	html = editorial.RepairMarkup(html)
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, InventedStats: inventedStats, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
 }
 
 func heldDelivery(built Built) (bool, string) {
@@ -1975,6 +1981,9 @@ func heldDelivery(built Built) (bool, string) {
 	}
 	if built.Repeated {
 		note = joinNote(note, "正文在重复同一句，或把题目嵌进了套话，未写入公众号草稿。")
+	}
+	if built.InventedStats {
+		note = joinNote(note, "经验分享里写了没有来源的统计或参数，未写入公众号草稿。")
 	}
 	return note != "", note
 }

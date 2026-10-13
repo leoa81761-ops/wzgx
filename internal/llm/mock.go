@@ -22,7 +22,7 @@ const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据�
 const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
 const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。用这个账号自己的专业来写，遵守 direction、tone、signatures 和 persona_columns。" +
-	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。" +
+	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。没有来源时不要写百分比、掉线率或版本号，例如 15%、ONVIF 2.4。数字只能写成亲历的范围，例如「我见过的项目里大多」。" +
 	"仍然要写具体：句子里要有数字、工具和场景，并用这个账号的口吻，技术号写现场，家庭号写家里的事。不要温馨、默契、从容这类暖场空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。文末来源会标成经验分享。" +
 	"如果已经有来源网址，不要标成经验分享，在用到该来源的句子后写 [n]。" +
 	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少三对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
@@ -172,6 +172,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"每个标题不超过 28 个字，不要写成叙述句，不要用逗号铺成一段话。" +
 			"每个标题都是完整的一句，不要为了凑字数截断，也不要在后面补套话。" +
 			"不要用「震惊」「不转不是」「稳赚不赔」。不要靠关键词堆砌。" +
+			"每个标题用一种微信上读得完的句式：数字、冲突、身份，或者好奇缺口。标题里的对象必须已经出现在正文里，不要和正文说成两件事。" +
 			"优先写具体场景或数字。每个标题都要自评分：hook、concrete、consistent、persona，都是 1 到 5 的整数。" +
 			"consistent 表示标题和 summary、正文是不是同一件事，对不上就低于 3。自评分只用于淘汰对不上的标题，不要靠高分把长句排到前面。" +
 			readerRule +
@@ -180,7 +181,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是公众号编辑。只改写输入里标记为需要改的部分：rewrite_hook、rewrite_headings、rewrite_closing 为 true 的才写。" +
 			"没有要求改的部分返回空字符串或空数组。" +
 			"不要改表格、列表、序号和小标题层级，只改每个区块里的句子。不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" + markerRule +
-			"开头如果要改，只写不超过 40 个字的一句，用来替换原来的第一段，不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
+			"开头如果要改，写成 2 到 3 句，里面要有一个场景、一个冲突，或者一个数字。不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
 			"小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
 			anecdoteRule + voiceRule(payload) + readerRule + sceneRule + tabooRule(payload) + columnRule(payload) +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
@@ -269,7 +270,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthInstruction(stageLabel, payload) + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。" +
-				"全文只写 reader_pain 这一件事，不要换到另一件家务、另一台设备或另一个场景。"
+				"全文只写 reader_pain 这一件事，不要换到另一件家务、另一台设备或另一个场景。" +
+				"开头用 2 到 3 句，里面要有一个场景、一个冲突，或者一个数字。小标题不要加栏目名前缀，例如不要写「拆解：」「简单：第一步：」。" +
+				"不要每节都做成编号列表：第一节用一段引言，中间可以有列表，最后一节用一段可以转发的收获。同一条例子不要在两节里再写一遍。结尾只留一句自然的邀请，不要叠两句关注。"
 		}
 		system += readerRule + motifRule(payload)
 		if stageLabel == "审核" {

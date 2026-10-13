@@ -2406,6 +2406,16 @@ func TestExperienceDraftSplitsAndDedupes(t *testing.T) {
 	}
 }
 
+func TestInventedStatHoldsTheDraft(t *testing.T) {
+	held, note := heldDelivery(Built{
+		InventedStats: true,
+		Draft:         map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"现场先看交换机的灯。"}}}},
+	})
+	if !held || !strings.Contains(note, "统计") {
+		t.Fatal(held, note)
+	}
+}
+
 func TestExperienceKeepsOnlySourcesTheSearchReturned(t *testing.T) {
 	research := []any{map[string]any{"title": "现场记录", "url": "https://example.com/real"}}
 	draft := []any{

@@ -1518,8 +1518,252 @@ func ShapeCopy(draft map[string]any) map[string]any {
 	dropEmptySections(draft)
 	capBuzzword(draft, "温暖", 2)
 	draft["closing"] = repairRunOn(dropReaderAddress(textOf(draft["closing"])))
+	StripHeadingPrefixes(draft)
+	MixProse(draft)
+	DedupeExamples(draft)
 	ensureCTA(draft)
 	return draft
+}
+
+// StripHeadingPrefixes removes column and template labels glued onto a heading,
+// such as 拆解：, 简单：, and 简单：第一步：.
+func StripHeadingPrefixes(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ"}
+	if label := strings.TrimSpace(textOf(draft["column_label"])); label != "" {
+		prefixes = append(prefixes, label)
+	}
+	for _, section := range sectionsOf(draft) {
+		section["heading"] = stripLabelPrefix(textOf(section["heading"]), prefixes)
+	}
+	return draft
+}
+
+func stripLabelPrefix(text string, prefixes []string) string {
+	text = strings.TrimSpace(text)
+	changed := true
+	for changed {
+		changed = false
+		for _, prefix := range prefixes {
+			if prefix == "" {
+				continue
+			}
+			for _, sep := range []string{"：", ":"} {
+				lead := prefix + sep
+				if strings.HasPrefix(text, lead) {
+					text = strings.TrimSpace(strings.TrimPrefix(text, lead))
+					changed = true
+				}
+			}
+		}
+	}
+	return text
+}
+
+// MixProse turns an all-list article into an intro, a list, and a takeaway.
+func MixProse(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	sections := sectionsOf(draft)
+	if len(sections) == 0 {
+		return draft
+	}
+	listOnly := 0
+	for _, section := range sections {
+		if len(nonemptyText(anyList(section["paragraphs"]))) == 0 && len(nonemptyText(anyList(section["list"]))) > 0 {
+			listOnly++
+		}
+	}
+	if listOnly < 2 || listOnly < len(sections) {
+		return draft
+	}
+	lift := func(section map[string]any, takeLast bool) {
+		items := nonemptyText(anyList(section["list"]))
+		if len(items) == 0 {
+			return
+		}
+		picked := items[0]
+		rest := items[1:]
+		if takeLast && len(items) > 1 {
+			picked = items[len(items)-1]
+			rest = items[:len(items)-1]
+		}
+		paras := nonemptyText(anyList(section["paragraphs"]))
+		paras = append(paras, stripListIndex(picked))
+		section["paragraphs"] = toAny(paras)
+		section["list"] = toAny(rest)
+	}
+	lift(sections[0], false)
+	if len(sections) > 1 {
+		lift(sections[len(sections)-1], true)
+	}
+	return draft
+}
+
+func stripListIndex(text string) string {
+	text = strings.TrimSpace(text)
+	text = factIndex.ReplaceAllString(text, "")
+	return strings.TrimSpace(text)
+}
+
+func nonemptyText(items []any) []string {
+	var out []string
+	for _, item := range items {
+		if text := strings.TrimSpace(textOf(item)); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func toAny(items []string) []any {
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	return out
+}
+
+// DedupeExamples drops a later sentence that repeats an example already used in an earlier section.
+func DedupeExamples(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			key := exampleKey(text)
+			if key != "" && seen[key] {
+				continue
+			}
+			if key != "" {
+				seen[key] = true
+			}
+			if text != "" {
+				paras = append(paras, text)
+			}
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
+func exampleKey(text string) string {
+	var buf []rune
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+		}
+	}
+	if len(buf) < 8 {
+		return ""
+	}
+	return string(buf[:8])
+}
+
+var hardStat = regexp.MustCompile(`\d+(?:\.\d+)?\s*[%％]|掉线率|[A-Za-z]{2,}\s*\d+\.\d+`)
+
+// StripInventedStats removes percentages, rates, and version numbers that have no source
+// and are not spoken as the writer's own range.
+func StripInventedStats(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, key := range []string{"title", "summary", "closing"} {
+		if text := textOf(draft[key]); text != "" {
+			draft[key] = dropHardStatSentences(text)
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			if text := dropHardStatSentences(textOf(item)); strings.TrimSpace(text) != "" {
+				paras = append(paras, text)
+			}
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		var items []any
+		for _, item := range anyList(section["list"]) {
+			if text := dropHardStatSentences(textOf(item)); strings.TrimSpace(text) != "" {
+				items = append(items, text)
+			}
+		}
+		if items == nil {
+			items = []any{}
+		}
+		section["list"] = items
+	}
+	return draft
+}
+
+func dropHardStatSentences(text string) string {
+	parts := splitSentences(text)
+	if len(parts) == 0 {
+		return text
+	}
+	var kept []string
+	changed := false
+	for _, sentence := range parts {
+		if hardStatSentence(sentence) && !experientialStat(sentence) {
+			changed = true
+			continue
+		}
+		kept = append(kept, sentence)
+	}
+	if !changed {
+		return text
+	}
+	return strings.Join(kept, "")
+}
+
+func hardStatSentence(text string) bool {
+	return hardStat.MatchString(text)
+}
+
+func experientialStat(text string) bool {
+	for _, word := range []string{"我见过", "大多", "大概", "大约", "上下", "一般", "往往"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// HardStat reports a percentage, rate, or version number that is not framed as experience.
+func HardStat(draft map[string]any) bool {
+	if draft == nil {
+		return false
+	}
+	blob := textOf(draft["title"]) + textOf(draft["summary"]) + textOf(draft["closing"])
+	for _, section := range sectionsOf(draft) {
+		blob += textOf(section["heading"])
+		for _, item := range anyList(section["paragraphs"]) {
+			blob += textOf(item)
+		}
+		for _, item := range anyList(section["list"]) {
+			blob += textOf(item)
+		}
+	}
+	for _, sentence := range splitSentences(blob) {
+		if hardStatSentence(sentence) && !experientialStat(sentence) {
+			return true
+		}
+	}
+	if hardStatSentence(blob) && !experientialStat(blob) {
+		return true
+	}
+	return false
 }
 
 func dropEmptySections(draft map[string]any) {
@@ -1624,14 +1868,15 @@ func dropReaderAddress(text string) string {
 }
 
 func ensureCTA(draft map[string]any) {
-	closing := strings.TrimSpace(textOf(draft["closing"]))
+	closing := keepOneCTA(strings.TrimSpace(textOf(draft["closing"])))
 	if ctaConcrete(closing) {
+		draft["closing"] = closing
 		return
 	}
 	column := strings.TrimSpace(textOf(draft["column_label"]))
-	line := "关注本号，把你遇到的情况写在评论里。"
+	line := "关注本号，把你的做法写在评论里。"
 	if column != "" {
-		line = "关注本号，在评论里留下你的做法。下一期「" + column + "」继续写。"
+		line = "关注本号，把你在「" + column + "」里遇到的情况写在评论里。"
 	}
 	if closing == "" {
 		draft["closing"] = line
@@ -1640,14 +1885,32 @@ func ensureCTA(draft map[string]any) {
 	draft["closing"] = closing + "\n\n" + line
 }
 
+func keepOneCTA(text string) string {
+	parts := strings.Split(text, "\n")
+	seen := false
+	var kept []string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if boilerCTA(part) {
+			if seen {
+				continue
+			}
+			seen = true
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "\n\n")
+}
+
+func boilerCTA(text string) bool {
+	return strings.Contains(text, "关注本号") || strings.Contains(text, "欢迎留言说说") || strings.Contains(text, "下一期")
+}
+
 func ctaConcrete(text string) bool {
-	if strings.Contains(text, "关注") {
-		return true
-	}
-	if strings.Contains(text, "下期") || strings.Contains(text, "下一期") {
-		return true
-	}
-	return strings.Contains(text, "评论")
+	return strings.Contains(text, "关注") || strings.Contains(text, "评论") || strings.Contains(text, "留言") || strings.Contains(text, "下期") || strings.Contains(text, "下一期")
 }
 
 func repairRunOn(text string) string {

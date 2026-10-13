@@ -117,7 +117,7 @@ func titleHook(title string) int {
 	if hasNumber(title) {
 		hook = 6
 	}
-	if hook < 4 && (questionTitle(title) || conflictTitle(title) || benefitTitle(title)) {
+	if hook < 4 && (questionTitle(title) || conflictTitle(title) || benefitTitle(title) || identityTitle(title) || curiosityTitle(title)) {
 		hook = 4
 	}
 	return hook
@@ -137,6 +137,24 @@ func questionTitle(title string) bool {
 
 func conflictTitle(title string) bool {
 	for _, word := range []string{"但是", "却", "过不了", "失败", "别再", "不要", "反而"} {
+		if strings.Contains(title, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func identityTitle(title string) bool {
+	for _, word := range []string{"你是", "做工程的", "奶奶", "新手", "业主"} {
+		if strings.Contains(title, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func curiosityTitle(title string) bool {
+	for _, word := range []string{"原来", "没想到", "其实", "为什么"} {
 		if strings.Contains(title, word) {
 			return true
 		}
