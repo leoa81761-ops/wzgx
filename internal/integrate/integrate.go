@@ -97,7 +97,7 @@ func Sections() []Section {
 			{Key: "webhook_url", Label: "Webhook 地址", Secret: true},
 		}},
 		{Key: "search", Title: "备用检索", Fields: []Field{
-			{Key: "searxng_url", Label: "SearXNG 地址（本机如 http://127.0.0.1:8080），排在免费引擎前面"},
+			{Key: "searxng_url", Label: "SearXNG 地址，默认 http://searxng:8080。宿主机调试用 http://127.0.0.1:8888"},
 			{Key: "searxng_daily_cap", Label: "每人每天 SearXNG 次数，0 表示不限"},
 			{Key: "searxng_breaker", Label: "SearXNG 连续失败几次后熔断"},
 			{Key: "tavily_key", Label: "平台 Tavily 密钥（可选）。用户自备钥匙时不会用这把", Secret: true},

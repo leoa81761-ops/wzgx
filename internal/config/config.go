@@ -179,7 +179,7 @@ func Load() Settings {
 		ResearchSearchAPI:         strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_API")),
 		ResearchSearchKey:         os.Getenv("RESEARCH_SEARCH_KEY"),
 		ResearchSearchProvider:    strings.ToLower(strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_PROVIDER"))),
-		SearxngURL:                strings.TrimSpace(os.Getenv("SEARXNG_URL")),
+		SearxngURL:                getenv("SEARXNG_URL", "http://searxng:8080"),
 		SearxngDailyCap:           nonNeg("SEARXNG_DAILY_CAP", 40),
 		SearxngBreaker:            positiveOr("SEARXNG_BREAKER", 5),
 		TavilyAPIKey:              os.Getenv("TAVILY_API_KEY"),

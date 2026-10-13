@@ -63,6 +63,12 @@ func TestSearxngJSONCacheCircuitAndPrivateResults(t *testing.T) {
 		if r.URL.Query().Get("format") != "json" || r.URL.Query().Get("q") == "" {
 			t.Errorf("query %s", r.URL.RawQuery)
 		}
+		if !strings.Contains(r.URL.RawQuery, "engines=360search,sogou,sogou%20wechat") {
+			t.Errorf("engines %s", r.URL.RawQuery)
+		}
+		if strings.Contains(r.URL.RawQuery, "bing") || strings.Contains(r.URL.RawQuery, "baidu") {
+			t.Errorf("engines %s", r.URL.RawQuery)
+		}
 		if searches <= 2 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
