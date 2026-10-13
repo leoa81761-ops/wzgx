@@ -189,12 +189,23 @@ func draftSchema() map[string]any {
 				"type":        "array",
 				"description": "正文小节。对照、步骤或参数适合用表格时，在 table.rows 里写 2 到 4 列；不需要表格时 rows 为空数组",
 				"items": objectSchema(
-					[]string{"heading", "paragraphs", "list", "table"},
+					[]string{"heading", "paragraphs", "list", "table", "qa"},
 					map[string]any{
 						"heading": strField("小节标题"),
 						"paragraphs": map[string]any{
 							"type":  "array",
 							"items": map[string]any{"type": "string"},
+						},
+						"qa": map[string]any{
+							"type":        "array",
+							"description": "问答对。不是问答栏目时为空数组。问句是 question，答案是 answer，不要写成单独一行的「答：」",
+							"items": objectSchema(
+								[]string{"question", "answer"},
+								map[string]any{
+									"question": strField("问句，以问号结尾"),
+									"answer":   strField("答案，写成一段能照做的话"),
+								},
+							),
 						},
 						"list": map[string]any{
 							"type":        "array",

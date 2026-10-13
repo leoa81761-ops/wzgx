@@ -2079,7 +2079,7 @@ func dropHardStatSentences(text string) string {
 }
 
 func hardStatSentence(text string) bool {
-	return hardStat.MatchString(text)
+	return hardStat.MatchString(text) || vagueQuantity(text)
 }
 
 func experientialStat(text string) bool {

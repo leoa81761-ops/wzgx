@@ -73,7 +73,7 @@ func TestFirstDraftIsOneCallPerSection(t *testing.T) {
 		}
 		last, _ := msgs[len(msgs)-1].(map[string]any)
 		var payload map[string]any
-		_ = json.Unmarshal([]byte(str(last["content"])), &payload)
+		_ = json.Unmarshal([]byte(llm.PayloadText(str(last["content"]))), &payload)
 		if str(payload["环节"]) != "正文" {
 			t.Errorf("stage %s", str(payload["环节"]))
 		}

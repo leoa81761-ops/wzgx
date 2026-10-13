@@ -571,12 +571,27 @@ func stageFromMessages(messages []map[string]string) string {
 			continue
 		}
 		var payload map[string]any
-		if json.Unmarshal([]byte(messages[i]["content"]), &payload) != nil || payload == nil {
+		if json.Unmarshal([]byte(PayloadText(messages[i]["content"])), &payload) != nil || payload == nil {
 			return ""
 		}
 		return asString(payload["环节"])
 	}
 	return ""
+}
+
+// PayloadText returns the JSON object inside a user message.
+// Prompts wrap that object in 【稿件数据】 so instruction text is not part of the article.
+func PayloadText(content string) string {
+	const open = "【稿件数据】"
+	const close = "【稿件数据结束】"
+	if i := strings.Index(content, open); i >= 0 {
+		rest := content[i+len(open):]
+		if j := strings.Index(rest, close); j >= 0 {
+			return strings.TrimSpace(rest[:j])
+		}
+		return strings.TrimSpace(rest)
+	}
+	return content
 }
 
 func longStage(stage string) bool {

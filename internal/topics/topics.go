@@ -711,17 +711,18 @@ func ReaderPain(column, positioning, structure, theme, tone, signatures, name st
 		object = "这件事"
 	}
 	object = concreteObject(blob, object)
+	// A detail has to already be in the topic. Do not invent a stove or “还是黏”.
+	if object == "" || genericTheme(object) || strings.Contains(object, "奶奶") {
+		object = strings.TrimSpace(column)
+	}
+	if object == "" {
+		object = "这件事"
+	}
 	switch {
 	case strings.Contains(blob, "奶奶"):
-		if object == "" || strings.Contains(object, "奶奶") || genericTheme(object) {
-			object = "灶台"
-		}
-		return "奶奶收拾" + object + "时，擦了一遍还是黏"
+		return "奶奶先把" + object + "做完"
 	case familyColumn(blob):
-		if object == "" {
-			object = "灶台"
-		}
-		return "家里的" + object + "没收拾完，油还黏在台面上"
+		return "家里的" + object + "还没收拾完"
 	case faqColumn(blob):
 		if object == "" {
 			object = "这一处接口"

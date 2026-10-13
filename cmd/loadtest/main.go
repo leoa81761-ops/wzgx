@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/leoa81761-ops/wzgx/internal/llm"
 )
 
 func main() {
@@ -176,7 +178,7 @@ func stageOf(raw []byte) string {
 	last, _ := msgs[len(msgs)-1].(map[string]any)
 	content, _ := last["content"].(string)
 	var payload map[string]any
-	_ = json.Unmarshal([]byte(content), &payload)
+	_ = json.Unmarshal([]byte(llm.PayloadText(content)), &payload)
 	stage, _ := payload["环节"].(string)
 	return stage
 }
