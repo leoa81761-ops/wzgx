@@ -27,7 +27,7 @@ func TestFactCheckPromptForbidsInventedThresholds(t *testing.T) {
 		t.Fatal(draft[0]["content"])
 	}
 	polish := StageMessages("结构润色", map[string]any{"vertical_key": "family", "direction": "家庭生活"})
-	if !strings.Contains(polish[0]["content"], "40") || !strings.Contains(polish[0]["content"], "假设") || strings.Contains(polish[0]["content"], "我在现场见过") {
+	if !strings.Contains(polish[0]["content"], "2 到 3") || !strings.Contains(polish[0]["content"], "假设") || strings.Contains(polish[0]["content"], "我在现场见过") {
 		t.Fatal(polish[0]["content"])
 	}
 	review := StageMessages("审核", map[string]any{"direction": "职场成长"})

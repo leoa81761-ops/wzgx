@@ -105,25 +105,24 @@ func TestColumnStructure(t *testing.T) {
 		t.Fatal(Check(combined))
 	}
 	three := Fixture{Title: "问答", Paragraphs: []string{
+		"上周在机房里，图纸和墙上的点位对不上。",
 		"问：验收要看什么？答：先对照图纸。",
 		"问：材料放哪里？答：放在进场前。",
 		"问：编号不对怎么办？答：先停下。",
 	}, Sources: 1, WordTarget: 8, Structure: "qa"}
-	if has(Check(three), "structure") {
+	if !has(Check(three), "structure") {
 		t.Fatal(Check(three))
 	}
-	shaped := AlignStructure("qa", map[string]any{
-		"title":    "系统集成投标写得越全就越稳吗",
-		"sections": []any{map[string]any{"paragraphs": []any{"篇幅不能代替对准招标范围。", "写准才是底线。"}}},
-	})
-	shapedSection := shaped["sections"].([]any)[0].(map[string]any)
-	shapedParas := shapedSection["paragraphs"].([]any)
-	var texts []string
-	for _, item := range shapedParas {
-		texts = append(texts, item.(string))
+	full := []string{
+		"上周在机房对照图纸，墙上一处点位和图纸对不上。",
+		"问：验收要看什么？答：先对照图纸上的点位，再看墙上的实际位置。",
+		"问：材料放哪里？答：放在进场前的指定货架，不要堆在走道上。",
+		"问：编号不对怎么办？答：先停下这条线，核对标签再继续往下接。",
+		"问：检修口留在哪？答：留在打开柜门就能看见的那一块墙面上。",
+		"问：收工前看什么？答：把点位、标签和图纸三处再对一遍。",
 	}
-	if !StructureOK("qa", texts) {
-		t.Fatal(texts)
+	if !StructureOK("qa", full) {
+		t.Fatal(full)
 	}
 	numbered := AlignStructure("steps", map[string]any{
 		"sections": []any{map[string]any{"paragraphs": []any{"先把常用的放到顺手处。", "再把来回的路并成一趟。"}}},

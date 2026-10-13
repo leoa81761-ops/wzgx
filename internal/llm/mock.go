@@ -22,10 +22,10 @@ const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据�
 const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
 const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。用这个账号自己的专业来写，遵守 direction、tone、signatures 和 persona_columns。" +
-	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。" +
+	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。没有来源时不要写百分比、掉线率或版本号，例如 15%、ONVIF 2.4。数字只能写成亲历的范围，例如「我见过的项目里大多」。" +
 	"仍然要写具体：句子里要有数字、工具和场景，并用这个账号的口吻，技术号写现场，家庭号写家里的事。不要温馨、默契、从容这类暖场空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。文末来源会标成经验分享。" +
 	"如果已经有来源网址，不要标成经验分享，在用到该来源的句子后写 [n]。" +
-	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少三对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
+	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答先写 2 到 3 句开头，再至少五对，问句以问号结尾，答案用「答：」接上并且写成能照做的几句，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
 	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。不要写诊断、剂量、疗效或用药。"
 
 func lengthInstruction(stageLabel string, payload map[string]any) string {
@@ -81,7 +81,7 @@ func columnRule(payload map[string]any) string {
 	case "steps", "step-by-step", "breakdown", "拆解":
 		b.WriteString("栏目是步骤：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。")
 	case "qa", "q&a", "faq", "问答":
-		b.WriteString("栏目是问答：至少三对。问句以问号结尾，答案用「答：」接在问号后面或单独成下一段；答案里不要再出现问号。")
+		b.WriteString("栏目是问答：开头先写 2 到 3 句场景，再至少五对。问句以问号结尾，答案用「答：」接在问号后面或单独成下一段，答案要写成能照做的几句；答案里不要再出现问号。")
 	}
 	return b.String()
 }
@@ -109,7 +109,7 @@ func voiceRule(payload map[string]any) string {
 	name := asString(payload["account_name"])
 	tone := asString(payload["tone"])
 	if strings.Contains(name+tone+asString(payload["direction"]), "奶奶") {
-		b.WriteString("这个号用奶奶的口气。只讲 reader_pain 这一件家里的事，用「我在家见过」这种亲历，不要写成通用教程，也不要换到另一件家务。")
+		b.WriteString("这个号用奶奶的口气。只讲 reader_pain 这一件家里的事。亲历和口头禅全文最多两次，不要每一节都用「我在家见过」开头，也不要每一节都写成同一件回忆。不要换成通用教程，也不要换到另一件家务。")
 	} else if strings.TrimSpace(tone) != "" || strings.TrimSpace(asString(payload["signatures"])) != "" {
 		b.WriteString("用 tone、signatures 和 account_name 里这个号自己的口气写，不要换成别的号的说法。")
 	}
@@ -172,6 +172,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"每个标题不超过 28 个字，不要写成叙述句，不要用逗号铺成一段话。" +
 			"每个标题都是完整的一句，不要为了凑字数截断，也不要在后面补套话。" +
 			"不要用「震惊」「不转不是」「稳赚不赔」。不要靠关键词堆砌。" +
+			"每个标题用一种微信上读得完的句式：数字、冲突、身份，或者好奇缺口。标题里的对象必须已经出现在正文里，不要和正文说成两件事。" +
 			"优先写具体场景或数字。每个标题都要自评分：hook、concrete、consistent、persona，都是 1 到 5 的整数。" +
 			"consistent 表示标题和 summary、正文是不是同一件事，对不上就低于 3。自评分只用于淘汰对不上的标题，不要靠高分把长句排到前面。" +
 			readerRule +
@@ -180,7 +181,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是公众号编辑。只改写输入里标记为需要改的部分：rewrite_hook、rewrite_headings、rewrite_closing 为 true 的才写。" +
 			"没有要求改的部分返回空字符串或空数组。" +
 			"不要改表格、列表、序号和小标题层级，只改每个区块里的句子。不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" + markerRule +
-			"开头如果要改，只写不超过 40 个字的一句，用来替换原来的第一段，不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
+			"开头如果要改，写成 2 到 3 句，里面要有一个场景、一个冲突，或者一个数字。不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
 			"小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
 			anecdoteRule + voiceRule(payload) + readerRule + sceneRule + tabooRule(payload) + columnRule(payload) +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
@@ -207,7 +208,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if asString(payload["writing_mode"]) == "experience" {
 			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按这个账号的 direction、tone、signatures 和栏目结构重写成一篇完整稿。" +
 				"不要写外部机构、标准、新闻或网址，不要使用 [n]。现场的数量、工具和场景要写具体，不要用温馨、默契这类空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。" +
-				"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
+				"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段，答案要写成能照做的几句；答案里不要再出现问号。问答必须相邻。" +
 				"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 				"news 或快报：没有可核对的新闻时不要编造日期和 [n]，按栏目定位写成经验分享。" +
 				"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。" +
@@ -218,7 +219,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
 			"不要删掉已有段落、列表和表格，不要把表格压成一段话，不要增加大纲里没有的步骤。序号必须从 1 连续编到最后，不要把资料清单的编号抄进正文。只改每个区块里的句子，表格和列表的结构保持原样。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
-			"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
+			"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段，答案要写成能照做的几句；答案里不要再出现问号。问答必须相邻。" +
 			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 			"不要在句首机械地加「近日」，不要补空泛的「答：」，不要给没有来源的句子加 [1]。" +
 			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule + markerRule +
@@ -269,7 +270,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthInstruction(stageLabel, payload) + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。" +
-				"全文只写 reader_pain 这一件事，不要换到另一件家务、另一台设备或另一个场景。"
+				"全文只写 reader_pain 这一件事，不要换到另一件家务、另一台设备或另一个场景。" +
+				"开头用 2 到 3 句，里面要有一个场景、一个冲突，或者一个数字。小标题不要加栏目名前缀，例如不要写「拆解：」「简单：第一步：」。" +
+				"不要每节都做成编号列表：第一节用一段引言，中间可以有列表，最后一节用一段可以转发的收获。同一条例子不要在两节里再写一遍。四字以上的说法全文最多两次，不要每一节都用同一句亲历开头。小标题不要加「知识：」「家长里短：」这类栏目前缀。结尾只留一句，不要写「关注本号」或「下一期继续写」，也不要再写一遍文末免责声明。"
 		}
 		system += readerRule + motifRule(payload)
 		if stageLabel == "审核" {

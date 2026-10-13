@@ -46,7 +46,7 @@ func TestShapeCopyRepairsFormatting(t *testing.T) {
 		t.Fatal(section)
 	}
 	closing, _ := out["closing"].(string)
-	if !strings.Contains(closing, "关注") || !strings.Contains(closing, "方案拆解") || !strings.Contains(closing, "评论") {
+	if closing != "先记下来。" || strings.Contains(closing, "关注本号") {
 		t.Fatal(closing)
 	}
 }

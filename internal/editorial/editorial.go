@@ -1489,7 +1489,7 @@ func factText(raw any) string {
 // ShapeCopy repairs formatting the model drops: a run-on with no sentence breaks,
 // a markdown or label table left as one paragraph, an empty subheading, a reader
 // addressed as if they had sent something in, and a buzzword repeated past twice.
-// It also makes sure the closing asks the reader to follow, comment, or wait for the next issue.
+// The closing keeps one ending and drops a stock follow-up line or a repeated disclaimer.
 func ShapeCopy(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
@@ -1518,8 +1518,546 @@ func ShapeCopy(draft map[string]any) map[string]any {
 	dropEmptySections(draft)
 	capBuzzword(draft, "温暖", 2)
 	draft["closing"] = repairRunOn(dropReaderAddress(textOf(draft["closing"])))
+	StripHeadingPrefixes(draft)
+	MixProse(draft)
+	DedupeExamples(draft)
 	ensureCTA(draft)
+	StripDuplicateTails(draft)
 	return draft
+}
+
+// StripHeadingPrefixes removes column and template labels glued onto a heading,
+// such as 拆解：, 简单：, and 简单：第一步：.
+func StripHeadingPrefixes(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ", "知识", "家长里短", "栏目"}
+	if label := strings.TrimSpace(textOf(draft["column_label"])); label != "" {
+		prefixes = append(prefixes, columnStems(label)...)
+	}
+	for _, section := range sectionsOf(draft) {
+		section["heading"] = stripLabelPrefix(textOf(section["heading"]), prefixes)
+	}
+	return draft
+}
+
+func stripLabelPrefix(text string, prefixes []string) string {
+	text = strings.TrimSpace(text)
+	changed := true
+	for changed {
+		changed = false
+		for _, prefix := range prefixes {
+			if prefix == "" {
+				continue
+			}
+			for _, sep := range []string{"：", ":"} {
+				lead := prefix + sep
+				if strings.HasPrefix(text, lead) {
+					text = strings.TrimSpace(strings.TrimPrefix(text, lead))
+					changed = true
+				}
+			}
+		}
+	}
+	return text
+}
+
+func columnStems(label string) []string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil
+	}
+	out := []string{label}
+	var han []rune
+	for _, r := range label {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			han = append(han, r)
+		}
+	}
+	if len(han) >= 2 {
+		stem := string(han)
+		if stem != label {
+			out = append(out, stem)
+		}
+	}
+	return out
+}
+
+// CapHanPhrases keeps any Han phrase of at least n characters to limit occurrences,
+// except phrases that already appear in the title. A three-character X一X gesture is capped the same way.
+func CapHanPhrases(draft map[string]any, n, limit int) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	if n < 4 {
+		n = 4
+	}
+	if limit < 1 {
+		limit = 2
+	}
+	title := textOf(draft["title"])
+	text := draftPlain(draft)
+	var phrases []string
+	seen := map[string]bool{}
+	for length := 12; length >= n; length-- {
+		for _, phrase := range hanPhrases(text, length) {
+			if seen[phrase] || strings.Contains(title, phrase) || stopPhrase(phrase) {
+				continue
+			}
+			seen[phrase] = true
+			if strings.Count(text, phrase) > limit {
+				phrases = append(phrases, phrase)
+			}
+		}
+	}
+	for _, phrase := range hanPhrases(text, 3) {
+		if !gesture(phrase) || seen[phrase] || strings.Contains(title, phrase) {
+			continue
+		}
+		seen[phrase] = true
+		if strings.Count(text, phrase) > limit {
+			phrases = append(phrases, phrase)
+		}
+	}
+	phrases = maximalPhrases(phrases)
+	if len(phrases) == 0 {
+		return draft
+	}
+	counts := map[string]int{}
+	applyText(draft, func(part string) string {
+		if lengthPad(part) {
+			return part
+		}
+		for _, phrase := range phrases {
+			part = keepPhrase(part, phrase, limit, counts)
+		}
+		return strings.TrimSpace(part)
+	})
+	return draft
+}
+
+func maximalPhrases(phrases []string) []string {
+	var out []string
+	for _, phrase := range phrases {
+		shorter := false
+		for _, other := range phrases {
+			if len([]rune(other)) > len([]rune(phrase)) && strings.Contains(other, phrase) {
+				shorter = true
+				break
+			}
+		}
+		if !shorter {
+			out = append(out, phrase)
+		}
+	}
+	return out
+}
+
+func draftPlain(draft map[string]any) string {
+	var b strings.Builder
+	for _, key := range []string{"title", "summary", "closing"} {
+		b.WriteString(textOf(draft[key]))
+	}
+	for _, section := range sectionsOf(draft) {
+		b.WriteString(textOf(section["heading"]))
+		for _, item := range anyList(section["paragraphs"]) {
+			b.WriteString(textOf(item))
+		}
+		for _, item := range anyList(section["list"]) {
+			b.WriteString(textOf(item))
+		}
+	}
+	return b.String()
+}
+
+func keepPhrase(text, phrase string, limit int, counts map[string]int) string {
+	if phrase == "" || !strings.Contains(text, phrase) {
+		return text
+	}
+	var b strings.Builder
+	rest := text
+	for {
+		i := strings.Index(rest, phrase)
+		if i < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		b.WriteString(rest[:i])
+		counts[phrase]++
+		if counts[phrase] <= limit {
+			b.WriteString(phrase)
+		}
+		rest = rest[i+len(phrase):]
+	}
+}
+
+func stopPhrase(phrase string) bool {
+	switch phrase {
+	case "的时候", "这个时候", "是不是", "可以可以", "没有没有", "因为所以", "如果还是", "就是这个", "我们自己", "什么怎么", "然后但是", "而且已经", "可能需要", "现在一个":
+		return true
+	default:
+		return false
+	}
+}
+
+func lengthPad(text string) bool {
+	parts := splitSentences(text)
+	if len(parts) < 8 {
+		return false
+	}
+	same := 0
+	for _, part := range parts {
+		if part == parts[0] {
+			same++
+		}
+	}
+	return same*2 > len(parts)
+}
+
+func gesture(phrase string) bool {
+	runes := []rune(phrase)
+	return len(runes) == 3 && runes[1] == '一' && runes[0] == runes[2]
+}
+
+// VarySectionOpeners stops every section from opening as the same anecdote.
+func VarySectionOpeners(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	sections := sectionsOf(draft)
+	if len(sections) < 3 {
+		return draft
+	}
+	markers := []string{"我在家见过", "我见过", "有一次", "记得", "那天"}
+	anecdote := 0
+	for _, section := range sections {
+		if containsAny(firstSentence(section), markers...) {
+			anecdote++
+		}
+	}
+	if anecdote < 3 {
+		return draft
+	}
+	kept := 0
+	for _, section := range sections {
+		if !containsAny(firstSentence(section), markers...) {
+			continue
+		}
+		kept++
+		if kept <= 2 {
+			continue
+		}
+		dropOpeningSentence(section, markers)
+	}
+	return draft
+}
+
+func firstSentence(section map[string]any) string {
+	for _, item := range anyList(section["paragraphs"]) {
+		text := strings.TrimSpace(textOf(item))
+		if text == "" {
+			continue
+		}
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			return text
+		}
+		return parts[0]
+	}
+	return ""
+}
+
+func dropOpeningSentence(section map[string]any, markers []string) {
+	paras := anyList(section["paragraphs"])
+	for i, item := range paras {
+		text := strings.TrimSpace(textOf(item))
+		parts := splitSentences(text)
+		if len(parts) == 0 || !containsAny(parts[0], markers...) {
+			continue
+		}
+		if len(parts) == 1 {
+			paras[i] = ""
+			continue
+		}
+		paras[i] = strings.Join(parts[1:], "")
+		section["paragraphs"] = paras
+		return
+	}
+	section["paragraphs"] = paras
+}
+
+// StripDuplicateTails leaves one disclaimer in the footnotes and drops the AI label from the body.
+// The rendered footer is the only place the AI label appears.
+func StripDuplicateTails(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	var notes []any
+	seen := map[string]bool{}
+	for _, item := range anyList(draft["footnotes"]) {
+		text := strings.TrimSpace(textOf(item))
+		if text == "" || aiLabelLine(text) || seen[text] {
+			continue
+		}
+		seen[text] = true
+		notes = append(notes, text)
+	}
+	if notes == nil {
+		notes = []any{}
+	}
+	draft["footnotes"] = notes
+	stripTail := func(text string) string {
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			if disclaimerLine(text) || aiLabelLine(text) {
+				return ""
+			}
+			return text
+		}
+		var kept []string
+		for _, part := range parts {
+			if disclaimerLine(part) || aiLabelLine(part) {
+				continue
+			}
+			kept = append(kept, part)
+		}
+		return strings.Join(kept, "")
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			if text := strings.TrimSpace(stripTail(textOf(item))); text != "" {
+				paras = append(paras, text)
+			}
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	draft["closing"] = oneEnding(stripTail(textOf(draft["closing"])))
+	return draft
+}
+
+func disclaimerLine(text string) bool {
+	if aiLabelLine(text) {
+		return true
+	}
+	for _, phrase := range []string{"本文是家庭生活分享", "本文是工程科普", "不能代替专业意见", "不能代替设计图纸", "请结合自己的情况判断"} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func aiLabelLine(text string) bool {
+	return strings.Contains(text, "人工智能辅助生成") || strings.Contains(text, "人工智能生成") || strings.Contains(text, "由AI生成") || strings.Contains(text, "由 AI 生成")
+}
+
+// MixProse turns an all-list article into an intro, a list, and a takeaway.
+func MixProse(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	sections := sectionsOf(draft)
+	if len(sections) == 0 {
+		return draft
+	}
+	listOnly := 0
+	for _, section := range sections {
+		if len(nonemptyText(anyList(section["paragraphs"]))) == 0 && len(nonemptyText(anyList(section["list"]))) > 0 {
+			listOnly++
+		}
+	}
+	if listOnly < 2 || listOnly < len(sections) {
+		return draft
+	}
+	lift := func(section map[string]any, takeLast bool) {
+		items := nonemptyText(anyList(section["list"]))
+		if len(items) == 0 {
+			return
+		}
+		picked := items[0]
+		rest := items[1:]
+		if takeLast && len(items) > 1 {
+			picked = items[len(items)-1]
+			rest = items[:len(items)-1]
+		}
+		paras := nonemptyText(anyList(section["paragraphs"]))
+		paras = append(paras, stripListIndex(picked))
+		section["paragraphs"] = toAny(paras)
+		section["list"] = toAny(rest)
+	}
+	lift(sections[0], false)
+	if len(sections) > 1 {
+		lift(sections[len(sections)-1], true)
+	}
+	return draft
+}
+
+func stripListIndex(text string) string {
+	text = strings.TrimSpace(text)
+	text = factIndex.ReplaceAllString(text, "")
+	return strings.TrimSpace(text)
+}
+
+func nonemptyText(items []any) []string {
+	var out []string
+	for _, item := range items {
+		if text := strings.TrimSpace(textOf(item)); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func toAny(items []string) []any {
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	return out
+}
+
+// DedupeExamples drops a later sentence that repeats an example already used in an earlier section.
+func DedupeExamples(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			key := exampleKey(text)
+			if key != "" && seen[key] {
+				continue
+			}
+			if key != "" {
+				seen[key] = true
+			}
+			if text != "" {
+				paras = append(paras, text)
+			}
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	return draft
+}
+
+func exampleKey(text string) string {
+	var buf []rune
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+		}
+	}
+	if len(buf) < 8 {
+		return ""
+	}
+	return string(buf[:8])
+}
+
+var hardStat = regexp.MustCompile(`\d+(?:\.\d+)?\s*[%％]|掉线率|[A-Za-z]{2,}\s*\d+\.\d+`)
+
+// StripInventedStats removes percentages, rates, and version numbers that have no source
+// and are not spoken as the writer's own range.
+func StripInventedStats(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, key := range []string{"title", "summary", "closing"} {
+		if text := textOf(draft[key]); text != "" {
+			draft[key] = dropHardStatSentences(text)
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			if text := dropHardStatSentences(textOf(item)); strings.TrimSpace(text) != "" {
+				paras = append(paras, text)
+			}
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		var items []any
+		for _, item := range anyList(section["list"]) {
+			if text := dropHardStatSentences(textOf(item)); strings.TrimSpace(text) != "" {
+				items = append(items, text)
+			}
+		}
+		if items == nil {
+			items = []any{}
+		}
+		section["list"] = items
+	}
+	return draft
+}
+
+func dropHardStatSentences(text string) string {
+	parts := splitSentences(text)
+	if len(parts) == 0 {
+		return text
+	}
+	var kept []string
+	changed := false
+	for _, sentence := range parts {
+		if hardStatSentence(sentence) && !experientialStat(sentence) {
+			changed = true
+			continue
+		}
+		kept = append(kept, sentence)
+	}
+	if !changed {
+		return text
+	}
+	return strings.Join(kept, "")
+}
+
+func hardStatSentence(text string) bool {
+	return hardStat.MatchString(text)
+}
+
+func experientialStat(text string) bool {
+	for _, word := range []string{"我见过", "大多", "大概", "大约", "上下", "一般", "往往"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// HardStat reports a percentage, rate, or version number that is not framed as experience.
+func HardStat(draft map[string]any) bool {
+	if draft == nil {
+		return false
+	}
+	blob := textOf(draft["title"]) + textOf(draft["summary"]) + textOf(draft["closing"])
+	for _, section := range sectionsOf(draft) {
+		blob += textOf(section["heading"])
+		for _, item := range anyList(section["paragraphs"]) {
+			blob += textOf(item)
+		}
+		for _, item := range anyList(section["list"]) {
+			blob += textOf(item)
+		}
+	}
+	for _, sentence := range splitSentences(blob) {
+		if hardStatSentence(sentence) && !experientialStat(sentence) {
+			return true
+		}
+	}
+	if hardStatSentence(blob) && !experientialStat(blob) {
+		return true
+	}
+	return false
 }
 
 func dropEmptySections(draft map[string]any) {
@@ -1624,30 +2162,44 @@ func dropReaderAddress(text string) string {
 }
 
 func ensureCTA(draft map[string]any) {
-	closing := strings.TrimSpace(textOf(draft["closing"]))
-	if ctaConcrete(closing) {
-		return
+	draft["closing"] = oneEnding(textOf(draft["closing"]))
+}
+
+func oneEnding(text string) string {
+	var kept []string
+	for _, part := range strings.Split(text, "\n") {
+		part = strings.TrimSpace(part)
+		if part == "" || stockEnding(part) || disclaimerLine(part) {
+			continue
+		}
+		kept = append(kept, part)
 	}
-	column := strings.TrimSpace(textOf(draft["column_label"]))
-	line := "关注本号，把你遇到的情况写在评论里。"
-	if column != "" {
-		line = "关注本号，在评论里留下你的做法。下一期「" + column + "」继续写。"
+	if len(kept) == 0 {
+		return ""
 	}
-	if closing == "" {
-		draft["closing"] = line
-		return
+	return kept[0]
+}
+
+func stockEnding(text string) bool {
+	if strings.Contains(text, "下一期") || strings.Contains(text, "欢迎留言说说") {
+		return true
 	}
-	draft["closing"] = closing + "\n\n" + line
+	if strings.Contains(text, "关注本号，把你的做法") || strings.Contains(text, "关注本号，把你在「") {
+		return true
+	}
+	return false
+}
+
+func keepOneCTA(text string) string {
+	return oneEnding(text)
+}
+
+func boilerCTA(text string) bool {
+	return stockEnding(text)
 }
 
 func ctaConcrete(text string) bool {
-	if strings.Contains(text, "关注") {
-		return true
-	}
-	if strings.Contains(text, "下期") || strings.Contains(text, "下一期") {
-		return true
-	}
-	return strings.Contains(text, "评论")
+	return strings.Contains(text, "关注") || strings.Contains(text, "评论") || strings.Contains(text, "留言") || strings.Contains(text, "下期") || strings.Contains(text, "下一期")
 }
 
 func repairRunOn(text string) string {

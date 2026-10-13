@@ -132,8 +132,11 @@ func TestReaderPainIsNotTheSameFailureAngle(t *testing.T) {
 	if grandma == wiring || !strings.Contains(grandma, "奶奶") || !strings.Contains(wiring, "弱电") {
 		t.Fatal(grandma, wiring)
 	}
-	if !GenericAngle("先看失败点") || !GenericAngle("监控掉线：先看失败点") {
+	if !GenericAngle("先看失败点") || !GenericAngle("监控掉线：先看失败点") || !GenericAngle("先把手边这一件说完") {
 		t.Fatal("generic angle slipped through")
+	}
+	if strings.Contains(grandma, "先把手边") || strings.Contains(wiring, "先把手边") || strings.Contains(grandma, "灶台") == false {
+		t.Fatal(grandma, wiring)
 	}
 	angles := AnglesFor("方案拆解", "把一个方案拆成可以照着做的步骤", "steps", "先看失败点")
 	for _, angle := range angles {

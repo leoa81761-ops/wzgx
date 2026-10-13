@@ -125,6 +125,7 @@ type Built struct {
 	NoDatedNews    bool
 	Thin           bool
 	Repeated       bool
+	InventedStats  bool
 	Searched       bool
 	OwnSearch      bool
 	TavilyNotice   string
@@ -1225,7 +1226,7 @@ func rankTitles(ctx context.Context, gateway *llm.Gateway, providers map[string]
 	candidates = append(candidates, scoredTitles(asList(draft["alt_titles"]))...)
 	best, alts := headline.RankScored(candidates, str(draft["summary"]), bodyPlain(draft), append(splitWords(w.Pack.RedLines, w.BannedWords, w.Taboos), sensitive...), w.RecentTitles, w.TitlePrefer)
 	tokens := tokensOf(completion)
-	if strings.TrimSpace(best.Title) != "" && len(alts) > 0 {
+	if strings.TrimSpace(best.Title) != "" && len(alts) > 0 && !headline.Outranks(best, alts) {
 		winner, compareTokens, compareTrace := compareTitles(ctx, gateway, providers, best, alts, base)
 		tokens += compareTokens
 		trace = append(trace, compareTrace...)
@@ -1900,6 +1901,11 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft["image_style"] = imageStyle
 	}
 	draft = editorial.ShapeCopy(draft)
+	inventedStats := false
+	if experience && !sourcedPiece {
+		draft = editorial.StripInventedStats(draft)
+		inventedStats = editorial.HardStat(draft)
+	}
 	draft = editorial.RepairStructure(draft)
 	if experience && !sourcedPiece {
 		draft = editorial.StripWarmFiller(draft)
@@ -1938,6 +1944,8 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.MaterializeMarkup(draft, outlineHeadings(base))
 	draft = editorial.RepairStructure(draft)
 	draft = keepBody(draft, assembled)
+	draft = editorial.CapHanPhrases(draft, 4, 2)
+	draft = editorial.VarySectionOpeners(draft)
 	repeated := editorial.RepeatedBody(draft)
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
@@ -1950,7 +1958,18 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	html = editorial.RepairMarkup(html)
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, InventedStats: inventedStats, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+}
+
+// resumeQuotaPause leaves a one-off generate paused. Only a scheduled run can clear a quota pause.
+func resumeQuotaPause(status, reason, trigger string) (string, string) {
+	if trigger == "manual" || trigger == "regenerate" {
+		return status, reason
+	}
+	if status == "paused" && reason == "额度已用完" {
+		return "active", ""
+	}
+	return status, reason
 }
 
 func heldDelivery(built Built) (bool, string) {
@@ -1975,6 +1994,9 @@ func heldDelivery(built Built) (bool, string) {
 	}
 	if built.Repeated {
 		note = joinNote(note, "正文在重复同一句，或把题目嵌进了套话，未写入公众号草稿。")
+	}
+	if built.InventedStats {
+		note = joinNote(note, "经验分享里写了没有来源的统计或参数，未写入公众号草稿。")
 	}
 	return note != "", note
 }
@@ -2261,7 +2283,7 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		if err := deps.Store.UpdateTask(ctx, tx, task); err != nil {
 			return err
 		}
-		if task.TriggerType != "regenerate" {
+		if task.TriggerType != "regenerate" && plan.Status == "active" {
 			produced, countErr := deps.Store.CountPlanTasks(ctx, tx, plan.ID, schedule.ShanghaiDay(now), []string{"schedule"})
 			if countErr != nil {
 				return countErr
@@ -2271,10 +2293,7 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 				plan.NextRunAt = &next
 			}
 		}
-		if plan.Status == "paused" && plan.PauseReason == "额度已用完" {
-			plan.Status = "active"
-			plan.PauseReason = ""
-		}
+		plan.Status, plan.PauseReason = resumeQuotaPause(plan.Status, plan.PauseReason, task.TriggerType)
 		if str(result["cost_action"]) == ops.ActionPause && plan.Status == "active" {
 			plan.Status = "paused"
 			plan.PauseReason = "本月成本已达上限"

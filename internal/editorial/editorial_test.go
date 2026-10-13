@@ -689,6 +689,94 @@ func TestArticle74And75Blocks(t *testing.T) {
 	}
 }
 
+func TestHeadingPrefixAndInventedStatAndOneCTA(t *testing.T) {
+	draft := map[string]any{
+		"column_label": "方案拆解",
+		"title":        "监控掉线",
+		"sections": []any{
+			map[string]any{"heading": "拆解：简单：第一步：先看交换机", "paragraphs": []any{"现场先看交换机的灯。"}, "list": []any{}},
+			map[string]any{"heading": "方案拆解：再看线", "paragraphs": []any{"ONVIF 2.4 和 2.6 不能混用。掉线率 15%。我见过的项目里大多两天内能恢复。"}, "list": []any{}},
+		},
+		"closing": "欢迎留言说说你的做法。\n\n关注本号，把你的做法写在评论里。",
+	}
+	out := StripInventedStats(StripHeadingPrefixes(draft))
+	out["closing"] = keepOneCTA(textOf(out["closing"]))
+	sections, _ := out["sections"].([]any)
+	first := sections[0].(map[string]any)["heading"].(string)
+	if strings.Contains(first, "拆解") || strings.Contains(first, "第一步") || first != "先看交换机" {
+		t.Fatal(first)
+	}
+	blob := dump(out)
+	if strings.Contains(blob, "15%") || strings.Contains(blob, "ONVIF") || !strings.Contains(blob, "我见过") {
+		t.Fatal(blob)
+	}
+	if strings.Count(textOf(out["closing"]), "关注本号") != 0 && strings.Contains(textOf(out["closing"]), "欢迎留言") {
+		if strings.Contains(textOf(out["closing"]), "关注本号") {
+			t.Fatal(out["closing"])
+		}
+	}
+	if strings.Contains(textOf(out["closing"]), "关注本号") {
+		t.Fatal(out["closing"])
+	}
+	lists := map[string]any{"sections": []any{
+		map[string]any{"heading": "甲", "list": []any{"1. 先看灯", "2. 再看线"}},
+		map[string]any{"heading": "乙", "list": []any{"1. 记下端口", "2. 收工前再看一眼"}},
+	}}
+	mixed := MixProse(lists)
+	raw := dump(mixed)
+	if !strings.Contains(raw, "先看灯") || !strings.Contains(raw, "收工前再看一眼") {
+		t.Fatal(raw)
+	}
+	if HardStat(out) {
+		t.Fatal("stripped draft still has a hard stat")
+	}
+	if !HardStat(map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"掉线率 30%。"}}}}) {
+		t.Fatal("gate missed a percentage")
+	}
+	prefixed := map[string]any{"column_label": "知识FAQ", "sections": []any{
+		map[string]any{"heading": "知识：家长里短：先看灶台", "paragraphs": []any{"晚饭后先看这一处。"}},
+	}, "closing": "先把油擦掉。\n\n关注本号，把你的做法写在评论里。\n\n下一期继续写这一处。\n\n本文是家庭生活分享，请结合自己的情况判断。\n\n本文由人工智能辅助生成",
+		"footnotes": []any{"本文是家庭生活分享，请结合自己的情况判断。", "本文是家庭生活分享，请结合自己的情况判断。", "本文由人工智能辅助生成"},
+	}
+	shaped := ShapeCopy(prefixed)
+	heading := shaped["sections"].([]any)[0].(map[string]any)["heading"].(string)
+	if heading != "先看灶台" {
+		t.Fatal(heading)
+	}
+	closing := textOf(shaped["closing"])
+	if strings.Contains(closing, "关注本号") || strings.Contains(closing, "下一期") || strings.Contains(closing, "人工智能") || strings.Contains(closing, "家庭生活分享") {
+		t.Fatal(closing)
+	}
+	if closing != "先把油擦掉。" {
+		t.Fatal(closing)
+	}
+	notes := shaped["footnotes"].([]any)
+	if len(notes) != 1 || strings.Contains(textOf(notes[0]), "人工智能") {
+		t.Fatal(notes)
+	}
+	repeated := map[string]any{"title": "灶台", "sections": []any{
+		map[string]any{"paragraphs": []any{"我在家见过灶台油多。摸一摸就知道。"}},
+		map[string]any{"paragraphs": []any{"我在家见过抹布要拧干。摸一摸边缘。"}},
+		map[string]any{"paragraphs": []any{"我在家见过冷水更容易挂油。摸一摸台面。"}},
+		map[string]any{"paragraphs": []any{"我在家见过最后用干布收一收。"}},
+	}}
+	capped := CapHanPhrases(repeated, 4, 2)
+	blob = dump(capped)
+	if strings.Count(blob, "我在家见过") != 2 || strings.Count(blob, "摸一摸") != 2 {
+		t.Fatal(blob)
+	}
+	varied := VarySectionOpeners(capped)
+	openers := 0
+	for _, section := range sectionsOf(varied) {
+		if strings.Contains(firstSentence(section), "我在家见过") {
+			openers++
+		}
+	}
+	if openers > 2 {
+		t.Fatal(dump(varied))
+	}
+}
+
 func TestKeepOneSubjectDropsTheOtherChores(t *testing.T) {
 	draft := map[string]any{
 		"title": "奶奶晚饭后先把灶台擦一遍",

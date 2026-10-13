@@ -106,9 +106,6 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 	}
 	var parts []string
 	parts = append(parts, `<section style="`+theme["wrap"]+`">`)
-	if label := strings.TrimSpace(asString(article["column_label"])); label != "" {
-		parts = append(parts, `<p style="`+theme["lead"]+`">`+html.EscapeString("栏目 · "+label)+`</p>`)
-	}
 	for _, raw := range asList(article["sections"]) {
 		section, _ := raw.(map[string]any)
 		if section == nil {
