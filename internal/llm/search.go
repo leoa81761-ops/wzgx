@@ -318,7 +318,7 @@ func SearchProvider(ctx context.Context, client *http.Client, target SearchTarge
 	var err error
 	switch provider {
 	case "tavily":
-		payload, _ := json.Marshal(map[string]any{"api_key": apiKey, "query": query, "max_results": 5})
+		payload, _ := json.Marshal(map[string]any{"api_key": apiKey, "query": query, "max_results": 10})
 		req, err = http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
 		if err != nil {
 			return nil, err
@@ -334,7 +334,7 @@ func SearchProvider(ctx context.Context, client *http.Client, target SearchTarge
 			values.Set("q", query)
 		}
 		if values.Get("count") == "" {
-			values.Set("count", "5")
+			values.Set("count", "10")
 		}
 		parsed.RawQuery = values.Encode()
 		req, err = http.NewRequestWithContext(callCtx, http.MethodGet, parsed.String(), nil)
@@ -343,7 +343,7 @@ func SearchProvider(ctx context.Context, client *http.Client, target SearchTarge
 		}
 		req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
 	default:
-		payload, _ := json.Marshal(map[string]any{"query": query, "count": 5, "summary": true})
+		payload, _ := json.Marshal(map[string]any{"query": query, "count": 10, "summary": true})
 		req, err = http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
 		if err != nil {
 			return nil, err

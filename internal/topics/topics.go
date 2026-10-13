@@ -671,7 +671,7 @@ func familyColumn(blob string) bool {
 // A comparison frame, or a title such as 代理机构信息登记 on a 弱电 account, is replaced.
 func FitTitle(title, column, positioning, structure, theme string) string {
 	title = strings.TrimSpace(title)
-	if title != "" && !ComparisonFrame(title) && onTheme(title, theme) && matchesColumn(title, column, positioning, structure) {
+	if title != "" && !ComparisonFrame(title) && !VagueTitle(title) && onTheme(title, theme) && matchesColumn(title, column, positioning, structure) {
 		return title
 	}
 	return ColumnTopic(column, positioning, structure, theme)
@@ -697,11 +697,60 @@ func ColumnTopic(column, positioning, structure, theme string) string {
 	case faqColumn(blob):
 		return entity + "这一步，先看哪里？"
 	default:
-		if ComparisonFrame(entity) {
-			entity = "这件事"
+		subject := specificSubject(theme)
+		if subject == "" || ComparisonFrame(subject) || VagueTitle(subject) {
+			subject = entity
 		}
-		return entity + "：先把能做的一步写清楚"
+		if subject == "" || ComparisonFrame(subject) || VagueTitle(subject) {
+			subject = "这件事"
+		}
+		return subject
 	}
+}
+
+// VagueTitle reports a column label plus an empty angle, such as 施工坑点：更稳妥的做法.
+// A title that still names the subject, such as 综合布线六类线测试失败常见原因, is not vague.
+func VagueTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return true
+	}
+	cleaned := title
+	for _, phrase := range []string{
+		"更稳妥的做法", "施工坑点", "一个听起来很对的说法", "为什么会有这种误解",
+		"先讲结论", "从一个日常场景说起", "把一个具体问题讲清楚",
+		"三件今天就能做的小事", "新手最容易漏的步骤", "按顺序的一周小计划",
+		"先把能做的一步写清楚", "把失败原因写具体",
+	} {
+		cleaned = strings.ReplaceAll(cleaned, phrase, "")
+	}
+	cleaned = strings.Trim(cleaned, "：:，, 、？? ")
+	return utf8.RuneCountInString(cleaned) < 4
+}
+
+func specificSubject(theme string) string {
+	parts := themeTerms(theme)
+	if len(parts) == 0 {
+		return ""
+	}
+	for i := 0; i < len(parts); i++ {
+		for j := i + 1; j < len(parts); j++ {
+			if utf8.RuneCountInString(parts[j]) > utf8.RuneCountInString(parts[i]) {
+				parts[i], parts[j] = parts[j], parts[i]
+			}
+		}
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		if utf8.RuneCountInString(b.String()+part) > 24 {
+			break
+		}
+		b.WriteString(part)
+		if utf8.RuneCountInString(b.String()) >= 12 {
+			break
+		}
+	}
+	return b.String()
 }
 
 func matchesColumn(title, column, positioning, structure string) bool {

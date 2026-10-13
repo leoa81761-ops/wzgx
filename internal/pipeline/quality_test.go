@@ -109,7 +109,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 3 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 2 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }

@@ -2,6 +2,7 @@ package render
 
 import (
 	"html"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -126,8 +127,8 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 		}
 		if len(items) > 0 && !compact {
 			var lis strings.Builder
-			for _, item := range items {
-				lis.WriteString(`<li style="` + theme["li"] + `">` + html.EscapeString(item) + `</li>`)
+			for i, item := range items {
+				lis.WriteString(`<li style="` + theme["li"] + `">` + html.EscapeString(strconv.Itoa(i+1)+". "+stripLeadNumber(item)) + `</li>`)
 			}
 			parts = append(parts, `<ul style="`+theme["ul"]+`">`+lis.String()+`</ul>`)
 		}

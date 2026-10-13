@@ -2486,8 +2486,9 @@ func hanWords(text string) []string {
 
 var factIndex = regexp.MustCompile(`^(\d+)[\.、]\s*`)
 
-// StripFactNumbers removes a leading "2." style index when the section is not a contiguous 1..n list.
-// A real step list that starts at 1 and does not skip is kept.
+// StripFactNumbers removes a leading "2." style index when the paragraphs are not a contiguous 1..n list.
+// A real step list that starts at 1 and does not skip is kept. List items are renumbered 1..n instead,
+// including a list written as 1,1,2 or 2,2.
 func StripFactNumbers(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
@@ -2495,7 +2496,7 @@ func StripFactNumbers(draft map[string]any) map[string]any {
 	for _, section := range sectionsOf(draft) {
 		section["paragraphs"] = stripBrokenNumbers(anyList(section["paragraphs"]))
 		if len(anyList(section["list"])) > 0 {
-			section["list"] = stripBrokenNumbers(anyList(section["list"]))
+			section["list"] = renumberContinuous(anyList(section["list"]))
 		}
 	}
 	return draft

@@ -680,3 +680,391 @@ func escapeLite(text string) string {
 func unescapeLite(text string) string {
 	return strings.NewReplacer("&lt;", "<", "&gt;", ">", "&amp;", "&").Replace(text)
 }
+
+var runOnNumber = regexp.MustCompile(`(\d+)[\.、．]`)
+
+// MaterializeMarkup turns flattened prose back into the JSON blocks the renderer uses.
+// A run-on table such as 「步骤注意事项1. …2. …」 becomes a table. A list numbered 1,1,2 or 2,2
+// becomes 1..n. A FAQ crammed into one paragraph is split into pairs, and an answer with no
+// question is dropped. A step section that is not in the outline is dropped. Expansion sections
+// (案例, 易错, 常见问题, 核对清单) stay.
+func MaterializeMarkup(draft map[string]any, outline []string) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, section := range sectionsOf(draft) {
+		materializeSection(section)
+	}
+	dropExtraSteps(draft, outline)
+	return draft
+}
+
+// KeepMarkup copies sentence text from a later rewrite back into the original blocks.
+// Tables and lists keep their shape. A rewrite that drops a table or changes how many
+// list items there are is ignored for that block.
+func KeepMarkup(before, after map[string]any) map[string]any {
+	if before == nil {
+		return after
+	}
+	if after == nil {
+		return before
+	}
+	out := clone(after)
+	if out == nil {
+		return before
+	}
+	beforeSecs := sectionsOf(before)
+	afterSecs := sectionsOf(out)
+	for i := 0; i < len(beforeSecs) && i < len(afterSecs); i++ {
+		keepTable(beforeSecs[i], afterSecs[i])
+		keepList(beforeSecs[i], afterSecs[i])
+	}
+	return out
+}
+
+// DropStrayTips removes a one-line experience tip that has no number and no tool.
+// A sentence with a quantity or a tool stays. Warm filler is removed separately.
+func DropStrayTips(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, section := range sectionsOf(draft) {
+		items := anyList(section["list"])
+		if len(items) == 0 {
+			continue
+		}
+		var kept []any
+		for _, item := range items {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" || strayTip(text) {
+				continue
+			}
+			kept = append(kept, text)
+		}
+		if kept == nil {
+			kept = []any{}
+		}
+		section["list"] = kept
+	}
+	return draft
+}
+
+func strayTip(text string) bool {
+	if hasDigit(text) || hasUnit(text) || hasConcreteNoun(text) || hasTool(text) {
+		return false
+	}
+	return utf8.RuneCountInString(text) <= 16
+}
+
+func hasTool(text string) bool {
+	for _, word := range []string{"测试仪", "网线钳", "水晶头", "扳手", "标签机", "万用表", "熔接机"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func materializeSection(section map[string]any) {
+	var paras []any
+	for _, item := range anyList(section["paragraphs"]) {
+		text := strings.TrimSpace(textOf(item))
+		if text == "" {
+			continue
+		}
+		if table, list, rest, ok := unflattenRunOn(text); ok {
+			if table != nil && section["table"] == nil {
+				section["table"] = table
+			} else {
+				for _, line := range list {
+					section["list"] = append(anyList(section["list"]), line)
+				}
+			}
+			if strings.TrimSpace(rest) != "" {
+				paras = append(paras, rest)
+			}
+			continue
+		}
+		if pairs := splitJammedFAQ(text); len(pairs) >= 2 {
+			for _, pair := range pairs {
+				paras = append(paras, pair)
+			}
+			continue
+		}
+		paras = append(paras, text)
+	}
+	paras = dropBareAnswers(paras)
+	if duplicateNumbering(paras) {
+		var kept []any
+		for _, item := range paras {
+			if _, ok := leadingIndex(textOf(item)); ok {
+				section["list"] = append(anyList(section["list"]), textOf(item))
+				continue
+			}
+			kept = append(kept, item)
+		}
+		paras = kept
+	}
+	if paras == nil {
+		paras = []any{}
+	}
+	section["paragraphs"] = paras
+	if len(anyList(section["list"])) > 0 {
+		section["list"] = renumberContinuous(anyList(section["list"]))
+	}
+}
+
+func unflattenRunOn(text string) (table map[string]any, items []string, rest string, ok bool) {
+	text = strings.TrimSpace(text)
+	locs := runOnNumber.FindAllStringIndex(text, -1)
+	if len(locs) < 2 {
+		return nil, nil, "", false
+	}
+	prefix := strings.TrimSpace(text[:locs[0][0]])
+	if utf8.RuneCountInString(prefix) > 12 {
+		return nil, nil, "", false
+	}
+	var bodies []string
+	for i, loc := range locs {
+		end := len(text)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		body := strings.TrimSpace(text[loc[1]:end])
+		body = strings.Trim(body, "，,、 ")
+		if body != "" {
+			bodies = append(bodies, body)
+		}
+	}
+	if len(bodies) < 2 {
+		return nil, nil, "", false
+	}
+	if strings.Contains(prefix, "步骤") && (strings.Contains(prefix, "注意") || strings.Contains(prefix, "事项")) {
+		var rows []any
+		for _, body := range bodies {
+			step, note := splitStepNote(body)
+			rows = append(rows, []any{step, note})
+		}
+		return map[string]any{"headers": []any{"步骤", "注意事项"}, "rows": rows}, nil, "", true
+	}
+	for i, body := range bodies {
+		items = append(items, itoa(i+1)+". "+body)
+	}
+	if utf8.RuneCountInString(prefix) < 2 {
+		prefix = ""
+	}
+	return nil, items, prefix, true
+}
+
+func splitStepNote(body string) (string, string) {
+	at := strings.Index(body, "注意")
+	if at <= 0 {
+		return strings.Trim(body, "，, "), ""
+	}
+	step := strings.Trim(body[:at], "，,：: ")
+	note := strings.Trim(body[at+len("注意"):], "：:事项，, ")
+	if step == "" {
+		step = strings.Trim(body, "，, ")
+		note = ""
+	}
+	return step, note
+}
+
+func splitJammedFAQ(text string) []string {
+	if strings.Count(text, "？")+strings.Count(text, "?") < 2 || !strings.Contains(text, "答") {
+		return nil
+	}
+	var pairs []string
+	rest := text
+	for {
+		q, mark := indexQuestion(rest)
+		if q < 0 {
+			break
+		}
+		question := strings.TrimSpace(rest[:q+len(mark)])
+		rest = strings.TrimLeft(rest[q+len(mark):], " \t")
+		ansAt := strings.Index(rest, "答")
+		if ansAt < 0 || strings.TrimSpace(question) == "" {
+			break
+		}
+		rest = strings.TrimLeft(rest[ansAt+len("答"):], "：: \t")
+		next, _ := indexQuestion(rest)
+		answer := rest
+		if next >= 0 {
+			answer = rest[:next]
+			rest = rest[next:]
+			if cut := strings.LastIndex(answer, "。"); cut >= 0 {
+				lead := strings.TrimSpace(answer[cut+len("。"):])
+				answer = strings.TrimSpace(answer[:cut+len("。")])
+				if lead != "" {
+					rest = lead + rest
+				}
+			}
+		} else {
+			rest = ""
+		}
+		answer = strings.TrimSpace(answer)
+		if question == "" || answer == "" {
+			continue
+		}
+		pairs = append(pairs, question+"答："+answer)
+		if rest == "" {
+			break
+		}
+	}
+	if len(pairs) < 2 {
+		return nil
+	}
+	return pairs
+}
+
+func indexQuestion(text string) (int, string) {
+	q := strings.Index(text, "？")
+	mark := "？"
+	if alt := strings.Index(text, "?"); alt >= 0 && (q < 0 || alt < q) {
+		return alt, "?"
+	}
+	if q < 0 {
+		return -1, ""
+	}
+	return q, mark
+}
+
+func dropBareAnswers(items []any) []any {
+	var out []any
+	for _, item := range items {
+		text := strings.TrimSpace(textOf(item))
+		if text == "" {
+			continue
+		}
+		if bareAnswer(text) {
+			if len(out) == 0 || !endsWithQuestion(textOf(out[len(out)-1])) {
+				continue
+			}
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
+func bareAnswer(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, "答") && !strings.Contains(text, "？") && !strings.Contains(text, "?")
+}
+
+func endsWithQuestion(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasSuffix(text, "？") || strings.HasSuffix(text, "?")
+}
+
+func duplicateNumbering(items []any) bool {
+	seen := map[int]bool{}
+	n := 0
+	dup := false
+	for _, item := range items {
+		num, ok := leadingIndex(textOf(item))
+		if !ok {
+			continue
+		}
+		n++
+		if seen[num] {
+			dup = true
+		}
+		seen[num] = true
+	}
+	return n >= 2 && dup
+}
+
+func dropExtraSteps(draft map[string]any, outline []string) {
+	if len(outline) == 0 {
+		return
+	}
+	allowed := map[string]bool{}
+	for _, heading := range outline {
+		heading = strings.TrimSpace(heading)
+		if heading != "" {
+			allowed[heading] = true
+		}
+	}
+	var kept []any
+	for _, raw := range anyList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		heading := strings.TrimSpace(textOf(section["heading"]))
+		if heading == "" || allowed[heading] || expansionSection(heading) {
+			kept = append(kept, section)
+			continue
+		}
+		if extraStepSection(heading, section) {
+			continue
+		}
+		kept = append(kept, section)
+	}
+	if kept == nil {
+		kept = []any{}
+	}
+	draft["sections"] = kept
+}
+
+func expansionSection(heading string) bool {
+	for _, word := range []string{"案例", "易错", "踩坑", "常见问题", "核对", "清单"} {
+		if strings.Contains(heading, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func extraStepSection(heading string, section map[string]any) bool {
+	if strings.Contains(heading, "步骤") || strings.Contains(heading, "额外") {
+		return true
+	}
+	paras := anyList(section["paragraphs"])
+	if len(paras) < 2 {
+		return false
+	}
+	for _, item := range paras {
+		if _, ok := leadingIndex(textOf(item)); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+func keepTable(before, after map[string]any) {
+	table, _ := before["table"].(map[string]any)
+	if table == nil {
+		return
+	}
+	next, _ := after["table"].(map[string]any)
+	if next == nil || len(anyList(next["rows"])) != len(anyList(table["rows"])) {
+		after["table"] = table
+	}
+}
+
+func keepList(before, after map[string]any) {
+	items := anyList(before["list"])
+	if len(items) == 0 {
+		return
+	}
+	next := anyList(after["list"])
+	if len(next) != len(items) {
+		after["list"] = items
+		return
+	}
+	after["list"] = renumberContinuous(next)
+}

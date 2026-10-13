@@ -31,7 +31,7 @@ type Provider struct {
 	ExtraParams  map[string]any
 	Timeout      time.Duration
 	// FirstToken aborts a call that produces no bytes within this duration.
-	// Outline and polish on a reasoning model use it so a silent call does not wait out the 60s cap.
+	// Outline and polish start on the non-reasoning model and leave this at zero.
 	FirstToken time.Duration
 }
 
@@ -542,19 +542,15 @@ func requestEffort(provider Provider, messages []map[string]string) string {
 	return effort
 }
 
-// routeStage keeps grok-4.7 for outline and polish, and starts every other writing
-// stage on the non-reasoning model so a 60s timeout is not spent before the fallback.
+// routeStage starts outline and polish on the non-reasoning model as well.
+// grok-4.7 was spending the first-token budget before those stages produced a byte.
 // Models that are not reasoning models, including test fixtures named "writer", stay as configured.
 func routeStage(provider Provider, messages []map[string]string) Provider {
 	if !reasoningModel(provider.Model) {
 		return provider
 	}
 	switch stageFromMessages(messages) {
-	case "大纲", "结构润色":
-		if provider.FirstToken <= 0 {
-			provider.FirstToken = firstTokenTimeout
-		}
-	case "正文", "扩写", "审核", "标题", "缩写", "事实核对", "栏目结构", "意象改写", "套话改写", "开头比较", "标题比较", "禁忌改写":
+	case "大纲", "结构润色", "正文", "扩写", "审核", "标题", "缩写", "事实核对", "栏目结构", "意象改写", "套话改写", "开头比较", "标题比较", "禁忌改写":
 		provider.Model = FallbackModel
 		provider.FirstToken = 0
 	}

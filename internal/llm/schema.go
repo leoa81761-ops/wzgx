@@ -29,9 +29,10 @@ func StageSchema(stageLabel string) *Schema {
 					"items": objectSchema(
 						[]string{"heading", "intent", "need_table"},
 						map[string]any{
-							"heading":    strField("小节标题"),
-							"intent":     strField("这一节要让读者明白的事"),
-							"need_table": map[string]any{"type": "boolean", "description": "这一节用一张对照表会更清楚时为 true，否则 false"},
+							"heading":     strField("小节标题"),
+							"intent":      strField("这一节要让读者明白的事"),
+							"need_table":  map[string]any{"type": "boolean", "description": "这一节用一张对照表会更清楚时为 true，否则 false"},
+							"word_budget": map[string]any{"type": "integer", "description": "这一节的字数预算。各节 word_budget 相加必须等于 word_target"},
 						},
 					),
 				},
