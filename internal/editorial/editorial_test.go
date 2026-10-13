@@ -233,7 +233,8 @@ func TestSectionKeepsListOrTable(t *testing.T) {
 	}
 	out := DedupeBlocks(draft)
 	section := sectionsOf(out)[0]
-	if len(stringList(section["list"])) != 0 {
+	items := stringList(section["list"])
+	if len(items) != 1 || items[0] != "单独的一条提醒。" {
 		t.Fatal(section["list"])
 	}
 	table, _ := section["table"].(map[string]any)
@@ -529,6 +530,69 @@ func TestDropOffTopicParagraph(t *testing.T) {
 	paras := paragraphsOf(out)
 	if len(paras) != 1 || !strings.Contains(paras[0], "材料") {
 		t.Fatal(paras)
+	}
+}
+
+func TestStripFactNumbersKeepsARealList(t *testing.T) {
+	draft := map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"2. 先看线槽。", "3. 再核对编号。", "8. 层高不低于3米。"}}},
+	}
+	out := StripFactNumbers(draft)
+	paras := paragraphsOf(out)
+	if len(paras) != 3 || strings.HasPrefix(paras[0], "2") || strings.Contains(paras[2], "8.") {
+		t.Fatal(paras)
+	}
+	kept := map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"1. 先看线槽。", "2. 再核对编号。", "3. 量一下层高。"}}},
+	}
+	paras = paragraphsOf(StripFactNumbers(kept))
+	if paras[0] != "1. 先看线槽。" || paras[2] != "3. 量一下层高。" {
+		t.Fatal(paras)
+	}
+}
+
+func TestConcreteTipsIgnoreGenericFiller(t *testing.T) {
+	generic := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{
+		"把杯子放在窗边，人会更从容。",
+		"省力的动作让日常更轻松。",
+		"在桌前走动一下就好。",
+	}}}}
+	if ConcreteTips(generic) != 0 || !FillerHeavy(generic) {
+		t.Fatal(ConcreteTips(generic), FillerHeavy(generic))
+	}
+	tips := map[string]any{"sections": []any{map[string]any{
+		"paragraphs": []any{
+			"把白醋倒进杯里泡5分钟。",
+			"用牙刷蘸小苏打擦水龙头。",
+			"晾10分钟再拧干抹布。",
+		},
+		"list": []any{"贴一条胶带把线槽固定住。", "先量一下窗框宽度再剪。"},
+	}}}
+	if ConcreteTips(tips) < 5 {
+		t.Fatal(ConcreteTips(tips))
+	}
+}
+
+func TestWordCapKeepsTheTitleWordAndIdenticalSentences(t *testing.T) {
+	line := "合适的正文。"
+	draft := map[string]any{
+		"title":    "布线核对",
+		"sections": []any{map[string]any{"paragraphs": []any{strings.Repeat(line, 12), "布线先看线槽。", "布线再看插座。", "布线还要看水管。", "布线最后看纱窗。", "布线收工前看花洒。"}}},
+	}
+	out := CapWordRepetition(draft, 4)
+	joined := strings.Join(paragraphsOf(out), "")
+	if strings.Count(joined, line) < 12 {
+		t.Fatal("identical padding was stripped")
+	}
+	if strings.Count(joined, "布线") < 5 {
+		t.Fatal(joined)
+	}
+	filler := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{
+		"坐在窗边会更从容。", "换个杯子也从容。", "走路从容一点。", "说话从容一点。", "收工也从容。",
+	}}}}
+	capped := strings.Join(paragraphsOf(CapWordRepetition(filler, 4)), "")
+	if strings.Count(capped, "从容") > 4 {
+		t.Fatal(capped)
 	}
 }
 

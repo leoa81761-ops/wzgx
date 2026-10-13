@@ -285,7 +285,7 @@ func TestLongStageDefaultsEffortLow(t *testing.T) {
 	}))
 	defer srv.Close()
 	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1}
-	messages := StageMessages("正文", map[string]any{"word_target": 1500})
+	messages := StageMessages("大纲", map[string]any{"word_target": 1500})
 	accept := func(item map[string]any) (map[string]any, error) { return item, nil }
 	_, _, err := gw.CompleteJSON(context.Background(), []Provider{{
 		Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7", Timeout: 5 * time.Second,
@@ -299,8 +299,20 @@ func TestLongStageDefaultsEffortLow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 || !strings.Contains(paths[0], "/chat/completions") || !strings.Contains(paths[1], "/chat/completions") {
+	_, _, err = gw.CompleteJSON(context.Background(), []Provider{{
+		Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7", Timeout: 5 * time.Second,
+	}}, StageMessages("正文", map[string]any{"word_target": 1500}), nil, accept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 3 || !strings.Contains(paths[0], "/chat/completions") || !strings.Contains(paths[1], "/chat/completions") {
 		t.Fatalf("paths %#v", paths)
+	}
+	if seen[FallbackModel]["model"] != FallbackModel {
+		t.Fatalf("draft should start on the non-reasoning model: %#v", seen[FallbackModel])
+	}
+	if _, ok := seen[FallbackModel]["reasoning_effort"]; ok {
+		t.Fatalf("draft model should not receive reasoning_effort: %#v", seen[FallbackModel]["reasoning_effort"])
 	}
 	if seen["grok-4.7"]["reasoning_effort"] != "low" || seen["grok-4.7"]["stream"] != true {
 		t.Fatalf("%#v", seen["grok-4.7"])
@@ -345,7 +357,7 @@ func TestIdleCutFallsBackToFastModel(t *testing.T) {
 	}))
 	defer srv.Close()
 	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1, Backoff: time.Second}
-	messages := StageMessages("正文", map[string]any{"word_target": 1500})
+	messages := StageMessages("大纲", map[string]any{"word_target": 1500})
 	started := time.Now()
 	_, completion, err := gw.CompleteJSON(context.Background(), []Provider{{
 		ID: 7, Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
@@ -452,7 +464,7 @@ func TestGrokInternalErrorFallsBackFaster(t *testing.T) {
 	_, _, err := gw.CompleteJSON(context.Background(), []Provider{{
 		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
 		ExtraParams: map[string]any{"reasoning_effort": "high"}, Timeout: 90 * time.Second,
-	}}, StageMessages("正文", map[string]any{"word_target": 800}), nil, func(item map[string]any) (map[string]any, error) {
+	}}, StageMessages("大纲", map[string]any{"word_target": 800}), nil, func(item map[string]any) (map[string]any, error) {
 		return item, nil
 	})
 	if err != nil || calls != 2 {
@@ -636,5 +648,95 @@ func TestResearchResponsesDoesNotAddWebSearch(t *testing.T) {
 	}
 	if len(result.ResearchSources) != 0 {
 		t.Fatalf("%#v", result.ResearchSources)
+	}
+}
+
+func TestDraftStartsOnNonReasoningModel(t *testing.T) {
+	var calls int
+	var model string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		model, _ = body["model"].(string)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1}
+	_, err := gw.Complete(context.Background(), Provider{
+		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7", Timeout: 5 * time.Second,
+	}, StageMessages("正文", map[string]any{"word_target": 1500}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || model != FallbackModel {
+		t.Fatalf("calls %d model %s", calls, model)
+	}
+}
+
+func TestOutlineFirstTokenFallsBack(t *testing.T) {
+	if firstTokenTimeout != 20*time.Second {
+		t.Fatal(firstTokenTimeout)
+	}
+	var mu sync.Mutex
+	var models []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		model, _ := body["model"].(string)
+		mu.Lock()
+		models = append(models, model)
+		mu.Unlock()
+		if model != FallbackModel {
+			time.Sleep(200 * time.Millisecond)
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1, Backoff: time.Second}
+	started := time.Now()
+	result, err := gw.Complete(context.Background(), Provider{
+		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
+		Timeout: 5 * time.Second, FirstToken: 40 * time.Millisecond,
+	}, StageMessages("大纲", map[string]any{"word_target": 1500}))
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("first token waited %s", elapsed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(models) != 2 || models[0] != "grok-4.7" || models[1] != FallbackModel || result.Content != "ok" {
+		t.Fatalf("models %#v content %q", models, result.Content)
+	}
+}
+
+func TestOutlineFirstByteIsNotCut(t *testing.T) {
+	var calls int
+	var model string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		model, _ = body["model"].(string)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1}
+	result, err := gw.Complete(context.Background(), Provider{
+		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
+		Timeout: 5 * time.Second, FirstToken: 40 * time.Millisecond,
+	}, StageMessages("结构润色", map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || model != "grok-4.7" || result.Content != "ok" {
+		t.Fatalf("calls %d model %s content %q", calls, model, result.Content)
 	}
 }

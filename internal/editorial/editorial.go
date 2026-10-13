@@ -498,7 +498,8 @@ func DropSummaryEcho(draft map[string]any) map[string]any {
 	return draft
 }
 
-// DedupeBlocks leaves each section with a list or a table, and drops items that restate a paragraph.
+// DedupeBlocks drops a list item or table row that restates a paragraph.
+// A section may keep both a list and a table when they say different things.
 func DedupeBlocks(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
@@ -515,9 +516,6 @@ func DedupeBlocks(draft map[string]any) map[string]any {
 			} else {
 				table["rows"] = rows
 			}
-		}
-		if len(items) > 0 && table != nil {
-			items = nil
 		}
 		if items == nil {
 			section["list"] = []any{}
@@ -2042,6 +2040,311 @@ func CapRepeatedPhrases(draft map[string]any, limit int) map[string]any {
 	}
 	applyText(draft, rewrite)
 	return draft
+}
+
+// CapWordRepetition drops a later sentence once a filler word has been used `limit` times,
+// or once any other content word has been used twice that often.
+// Stopwords, words from the title, and a repeated identical sentence are left in place.
+func CapWordRepetition(draft map[string]any, limit int) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	if limit < 1 {
+		limit = 4
+	}
+	general := limit * 2
+	exempt := map[string]bool{}
+	for _, word := range hanWords(textOf(draft["title"])) {
+		exempt[word] = true
+	}
+	seen := map[string]int{}
+	sentences := map[string]int{}
+	rewrite := func(text string) string {
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			return text
+		}
+		var kept []string
+		for _, part := range parts {
+			key := strings.TrimSpace(citeMark.ReplaceAllString(part, ""))
+			if sentences[key] > 0 {
+				sentences[key]++
+				kept = append(kept, part)
+				continue
+			}
+			sentences[key]++
+			if overWordCap(part, seen, exempt, limit, general) {
+				continue
+			}
+			noteWords(part, seen, exempt)
+			if strings.TrimSpace(part) != "" {
+				kept = append(kept, part)
+			}
+		}
+		if len(kept) == 0 {
+			return ""
+		}
+		return strings.Join(kept, "")
+	}
+	applyText(draft, rewrite)
+	for _, section := range sectionsOf(draft) {
+		var items []any
+		for _, item := range anyList(section["list"]) {
+			text := strings.TrimSpace(rewrite(textOf(item)))
+			if text == "" {
+				continue
+			}
+			items = append(items, text)
+		}
+		if len(anyList(section["list"])) > 0 {
+			if items == nil {
+				items = []any{}
+			}
+			section["list"] = items
+		}
+	}
+	return draft
+}
+
+func overWordCap(text string, seen map[string]int, exempt map[string]bool, fillerLimit, general int) bool {
+	noted := map[string]bool{}
+	for _, word := range hanWords(text) {
+		if exempt[word] || noted[word] || !countedWord(word) {
+			continue
+		}
+		noted[word] = true
+		limit := general
+		if fillerWord(word) {
+			limit = fillerLimit
+		}
+		if seen[word] >= limit {
+			return true
+		}
+	}
+	return false
+}
+
+func noteWords(text string, seen map[string]int, exempt map[string]bool) {
+	noted := map[string]bool{}
+	for _, word := range hanWords(text) {
+		if exempt[word] || noted[word] || !countedWord(word) {
+			continue
+		}
+		noted[word] = true
+		seen[word]++
+	}
+}
+
+func countedWord(word string) bool {
+	return fillerWord(word) || contentBigram(word)
+}
+
+func fillerWord(word string) bool {
+	switch word {
+	case "从容", "省力", "轻松", "日常", "生活", "自己", "事情", "动作", "今天", "明天", "杯子", "窗边", "桌前", "座位", "走动":
+		return true
+	default:
+		return false
+	}
+}
+
+func contentBigram(word string) bool {
+	for _, r := range word {
+		switch r {
+		case '的', '了', '在', '是', '和', '与', '及', '把', '用', '就', '都', '而', '要', '对', '从', '给', '让', '这', '那', '一', '个', '不', '也', '又', '很', '最', '会', '能', '可', '被', '向', '中', '上', '下', '来', '去', '或', '并', '其', '为', '以', '于', '到', '等', '吧', '吗', '呢':
+			return false
+		}
+	}
+	return true
+}
+
+func hanWords(text string) []string {
+	var out []string
+	var buf []rune
+	flush := func() {
+		for i := 0; i+2 <= len(buf); i++ {
+			out = append(out, string(buf[i:i+2]))
+		}
+		buf = nil
+	}
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+var factIndex = regexp.MustCompile(`^(\d+)[\.、]\s*`)
+
+// StripFactNumbers removes a leading "2." style index when the section is not a contiguous 1..n list.
+// A real step list that starts at 1 and does not skip is kept.
+func StripFactNumbers(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, section := range sectionsOf(draft) {
+		section["paragraphs"] = stripBrokenNumbers(anyList(section["paragraphs"]))
+		if len(anyList(section["list"])) > 0 {
+			section["list"] = stripBrokenNumbers(anyList(section["list"]))
+		}
+	}
+	return draft
+}
+
+func stripBrokenNumbers(items []any) []any {
+	if numbersContiguous(items) {
+		return items
+	}
+	var out []any
+	for _, item := range items {
+		text := textOf(item)
+		if factIndex.MatchString(strings.TrimSpace(text)) {
+			text = strings.TrimSpace(factIndex.ReplaceAllString(strings.TrimSpace(text), ""))
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		out = append(out, text)
+	}
+	if out == nil {
+		out = []any{}
+	}
+	return out
+}
+
+func numbersContiguous(items []any) bool {
+	n := 0
+	for _, item := range items {
+		got, ok := leadingIndex(textOf(item))
+		if !ok {
+			continue
+		}
+		n++
+		if got != n {
+			return false
+		}
+	}
+	return true
+}
+
+func leadingIndex(text string) (int, bool) {
+	text = strings.TrimSpace(text)
+	m := factIndex.FindStringSubmatch(text)
+	if m == nil {
+		return 0, false
+	}
+	n := 0
+	for _, r := range m[1] {
+		n = n*10 + int(r-'0')
+	}
+	return n, n > 0
+}
+
+// ConcreteTips counts sentences and list items a reader can actually do:
+// at least 8 characters, an action, and a number, a unit, or a concrete noun.
+// Generic filler such as 杯子, 从容, or 省力 does not count.
+func ConcreteTips(draft map[string]any) int {
+	if draft == nil {
+		return 0
+	}
+	n := 0
+	seen := map[string]bool{}
+	count := func(text string) {
+		for _, part := range splitSentences(text) {
+			part = strings.TrimSpace(part)
+			if seen[part] || !actionableTip(part) {
+				continue
+			}
+			seen[part] = true
+			n++
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		for _, item := range anyList(section["paragraphs"]) {
+			count(textOf(item))
+		}
+		for _, item := range anyList(section["list"]) {
+			count(textOf(item))
+		}
+	}
+	return n
+}
+
+func actionableTip(text string) bool {
+	if utf8.RuneCountInString(text) < 8 || !hasAction(text) {
+		return false
+	}
+	if hasDigit(text) || hasUnit(text) || hasConcreteNoun(text) {
+		return true
+	}
+	return false
+}
+
+func hasAction(text string) bool {
+	for _, word := range []string{"打开", "关上", "先", "把", "用", "放", "擦", "倒", "煮", "晾", "拧", "贴", "量", "剪", "泡", "洗", "取", "加", "换", "盖"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDigit(text string) bool {
+	for _, r := range text {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnit(text string) bool {
+	for _, word := range []string{"分钟", "小时", "秒钟", "厘米", "毫米", "毫升", "克", "度"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConcreteNoun(text string) bool {
+	for _, word := range []string{"白醋", "小苏打", "牙刷", "胶带", "抹布", "牙膏", "螺丝", "线槽", "插座", "水管", "纱窗", "水壶", "保鲜膜", "柠檬", "酒精", "肥皂", "花洒", "滤网", "水垢", "瓷砖"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// FillerHeavy reports experience copy that leans on generic words and has no numbers.
+func FillerHeavy(draft map[string]any) bool {
+	if draft == nil || hasDigit(fillerText(draft)) {
+		return false
+	}
+	n := 0
+	text := fillerText(draft)
+	for _, word := range []string{"从容", "省力", "轻松", "杯子", "窗边", "桌前", "走动"} {
+		n += strings.Count(text, word)
+	}
+	return n >= 3
+}
+
+func fillerText(draft map[string]any) string {
+	var b strings.Builder
+	for _, section := range sectionsOf(draft) {
+		for _, item := range anyList(section["paragraphs"]) {
+			b.WriteString(textOf(item))
+		}
+		for _, item := range anyList(section["list"]) {
+			b.WriteString(textOf(item))
+		}
+	}
+	b.WriteString(textOf(draft["closing"]))
+	return b.String()
 }
 
 func stripExtraDates(text string, seen map[string]int, limit int) string {

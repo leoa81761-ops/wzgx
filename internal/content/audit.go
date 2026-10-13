@@ -49,6 +49,12 @@ func BodyRunes(draft map[string]any) int {
 	return n
 }
 
+// ShortOfTarget reports a body under 85% of the plan target.
+// runes and target are both Chinese characters, the same unit BodyRunes counts.
+func ShortOfTarget(runes, target int) bool {
+	return target > 0 && runes < target*85/100
+}
+
 func tableRunes(table map[string]any) int {
 	n := runesOf(table["headers"])
 	rows, _ := table["rows"].([]any)
