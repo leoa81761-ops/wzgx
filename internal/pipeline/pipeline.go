@@ -71,6 +71,7 @@ type work struct {
 	AppSecret         string
 	AuthorizerRefresh string
 	DeliveryMode      string
+	SkipDraft         bool
 	Trigger           string
 	ScheduleDate      string
 	RetryCount        int
@@ -126,6 +127,7 @@ type Built struct {
 	Thin           bool
 	Repeated       bool
 	InventedStats  bool
+	Broken         bool
 	Searched       bool
 	OwnSearch      bool
 	TavilyNotice   string
@@ -581,7 +583,8 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			StyleKey: plan.StyleKey, TemplateKey: plan.TemplateKey, WordTarget: plan.WordTarget,
 			ScheduleType: plan.ScheduleType, Weekdays: plan.Weekdays, TimeWindow: plan.TimeWindow,
 			AccountID: account.ID, AccountName: account.Name, AppID: account.AppID, AppSecret: secret, AuthorizerRefresh: refresh, DeliveryMode: account.DeliveryMode,
-			Trigger: task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
+			SkipDraft: editorial.ShouldSkipDraft(extra.SkipDraft, taskSkip(task.SkipDraft), user.QuotaExempt, user.IsAdmin, task.TriggerType),
+			Trigger:   task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
 			History: history, RecentTitles: titles, RecentTopics: topicLines, ForeignTitles: foreign, Vetoed: vetoed, SpecifiedTitle: pinned, Pack: pack,
 			StyleName: styleName, StyleHint: styleHint, Weights: weights,
@@ -1770,6 +1773,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	noteProgress(ctx, "draft", draft, topic, trace, tokens)
 	assembled := cloneDraft(draft)
+	sectionShape := cloneDraft(draft)
 	reviewPayload := cloneMap(draftPayload)
 	// Sensitive words are a gate: one rewrite, then the task fails. The body is not replaced by a fact-check or a second review.
 	audited, auditTokens, auditTrace, err := reviewSensitive(ctx, gateway, providers["review"], draft, reviewPayload, sensitive)
@@ -1902,10 +1906,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	draft = editorial.ShapeCopy(draft)
 	inventedStats := false
-	if experience && !sourcedPiece {
-		draft = editorial.StripInventedStats(draft)
-		inventedStats = editorial.HardStat(draft)
-	}
 	draft = editorial.RepairStructure(draft)
 	if experience && !sourcedPiece {
 		draft = editorial.StripWarmFiller(draft)
@@ -1944,8 +1944,25 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.MaterializeMarkup(draft, outlineHeadings(base))
 	draft = editorial.RepairStructure(draft)
 	draft = keepBody(draft, assembled)
+	if experience && !sourcedPiece {
+		rewritten, rewriteTokens, rewriteTrace := rewriteInventedSentences(ctx, gateway, providers["draft"], draft)
+		draft = rewritten
+		tokens += rewriteTokens
+		trace = append(trace, rewriteTrace...)
+		draft = editorial.StripInventedStats(draft)
+		inventedStats = editorial.HardStat(draft)
+	}
 	draft = editorial.CapHanPhrases(draft, 4, 2)
 	draft = editorial.VarySectionOpeners(draft)
+	draft = editorial.RenumberLists(draft)
+	if sectionShape != nil {
+		draft = editorial.KeepMarkup(sectionShape, draft)
+		draft = editorial.RenumberLists(draft)
+	}
+	draft = editorial.StayOnTitle(draft)
+	draft = editorial.StripHeadingPrefixes(draft)
+	draft = editorial.EnsureOpening(draft)
+	broken := editorial.BrokenGrammar(draft)
 	repeated := editorial.RepeatedBody(draft)
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
@@ -1958,7 +1975,45 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	html = editorial.RepairMarkup(html)
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, InventedStats: inventedStats, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, InventedStats: inventedStats, Broken: broken, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+}
+
+// rewriteInventedSentences asks for a whole-sentence replacement of a figure that has no source.
+// A rewrite that is missing, spliced, or still a figure is dropped with the sentence.
+func rewriteInventedSentences(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, draft map[string]any) (map[string]any, int, []map[string]any) {
+	flagged := editorial.InventedSentences(draft)
+	if len(flagged) == 0 {
+		return draft, 0, nil
+	}
+	repl := map[string]string{}
+	tokens := 0
+	var trace []map[string]any
+	if gateway != nil && len(providers) > 0 {
+		payload := map[string]any{
+			"sentences": flagged,
+			"rule":      "把每一句改写成完整的一句。不要删掉句子中间的词。不要写没有来源的百分比、以上、超过、一半以上、dB、米、倍或数字比较。可以改成不带数字的说法。",
+		}
+		out, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("句子改写", payload), llm.StageSchema("句子改写"), func(data map[string]any) (map[string]any, error) {
+			if data == nil {
+				return nil, errStr("句子改写是空的")
+			}
+			return data, nil
+		})
+		trace = appendStage(nil, "sentence", completion, err)
+		if err == nil {
+			repl = editorial.RewriteMap(out)
+			tokens = completion.PromptTokens + completion.CompletionTokens
+		}
+	}
+	return editorial.ApplyRewrites(draft, flagged, repl), tokens, trace
+}
+
+func taskSkip(stored int) *bool {
+	if stored < 0 {
+		return nil
+	}
+	on := stored == 1
+	return &on
 }
 
 // resumeQuotaPause leaves a one-off generate paused. Only a scheduled run can clear a quota pause.
@@ -1997,6 +2052,9 @@ func heldDelivery(built Built) (bool, string) {
 	}
 	if built.InventedStats {
 		note = joinNote(note, "经验分享里写了没有来源的统计或参数，未写入公众号草稿。")
+	}
+	if built.Broken {
+		note = joinNote(note, "正文有断句或空缺，未写入公众号草稿。")
 	}
 	return note != "", note
 }
@@ -2053,6 +2111,9 @@ func draftRisk(direction string, draft map[string]any) string {
 
 func pushDraft(ctx context.Context, deps Deps, w *work, article Built, wx runtime.WeChat, image *llm.Provider) (pushed, error) {
 	level := draftRisk(w.Direction, article.Draft)
+	if w.SkipDraft {
+		return pushed{Status: "exported", HTML: article.HTML, DeliveryNote: "这一次不推送草稿箱。", RiskLevel: level}, nil
+	}
 	if hold, note := risk.ShouldHold(level, w.Tier, len(asList(article.Draft["sources"])) > 0); hold {
 		return pushed{Status: "held", HTML: article.HTML, DeliveryNote: note, RiskLevel: level}, nil
 	}
@@ -5334,7 +5395,6 @@ func anchorHeadings(outline map[string]any, topic string) map[string]any {
 	if outline == nil {
 		return outline
 	}
-	core := coreEntity(topic)
 	seen := map[string]bool{}
 	var points []any
 	for _, raw := range asList(outline["points"]) {
@@ -5346,8 +5406,8 @@ func anchorHeadings(outline map[string]any, topic string) map[string]any {
 		if heading == "" {
 			heading = "小节"
 		}
-		if core != "" && !strings.Contains(heading, core) {
-			heading = core + "：" + heading
+		if !headingOnTopic(heading, topic) {
+			continue
 		}
 		heading = clip(heading, 40)
 		if seen[heading] {
@@ -5362,6 +5422,20 @@ func anchorHeadings(outline map[string]any, topic string) map[string]any {
 	}
 	outline["points"] = points
 	return outline
+}
+
+// headingOnTopic keeps a heading that shares a topic entity. It does not glue that entity onto every heading.
+func headingOnTopic(heading, topic string) bool {
+	entities := topicEntities(topic)
+	if len(entities) == 0 {
+		return true
+	}
+	for _, entity := range entities {
+		if entity != "" && strings.Contains(heading, entity) {
+			return true
+		}
+	}
+	return false
 }
 
 func coreEntity(topic string) string {

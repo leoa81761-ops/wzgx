@@ -544,7 +544,8 @@ CREATE TABLE IF NOT EXISTS plan_extra (
   signatures TEXT NOT NULL DEFAULT '',
   taboos TEXT NOT NULL DEFAULT '',
   column_rotation TEXT NOT NULL DEFAULT 'weight',
-  column_weekdays TEXT NOT NULL DEFAULT ''
+  column_weekdays TEXT NOT NULL DEFAULT '',
+  skip_draft INTEGER NOT NULL DEFAULT -1
 );
 
 CREATE TABLE IF NOT EXISTS account_column (
@@ -753,6 +754,8 @@ CREATE TABLE IF NOT EXISTS search_day (
 		{"plan_extra", "column_rotation", "TEXT NOT NULL DEFAULT 'weight'"},
 		{"plan_extra", "column_weekdays", "TEXT NOT NULL DEFAULT ''"},
 		{"article_task", "progress_at", "TEXT"},
+		{"article_task", "skip_draft", "INTEGER NOT NULL DEFAULT -1"},
+		{"plan_extra", "skip_draft", "INTEGER NOT NULL DEFAULT -1"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err

@@ -1532,7 +1532,7 @@ func StripHeadingPrefixes(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
 	}
-	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ", "知识", "家长里短", "栏目"}
+	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ", "知识", "家长里短", "栏目", "老年人常"}
 	if label := strings.TrimSpace(textOf(draft["column_label"])); label != "" {
 		prefixes = append(prefixes, columnStems(label)...)
 	}
@@ -1547,20 +1547,33 @@ func stripLabelPrefix(text string, prefixes []string) string {
 	changed := true
 	for changed {
 		changed = false
-		for _, prefix := range prefixes {
-			if prefix == "" {
+		for _, sep := range []string{"：", ":"} {
+			left, right, ok := strings.Cut(text, sep)
+			if !ok {
 				continue
 			}
-			for _, sep := range []string{"：", ":"} {
-				lead := prefix + sep
-				if strings.HasPrefix(text, lead) {
-					text = strings.TrimSpace(strings.TrimPrefix(text, lead))
-					changed = true
-				}
+			left = strings.TrimSpace(left)
+			if left == "" || !labelPrefix(left, prefixes) {
+				continue
 			}
+			text = strings.TrimSpace(right)
+			changed = true
+			break
 		}
 	}
+	if truncatedHeading(text) {
+		return ""
+	}
 	return text
+}
+
+func labelPrefix(left string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if prefix != "" && left == prefix {
+			return true
+		}
+	}
+	return false
 }
 
 func columnStems(label string) []string {
@@ -1625,15 +1638,80 @@ func CapHanPhrases(draft map[string]any, n, limit int) map[string]any {
 		return draft
 	}
 	counts := map[string]int{}
-	applyText(draft, func(part string) string {
-		if lengthPad(part) {
-			return part
-		}
+	drop := func(sentence string) bool {
+		over := false
+		hits := map[string]int{}
 		for _, phrase := range phrases {
-			part = keepPhrase(part, phrase, limit, counts)
+			n := strings.Count(sentence, phrase)
+			if n == 0 {
+				continue
+			}
+			hits[phrase] = n
+			if counts[phrase]+n > limit {
+				over = true
+			}
 		}
-		return strings.TrimSpace(part)
-	})
+		if over {
+			return true
+		}
+		for phrase, n := range hits {
+			counts[phrase] += n
+		}
+		return false
+	}
+	rewrite := func(text string) string {
+		if lengthPad(text) {
+			return text
+		}
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			if drop(text) {
+				return ""
+			}
+			return text
+		}
+		var kept []string
+		for _, part := range parts {
+			if drop(part) {
+				continue
+			}
+			kept = append(kept, part)
+		}
+		return strings.Join(kept, "")
+	}
+	for _, key := range []string{"summary", "closing"} {
+		if text := textOf(draft[key]); text != "" {
+			draft[key] = rewrite(text)
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		if heading := strings.TrimSpace(textOf(section["heading"])); heading != "" && !lengthPad(heading) && drop(heading) {
+			section["heading"] = ""
+		}
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			if text := strings.TrimSpace(rewrite(textOf(item))); text != "" {
+				paras = append(paras, text)
+			}
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		if len(anyList(section["list"])) == 0 {
+			continue
+		}
+		var items []any
+		for _, item := range anyList(section["list"]) {
+			if text := strings.TrimSpace(rewrite(textOf(item))); text != "" {
+				items = append(items, text)
+			}
+		}
+		if items == nil {
+			items = []any{}
+		}
+		section["list"] = items
+	}
 	return draft
 }
 
@@ -1669,27 +1747,6 @@ func draftPlain(draft map[string]any) string {
 		}
 	}
 	return b.String()
-}
-
-func keepPhrase(text, phrase string, limit int, counts map[string]int) string {
-	if phrase == "" || !strings.Contains(text, phrase) {
-		return text
-	}
-	var b strings.Builder
-	rest := text
-	for {
-		i := strings.Index(rest, phrase)
-		if i < 0 {
-			b.WriteString(rest)
-			return b.String()
-		}
-		b.WriteString(rest[:i])
-		counts[phrase]++
-		if counts[phrase] <= limit {
-			b.WriteString(phrase)
-		}
-		rest = rest[i+len(phrase):]
-	}
 }
 
 func stopPhrase(phrase string) bool {
@@ -1963,7 +2020,7 @@ func exampleKey(text string) string {
 	return string(buf[:8])
 }
 
-var hardStat = regexp.MustCompile(`\d+(?:\.\d+)?\s*[%％]|掉线率|[A-Za-z]{2,}\s*\d+\.\d+`)
+var hardStat = regexp.MustCompile(`\d+(?:\.\d+)?\s*[%％]|掉线率|百分比|一半以上|[A-Za-z]{2,}\s*\d+\.\d+|\d+(?:\.\d+)?\s*(?:dB|DB|db)|\d+(?:\.\d+)?\s*米|\d+(?:\.\d+)?\s*倍|[一二三四五六七八九十两]\s*倍|超过\s*\d|\d+(?:\.\d+)?\s*以上|大于\s*\d|小于\s*\d|高于\s*\d|低于\s*\d|多于\s*\d|少于\s*\d`)
 
 // StripInventedStats removes percentages, rates, and version numbers that have no source
 // and are not spoken as the writer's own range.
@@ -2107,28 +2164,33 @@ func capBuzzword(draft map[string]any, word string, keep int) {
 	}
 	seen := 0
 	rewrite := func(text string) string {
-		var b strings.Builder
-		rest := text
-		for {
-			i := strings.Index(rest, word)
-			if i < 0 {
-				b.WriteString(rest)
-				return b.String()
+		parts := splitSentences(text)
+		if len(parts) == 0 {
+			return text
+		}
+		var kept []string
+		dropped := false
+		for _, part := range parts {
+			body := part
+			if word == "温暖" {
+				body = strings.ReplaceAll(body, "温暖亲和", "")
 			}
-			b.WriteString(rest[:i])
-			if word == "温暖" && strings.HasPrefix(rest[i:], "温暖亲和") {
-				b.WriteString("温暖亲和")
-				rest = rest[i+len("温暖亲和"):]
+			n := strings.Count(body, word)
+			if n == 0 {
+				kept = append(kept, part)
 				continue
 			}
-			seen++
-			if seen <= keep {
-				b.WriteString(word)
-			} else {
-				b.WriteString("踏实")
+			if seen+n > keep {
+				dropped = true
+				continue
 			}
-			rest = rest[i+len(word):]
+			seen += n
+			kept = append(kept, part)
 		}
+		if !dropped {
+			return text
+		}
+		return strings.Join(kept, "")
 	}
 	for _, section := range sectionsOf(draft) {
 		var paras []any
@@ -2168,8 +2230,8 @@ func ensureCTA(draft map[string]any) {
 func oneEnding(text string) string {
 	var kept []string
 	for _, part := range strings.Split(text, "\n") {
-		part = strings.TrimSpace(part)
-		if part == "" || stockEnding(part) || disclaimerLine(part) {
+		part = trimEndingSentences(part)
+		if part == "" {
 			continue
 		}
 		kept = append(kept, part)
@@ -2178,6 +2240,29 @@ func oneEnding(text string) string {
 		return ""
 	}
 	return kept[0]
+}
+
+// trimEndingSentences drops a stock follow-up or a disclaimer sentence and leaves the rest of the paragraph.
+func trimEndingSentences(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	parts := splitSentences(text)
+	if len(parts) == 0 {
+		if stockEnding(text) || disclaimerLine(text) {
+			return ""
+		}
+		return text
+	}
+	var kept []string
+	for _, part := range parts {
+		if stockEnding(part) || disclaimerLine(part) {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "")
 }
 
 func stockEnding(text string) bool {
@@ -2521,14 +2606,17 @@ func StripEnglishLeaks(draft map[string]any) map[string]any {
 	clean := func(text string) string {
 		parts := splitSentences(text)
 		if len(parts) == 0 {
-			return stripLatinWords(text)
+			if latinLeak(text) {
+				return ""
+			}
+			return text
 		}
 		var kept []string
 		for _, part := range parts {
-			if englishLeak(part) {
+			if englishLeak(part) || latinLeak(part) {
 				continue
 			}
-			kept = append(kept, stripLatinWords(part))
+			kept = append(kept, part)
 		}
 		return strings.Join(kept, "")
 	}
@@ -2543,16 +2631,22 @@ func englishLeak(text string) bool {
 	return len(latinLetter.FindAllString(text, -1)) >= 3
 }
 
-func stripLatinWords(text string) string {
-	text = latinWord.ReplaceAllStringFunc(text, func(word string) string {
-		switch strings.ToUpper(word) {
-		case "GB", "PDF", "ISO", "FAQ", "AI", "URL", "HTTP", "HTTPS", "WIFI", "APP":
-			return word
-		default:
-			return ""
+func allowedLatin(word string) bool {
+	switch strings.ToUpper(word) {
+	case "GB", "PDF", "ISO", "FAQ", "AI", "URL", "HTTP", "HTTPS", "WIFI", "APP":
+		return true
+	default:
+		return false
+	}
+}
+
+func latinLeak(text string) bool {
+	for _, word := range latinWord.FindAllString(text, -1) {
+		if !allowedLatin(word) {
+			return true
 		}
-	})
-	return strings.Join(strings.Fields(text), " ")
+	}
+	return false
 }
 
 var datedToken = regexp.MustCompile(`\d{4}年|\d{1,2}月\d{1,2}日`)
@@ -2877,7 +2971,10 @@ func CapRepeatedPhrases(draft map[string]any, limit int) map[string]any {
 		}
 		var kept []string
 		for _, part := range parts {
-			part = stripExtraDates(part, dates, limit)
+			if dateOverLimit(part, dates, limit) {
+				continue
+			}
+			noteDates(part, dates)
 			key := strings.TrimSpace(citeMark.ReplaceAllString(part, ""))
 			same := sentences[key] > 0
 			sentences[key]++
@@ -3237,24 +3334,32 @@ func fillerText(draft map[string]any) string {
 	return b.String()
 }
 
-func stripExtraDates(text string, seen map[string]int, limit int) string {
-	for _, word := range []string{"近日", "今天", "昨天", "本周", "上周", "周一", "周二", "周三", "周四", "周五", "周六", "周日"} {
-		for strings.Contains(text, word) {
-			seen[word]++
-			if seen[word] <= limit {
-				break
-			}
-			text = strings.Replace(text, word, "", 1)
+func dateWords() []string {
+	return []string{"近日", "今天", "昨天", "本周", "上周", "周一", "周二", "周三", "周四", "周五", "周六", "周日"}
+}
+
+func dateOverLimit(text string, seen map[string]int, limit int) bool {
+	for _, word := range dateWords() {
+		n := strings.Count(text, word)
+		if n > 0 && seen[word]+n > limit {
+			return true
 		}
 	}
-	text = datedToken.ReplaceAllStringFunc(text, func(token string) string {
-		seen[token]++
-		if seen[token] <= limit {
-			return token
+	for _, token := range datedToken.FindAllString(text, -1) {
+		if seen[token]+1 > limit {
+			return true
 		}
-		return ""
-	})
-	return strings.TrimSpace(text)
+	}
+	return false
+}
+
+func noteDates(text string, seen map[string]int) {
+	for _, word := range dateWords() {
+		seen[word] += strings.Count(text, word)
+	}
+	for _, token := range datedToken.FindAllString(text, -1) {
+		seen[token]++
+	}
 }
 
 func repeatedPhrase(text string, seen map[string]int, limit int) bool {

@@ -47,21 +47,15 @@ func TestOutlineRejectsDriftAndDuplicateHeadings(t *testing.T) {
 		map[string]any{"heading": "今天的心情", "intent": "再跑一次"},
 		map[string]any{"heading": "六类线怎么测", "intent": "重复"},
 	}}, "综合布线六类线测试失败")
-	core := coreEntity("综合布线六类线测试失败")
 	var headings []string
-	seen := map[string]bool{}
 	for _, raw := range asList(outline["points"]) {
 		heading := str(raw.(map[string]any)["heading"])
-		if core == "" || !strings.Contains(heading, core) || heading == "今天的心情" {
-			t.Fatal(heading, core)
+		if heading == "今天的心情" || strings.Contains(heading, "：") {
+			t.Fatal(heading)
 		}
-		if seen[heading] {
-			t.Fatal("duplicate", heading)
-		}
-		seen[heading] = true
 		headings = append(headings, heading)
 	}
-	if len(headings) != 2 {
+	if len(headings) != 1 || headings[0] != "六类线怎么测" {
 		t.Fatal(headings)
 	}
 }
@@ -98,15 +92,15 @@ func TestBuildBothColumnsStayOnTopic(t *testing.T) {
 		for _, raw := range asList(built.Draft["sections"]) {
 			section, _ := raw.(map[string]any)
 			heading := str(section["heading"])
-			if heading == "" || seen[heading] {
+			if heading == "" {
+				continue
+			}
+			if seen[heading] || (core != "" && strings.HasPrefix(heading, core+"：")) {
 				t.Fatal(topic.Column, heading)
 			}
 			seen[heading] = true
-			if core != "" && !strings.Contains(heading, core) {
-				t.Fatal(topic.Column, heading, core)
-			}
 		}
-		if core != "" && !strings.Contains(body, core) {
+		if core != "" && !strings.Contains(body, core) && !strings.Contains(str(built.Draft["title"]), core) {
 			t.Fatal(topic.Column, core, body)
 		}
 		if built.Repeated {

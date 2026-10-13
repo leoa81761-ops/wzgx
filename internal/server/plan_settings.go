@@ -36,6 +36,7 @@ type planSettings struct {
 	ColumnWeekdays string
 	AssetID        int64
 	ProfileID      int64
+	SkipDraft      int
 }
 
 func (s planSettings) extra(planID int64) store.PlanExtra {
@@ -47,6 +48,7 @@ func (s planSettings) extra(planID int64) store.PlanExtra {
 		VerticalKey: s.VerticalKey, TopicMode: s.TopicMode, ImageMode: s.ImageMode,
 		Tone: s.Tone, PersonaColumns: s.PersonaColumns, Signatures: s.Signatures, Taboos: s.Taboos,
 		ColumnRotation: s.ColumnRotation, ColumnWeekdays: s.ColumnWeekdays,
+		SkipDraft: s.SkipDraft,
 	}
 }
 
@@ -113,7 +115,7 @@ func (a *App) normalizePlanSettings(ctx context.Context, q db.Q, userID int64, t
 		Keywords: keywords, Audience: audience, BannedWords: banned, VerticalKey: verticalKey,
 		TopicMode: topic, ImageMode: image, Tone: tone, PersonaColumns: columns,
 		Signatures: signatures, Taboos: taboos, ColumnRotation: rotation, ColumnWeekdays: raw.ColumnWeekdays,
-		AssetID: raw.AssetID, ProfileID: raw.ProfileID,
+		AssetID: raw.AssetID, ProfileID: raw.ProfileID, SkipDraft: raw.SkipDraft,
 	}, nil
 }
 
@@ -257,6 +259,7 @@ type planPatch struct {
 	PersonaColumns *string           `json:"persona_columns"`
 	Signatures     *string           `json:"signatures"`
 	Taboos         *string           `json:"taboos"`
+	DryRun         *bool             `json:"dry_run"`
 	ColumnRotation *string           `json:"column_rotation"`
 	ColumnWeekdays *map[string]int64 `json:"column_weekdays"`
 }
@@ -392,6 +395,7 @@ func (a *App) updatePlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			Signatures: pickString(body.Signatures, extra.Signatures), Taboos: pickString(body.Taboos, extra.Taboos),
 			ColumnRotation: rotation, ColumnWeekdays: weekdaysJSON,
 			AssetID: pickInt(body.AssetID, extra.AssetID), ProfileID: pickInt(body.ProfileID, extra.ProfileID),
+			SkipDraft: pickSkipDraft(extra.SkipDraft, body.DryRun),
 		})
 		if err != nil {
 			return err
@@ -433,6 +437,29 @@ func (a *App) updatePlan(w http.ResponseWriter, r *http.Request, user *model.Use
 	}
 	writeJSON(w, 200, view)
 	return nil
+}
+
+func pickSkipDraft(current int, next *bool) int {
+	if next == nil {
+		return current
+	}
+	if *next {
+		return 1
+	}
+	return 0
+}
+
+func planSkipDraft(user *model.User, explicit *bool) int {
+	if explicit != nil {
+		if *explicit {
+			return 1
+		}
+		return 0
+	}
+	if user != nil && user.QuotaExempt {
+		return 1
+	}
+	return -1
 }
 
 func pickInt(next *int64, current int64) int64 {

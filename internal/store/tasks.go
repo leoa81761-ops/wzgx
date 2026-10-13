@@ -11,14 +11,14 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/model"
 )
 
-const taskCols = `id, plan_id, user_id, wx_account_id, article_id, regen_of_article_id, idempotency_key, trigger_type, schedule_date, run_at, status, failure_reason, retry_count, priority, started_at, finished_at, duration_ms, tokens, model_trace, created_at, progress_at`
+const taskCols = `id, plan_id, user_id, wx_account_id, article_id, regen_of_article_id, idempotency_key, trigger_type, schedule_date, run_at, status, failure_reason, retry_count, priority, started_at, finished_at, duration_ms, tokens, model_trace, created_at, progress_at, skip_draft`
 
 func scanTask(row interface{ Scan(dest ...any) error }) (*model.ArticleTask, error) {
 	var t model.ArticleTask
 	var articleID, regenID sql.NullInt64
 	var started, finished, trace, progress sql.NullString
 	var runAt, created string
-	err := row.Scan(&t.ID, &t.PlanID, &t.UserID, &t.WxAccountID, &articleID, &regenID, &t.IdempotencyKey, &t.TriggerType, &t.ScheduleDate, &runAt, &t.Status, &t.FailureReason, &t.RetryCount, &t.Priority, &started, &finished, &t.DurationMs, &t.Tokens, &trace, &created, &progress)
+	err := row.Scan(&t.ID, &t.PlanID, &t.UserID, &t.WxAccountID, &articleID, &regenID, &t.IdempotencyKey, &t.TriggerType, &t.ScheduleDate, &runAt, &t.Status, &t.FailureReason, &t.RetryCount, &t.Priority, &started, &finished, &t.DurationMs, &t.Tokens, &trace, &created, &progress, &t.SkipDraft)
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +91,14 @@ func (s *Store) InsertTask(ctx context.Context, q db.Q, t *model.ArticleTask) er
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		t.PlanID, t.UserID, t.WxAccountID, nullInt(t.ArticleID), nullInt(t.RegenOfArticleID), t.IdempotencyKey, t.TriggerType, t.ScheduleDate, timeReq(t.RunAt), t.Status, t.FailureReason, t.RetryCount, t.Priority, timeArg(t.StartedAt), timeArg(t.FinishedAt), t.DurationMs, t.Tokens, jsonStr(t.ModelTrace), timeReq(t.CreatedAt),
 	).Scan(&t.ID)
+}
+
+func (s *Store) SetTaskSkipDraft(ctx context.Context, q db.Q, id int64, skip int) error {
+	if q == nil {
+		q = s.DB
+	}
+	_, err := q.Exec(ctx, `UPDATE article_task SET skip_draft=? WHERE id=?`, skip, id)
+	return err
 }
 
 func (s *Store) UpdateTask(ctx context.Context, q db.Q, t *model.ArticleTask) error {

@@ -22,7 +22,7 @@ const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据�
 const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
 const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。用这个账号自己的专业来写，遵守 direction、tone、signatures 和 persona_columns。" +
-	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。没有来源时不要写百分比、掉线率或版本号，例如 15%、ONVIF 2.4。数字只能写成亲历的范围，例如「我见过的项目里大多」。" +
+	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。没有来源时不要写百分比、掉线率、版本号、以上、超过、一半以上、dB、米、倍，也不要写没有来源的数字比较，例如 15%、ONVIF 2.4、超过 3 dB、30 米、一半以上。数字只能写成亲历的范围，例如「我见过的项目里大多」。" +
 	"仍然要写具体：句子里要有数字、工具和场景，并用这个账号的口吻，技术号写现场，家庭号写家里的事。不要温馨、默契、从容这类暖场空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。文末来源会标成经验分享。" +
 	"如果已经有来源网址，不要标成经验分享，在用到该来源的句子后写 [n]。" +
 	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答先写 2 到 3 句开头，再至少五对，问句以问号结尾，答案用「答：」接上并且写成能照做的几句，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
@@ -35,7 +35,7 @@ func lengthInstruction(stageLabel string, payload map[string]any) string {
 			"section_intent 是这一节要写完的事。section_index 和 section_count 表示第几节、一共几节。" +
 			"这一节最多四段。section_target 是这一节的篇幅参考，写完 section_intent 就可以停，不要为了凑满预算重复同一句。" +
 			"字数统计小标题、段落、列表和表格单元格。不要把选题、栏目或题目嵌进「先打开……的检修口」这类套话。" +
-			"问答栏目这一节只写一对：问句以问号结尾，答案用「答：」接上。步骤栏目这一节只写这一步，序号用 section_index，例如「1. 」。" +
+			"问答栏目这一节只写一对：问句以问号结尾，答案用「答：」接上。步骤栏目这一节的列表从 1 编到这一节的最后一项，不要用 section_index 当序号。表格放在 table 里，不要压成一段话。" +
 			"title 用 topic_title。只有最后一节写 closing，前面几节 closing 用空字符串。sources 保留已有来源，不要新造网址。"
 	}
 	return lengthRule
@@ -217,7 +217,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			break
 		}
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
-			"不要删掉已有段落、列表和表格，不要把表格压成一段话，不要增加大纲里没有的步骤。序号必须从 1 连续编到最后，不要把资料清单的编号抄进正文。只改每个区块里的句子，表格和列表的结构保持原样。" +
+			"不要删掉已有段落、列表和表格，不要把表格压成一段话，不要增加大纲里没有的步骤。每一节里的序号从 1 编到这一节的最后一项，不要接着上一节，也不要用第几节当序号。只改每个区块里的句子，表格和列表的结构保持原样。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
 			"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段，答案要写成能照做的几句；答案里不要再出现问号。问答必须相邻。" +
 			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
@@ -230,6 +230,11 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不要因为单独出现验收或中标就改。不要插入「这一步按现场记录来写」这类占位句；改写不了就删掉那一句。" +
 			namedSourceRule + markerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "句子改写":
+		schema = StageSchema("句子改写")
+		system = "你是公众号编辑。sentences 里每一句都有问题：没有来源的数字、百分比、以上、超过、一半以上、dB、米、倍，或者一句暖场空话。" +
+			"请把每一句改写成完整的一句，from 必须和原句完全相同，to 是改写后的整句。不要只删掉句子中间的几个字，不要留下「从入手」「在本身」「表明，」或连续逗号。" +
+			"没有来源时不要保留这些数字。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "套话改写":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。正文里有套话。请改写含有这些说法的句子，不要只删掉几个字留下破句。" +
@@ -270,9 +275,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthInstruction(stageLabel, payload) + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。" +
-				"全文只写 reader_pain 这一件事，不要换到另一件家务、另一台设备或另一个场景。" +
-				"开头用 2 到 3 句，里面要有一个场景、一个冲突，或者一个数字。小标题不要加栏目名前缀，例如不要写「拆解：」「简单：第一步：」。" +
-				"不要每节都做成编号列表：第一节用一段引言，中间可以有列表，最后一节用一段可以转发的收获。同一条例子不要在两节里再写一遍。四字以上的说法全文最多两次，不要每一节都用同一句亲历开头。小标题不要加「知识：」「家长里短：」这类栏目前缀。结尾只留一句，不要写「关注本号」或「下一期继续写」，也不要再写一遍文末免责声明。"
+				"全文围绕标题里的那一件事，不要写到标题没提的另一件事，例如写关节就不要转到皮肤、视力或记忆。不要把同一个细节写进每一节。" +
+				"第一个小标题之前先写一段开头，2 到 3 句，里面要有一个场景、一个冲突，或者一个数字。小标题不要加栏目名或标签前缀，例如不要写「拆解：」「知识：」「家长里短：」「老年人常：」。冒号前面如果是栏目名或这类标签，整段前缀都不要留，也不要留下只有前半截的小标题。" +
+				"不要每节都做成编号列表：第一节用一段引言，中间可以有列表，最后一节用一段可以转发的收获。每一节里的列表从 1 重新编号，不要用第几节当序号。表格保持表格，不要压成一段话。同一条例子不要在两节里再写一遍。四字以上的说法全文最多两次，不要每一节都用同一句亲历开头。结尾只留一句，不要写「关注本号」或「下一期继续写」，也不要再写一遍文末免责声明。"
 		}
 		system += readerRule + motifRule(payload)
 		if stageLabel == "审核" {
@@ -386,6 +391,8 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		return map[string]any{"choice": "original"}
 	case "标题比较":
 		return mockTitleChoice(payload)
+	case "句子改写":
+		return mockSentenceRewrite(payload)
 	case "意象改写", "禁忌改写", "套话改写":
 		return mockDraftCopy(payload)
 	case "表述改写":
@@ -616,6 +623,26 @@ func mockStructured(payload map[string]any) map[string]any {
 	sections[0] = section
 	draft["sections"] = sections
 	return draft
+}
+
+func mockSentenceRewrite(payload map[string]any) map[string]any {
+	var items []any
+	for _, raw := range anySlice(payload["sentences"]) {
+		from := strings.TrimSpace(asString(raw))
+		if from == "" {
+			if row, ok := raw.(map[string]any); ok {
+				from = strings.TrimSpace(asString(row["from"]))
+			}
+		}
+		if from == "" {
+			continue
+		}
+		items = append(items, map[string]any{"from": from, "to": "这一处按现场再看一遍，不写没有来源的数字。"})
+	}
+	if items == nil {
+		items = []any{}
+	}
+	return map[string]any{"sentences": items}
 }
 
 func mockPolish(payload map[string]any) map[string]any {

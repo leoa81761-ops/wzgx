@@ -104,6 +104,10 @@
           <option value="confirm" :disabled="quota.tier !== 'premium' && quota.tier !== 'lifetime'">先确认选题</option>
         </select>
       </label>
+      <label class="check">
+        <input v-model="form.dry_run" type="checkbox" />
+        <span>不推送草稿箱。勾上后，生成的稿只留在这里，不写入公众号草稿箱。</span>
+      </label>
       <label>配图
         <select v-model="form.image_mode">
           <option value="auto">自动</option>
@@ -162,6 +166,7 @@ const form = reactive({
   image_mode: "auto",
   column_rotation: "weight",
   column_weekdays: {},
+  dry_run: false,
 });
 
 function tierRank(tier) {
@@ -203,6 +208,7 @@ function fill(row) {
   form.vertical_key = row.vertical_key || "";
   form.topic_mode = row.topic_mode || "auto";
   form.image_mode = row.image_mode || "auto";
+  form.dry_run = row.dry_run_set ? !!row.dry_run : !!quota.value.unlimited;
   form.column_rotation = row.column_rotation || "weight";
   form.column_weekdays = {};
   const savedDays = row.column_weekdays || {};
@@ -285,6 +291,7 @@ async function save() {
         vertical_key: form.vertical_key,
         topic_mode: form.topic_mode,
         image_mode: form.image_mode,
+        dry_run: form.dry_run,
         column_rotation: form.column_rotation,
         column_weekdays: Object.fromEntries(
           WEEKDAYS.map((day) => [String(day.value), Number(form.column_weekdays[day.value] || 0)]).filter((item) => item[1] > 0),
