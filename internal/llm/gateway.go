@@ -271,6 +271,11 @@ func researchTransport(provider Provider, configured time.Duration) (bool, time.
 	if configured > callTimeoutCap {
 		configured = callTimeoutCap
 	}
+	// grok-chat-fast was burning the whole 60s research budget and then failing.
+	// Give it 20s, then the timeout path falls back to the non-reasoning model.
+	if strings.Contains(strings.ToLower(provider.Model), "chat-fast") && configured > 20*time.Second {
+		configured = 20 * time.Second
+	}
 	return researchCanStream(provider), configured
 }
 

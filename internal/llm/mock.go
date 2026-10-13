@@ -8,8 +8,9 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 )
 
-const lengthRule = "正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。这个数字要落在 word_target 的 85% 到 130% 之间：不要写成短摘要，也不要明显写超。" +
-	"每个小节最多四段，请把篇幅写进这些段落，把做法写具体。"
+const lengthRule = "word_target 只是篇幅参考。写完要说的事就可以停，不要为了凑字数重复或注水。" +
+	"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
+	"每个小节最多四段，把做法写具体。"
 
 const sourcedFacts = "不得编造来源里没有的阈值、电压、标准编号或统计数字。没有来源支撑时写成定性说明，不要写具体数字。"
 
@@ -21,8 +22,9 @@ const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据�
 
 const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
-const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。不要编造外部机构、标准和新闻，不要使用 [n]。" +
-	"仍然要写具体：句子里要有数字、工具和场景，并用这个账号的口吻，技术号写现场，家庭号写家里的事。不要温馨、默契、从容这类暖场空话，也不要单独甩一句没有数字和工具的提示。文末来源会标成经验分享。" +
+const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。用这个账号自己的专业来写，遵守 direction、tone、signatures 和 persona_columns。" +
+	"不要编造外部机构、标准、新闻、网址或引用，不要使用 [n]。" +
+	"仍然要写具体：句子里要有数字、工具和场景，并用这个账号的口吻，技术号写现场，家庭号写家里的事。不要温馨、默契、从容这类暖场空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。文末来源会标成经验分享。" +
 	"如果已经有来源网址，不要标成经验分享，在用到该来源的句子后写 [n]。" +
 	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少三对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
 	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。不要写诊断、剂量、疗效或用药。"
@@ -32,8 +34,8 @@ func lengthInstruction(stageLabel string, payload map[string]any) string {
 		return "这一次只写一个小节，不要写其他小节。" +
 			"section_heading 是这一节的小标题，sections 里只放这一节，heading 必须用 section_heading。" +
 			"section_intent 是这一节要写完的事。section_index 和 section_count 表示第几节、一共几节。" +
-			"这一节最多四段，把篇幅写进这些段落、列表和表格。字数统计小标题、段落、列表和表格单元格，要一次写满 section_target，不要只写一两句。整篇 word_target 由各节预算加起来达到。" +
-			"用具体做法把字数写够。不要重复同一句，也不要把选题、栏目或题目嵌进「先打开……的检修口」这类套话。" +
+			"这一节最多四段。section_target 是这一节的篇幅参考，写完 section_intent 就可以停，不要为了凑满预算重复同一句。" +
+			"字数统计小标题、段落、列表和表格单元格。不要把选题、栏目或题目嵌进「先打开……的检修口」这类套话。" +
 			"问答栏目这一节只写一对：问句以问号结尾，答案用「答：」接上。步骤栏目这一节只写这一步，序号用 section_index，例如「1. 」。" +
 			"title 用 topic_title。只有最后一节写 closing，前面几节 closing 用空字符串。sources 保留已有来源，不要新造网址。"
 	}
@@ -212,8 +214,8 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "栏目结构":
 		schema = StageSchema("正文")
 		if asString(payload["writing_mode"]) == "experience" {
-			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按 column_structure 和 structure 里的栏目结构模板重写成一篇完整稿。" +
-				"不要写外部机构、标准或新闻，不要使用 [n]。现场的数量、工具和场景要写具体，不要用温馨、默契这类空话，也不要单独甩一句没有数字和工具的提示。" +
+			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按这个账号的 direction、tone、signatures 和栏目结构重写成一篇完整稿。" +
+				"不要写外部机构、标准、新闻或网址，不要使用 [n]。现场的数量、工具和场景要写具体，不要用温馨、默契这类空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。" +
 				"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
 				"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 				"news 或快报：没有可核对的新闻时不要编造日期和 [n]，按栏目定位写成经验分享。" +
@@ -383,7 +385,7 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		if draft == nil {
 			draft = draftFromPayload(payload)
 		}
-		return padDraft(draft, intOf(payload["word_target"]))
+		return draft
 	case "缩写":
 		draft, _ := payload["draft"].(map[string]any)
 		if draft == nil {
@@ -650,40 +652,6 @@ func mockPolish(payload map[string]any) map[string]any {
 	return out
 }
 
-func padDraft(draft map[string]any, target int) map[string]any {
-	if target < 1 {
-		target = 800
-	}
-	raw, _ := json.Marshal(draft)
-	var cloned map[string]any
-	if json.Unmarshal(raw, &cloned) != nil || cloned == nil {
-		cloned = draftFromPayload(map[string]any{})
-	}
-	sections, _ := cloned["sections"].([]any)
-	if len(sections) == 0 {
-		cloned = draftFromPayload(map[string]any{})
-		sections, _ = cloned["sections"].([]any)
-	}
-	last, _ := sections[len(sections)-1].(map[string]any)
-	if last == nil {
-		return cloned
-	}
-	paras, _ := last["paragraphs"].([]any)
-	paras = append(paras, "")
-	for i := 0; content.BodyRunes(cloned) < target && i < 400; i++ {
-		text, _ := paras[len(paras)-1].(string)
-		paras[len(paras)-1] = text + padLine(i)
-		last["paragraphs"] = paras
-		sections[len(sections)-1] = last
-		cloned["sections"] = sections
-	}
-	return cloned
-}
-
-func padLine(i int) string {
-	return strings.Repeat(string(rune(0x4E00+(i%400))), 8)
-}
-
 func draftFromPayload(payload map[string]any) map[string]any {
 	outline, _ := payload["outline"].(map[string]any)
 	if outline == nil {
@@ -780,41 +748,6 @@ func draftFromPayload(payload map[string]any) map[string]any {
 		"title": title, "alt_titles": []any{subtopic + "可以先做的一件小事", "关于" + subtopic + "，少做一件事"},
 		"summary":  "一篇关于" + direction + "／" + subtopic + "的短文，语气是" + style + "。",
 		"sections": sections, "closing": closing, "sources": []any{},
-	}
-	if need := intOf(payload["section_target"]); need > 0 {
-		draft = fillSection(draft, need, only*500)
-	}
-	return draft
-}
-
-// fillSection writes the section length into the four paragraphs a draft may keep.
-// Each addition is a different character, so the mock does not repeat a sentence.
-func fillSection(draft map[string]any, need, start int) map[string]any {
-	if draft == nil || need < 1 || content.BodyRunes(draft) >= need {
-		return draft
-	}
-	sections, _ := draft["sections"].([]any)
-	if len(sections) == 0 {
-		return draft
-	}
-	section, _ := sections[len(sections)-1].(map[string]any)
-	if section == nil {
-		return draft
-	}
-	paras, _ := section["paragraphs"].([]any)
-	for len(paras) < 4 {
-		paras = append(paras, "")
-	}
-	if len(paras) > 4 {
-		paras = paras[:4]
-	}
-	for i := 0; content.BodyRunes(draft) < need && i < 500; i++ {
-		at := i % len(paras)
-		text, _ := paras[at].(string)
-		paras[at] = text + padLine(start+i)
-		section["paragraphs"] = paras
-		sections[len(sections)-1] = section
-		draft["sections"] = sections
 	}
 	return draft
 }

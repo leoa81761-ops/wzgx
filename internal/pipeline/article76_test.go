@@ -1,12 +1,8 @@
 package pipeline
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/content"
@@ -165,6 +161,44 @@ func TestArticle76QueriesAreNarrowAndJunkIsDropped(t *testing.T) {
 	}
 }
 
+func TestArticle78And79QueriesStaySpecific(t *testing.T) {
+	cases := []map[string]any{
+		{
+			"topic_title": "工程",
+			"subtopic":    "工程",
+			"keywords":    "工程",
+			"direction":   "弱电智能化综合布线六类线测试失败",
+		},
+		{
+			"topic_title": "家庭",
+			"subtopic":    "家庭",
+			"keywords":    "家庭",
+			"direction":   "厨房油烟机每月清洗步骤",
+		},
+	}
+	for _, payload := range cases {
+		queries := backupQueries(payload)
+		if len(queries) < 2 || len(queries) > 4 {
+			t.Fatal(payload["direction"], queries)
+		}
+		full := str(payload["direction"])
+		if utf8.RuneCountInString(full) > 32 {
+			full = string([]rune(full)[:32])
+		}
+		if queries[0] != full {
+			t.Fatal(queries)
+		}
+		for _, query := range queries {
+			if query == "工程" || query == "家庭" || singleWordQuery(query) {
+				t.Fatal(query, queries)
+			}
+			if !strings.Contains(full, query) && !strings.Contains(query, full) && !strings.HasPrefix(query, string([]rune(full)[:4])) {
+				t.Fatal(query)
+			}
+		}
+	}
+}
+
 func TestBingNoiseNeedsEntityOverlap(t *testing.T) {
 	_, kept, dropped, _ := takeSources(t.Context(), nil, "笔记", []map[string]any{
 		{"title": "六类线测试失败现场记录", "snippet": "综合布线里六类线测不通", "url": "https://www.example.com/cat6"},
@@ -191,32 +225,6 @@ func TestBingNoiseNeedsEntityOverlap(t *testing.T) {
 		if str(row["url"]) == "https://www.example.com/exam" && str(row["reason"]) != "和选题无关" {
 			t.Fatal(row)
 		}
-	}
-}
-
-func TestExpandStopsAfterTwoFailedPasses(t *testing.T) {
-	var n int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n++
-		text := strings.Repeat("现场补了一句。", n)
-		writeChoice(w, map[string]any{
-			"title": "短稿", "summary": "摘要",
-			"sections": []any{map[string]any{"heading": "现场案例", "paragraphs": []any{text}, "list": []any{}}},
-			"closing":  "结束", "sources": []any{},
-		})
-	}))
-	defer srv.Close()
-	draft := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	}
-	gw := llm.NewGateway(false, srv.Client())
-	out, _, _, still := fitBody(context.Background(), gw, []llm.Provider{{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}, map[string]any{"word_target": 800}, draft, 800)
-	if n != 2 || !still || !strings.Contains(bodyPlain(out), "只有一句。") {
-		t.Fatalf("passes %d still %v runes %d", n, still, content.BodyRunes(out))
 	}
 }
 

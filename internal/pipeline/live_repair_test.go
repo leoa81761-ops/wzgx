@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/editorial"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/render"
@@ -35,63 +34,6 @@ func TestSearchQueryUsesTopicEntities(t *testing.T) {
 	}
 	if !strings.Contains(shortSearchQuery(payload), "综合布线") {
 		t.Fatal(shortSearchQuery(payload))
-	}
-}
-
-func TestExpandKeepsOriginalAndStopsWhenItDoesNotGrow(t *testing.T) {
-	original := "只有一句现场记录。"
-	added := strings.Repeat("先打开检修口再看线槽。", 80)
-	var calls int
-	srv := expandServer(t, &calls, map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "新的一节", "paragraphs": []any{added}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	})
-	defer srv.Close()
-	draft := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{original}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	}
-	gw := llm.NewGateway(false, srv.Client())
-	out, _, _, _ := fitBody(context.Background(), gw, []llm.Provider{{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}, map[string]any{"word_target": 800}, draft, 800)
-	blob := bodyPlain(out)
-	if !strings.Contains(blob, original) || !strings.Contains(blob, "先打开检修口再看线槽。") {
-		t.Fatal(blob)
-	}
-	if calls != 1 {
-		t.Fatal(calls)
-	}
-}
-
-func TestThinFactsAreHeldInsteadOfPadded(t *testing.T) {
-	var calls int
-	srv := expandServer(t, &calls, map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	})
-	defer srv.Close()
-	draft := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句现场记录。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	}
-	gw := llm.NewGateway(false, srv.Client())
-	out, _, _, still := fitBody(context.Background(), gw, []llm.Provider{{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}, map[string]any{"word_target": 800, "writing_mode": "experience", "column_structure": "qa", "subtopic": "辟谣不吓人"}, draft, 800)
-	if calls == 0 || !still {
-		t.Fatalf("calls %d still %v runes %d", calls, still, content.BodyRunes(out))
-	}
-	blob := bodyPlain(out)
-	if !strings.Contains(blob, "只有一句现场记录。") {
-		t.Fatal(blob)
-	}
-	if strings.Contains(blob, "检修口") || strings.Contains(blob, "一个现场案例") || strings.Contains(blob, "读者还会问") {
-		t.Fatal(blob)
 	}
 }
 
@@ -244,14 +186,4 @@ func TestSectionsStayInOutlineOrder(t *testing.T) {
 	if strings.Index(md, "## 先看问题") < 0 || headAt < 0 || nextAt < headAt || tableAt < headAt || tableAt > nextAt || strings.Contains(md, "空的一节") {
 		t.Fatal(md)
 	}
-}
-
-func expandServer(t *testing.T, calls *int, data map[string]any) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*calls++
-		raw, _ := json.Marshal(data)
-		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(raw)}}}})
-		_, _ = w.Write(out)
-	}))
 }

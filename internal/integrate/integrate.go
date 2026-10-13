@@ -98,7 +98,8 @@ func Sections() []Section {
 			{Key: "webhook_url", Label: "Webhook 地址", Secret: true},
 		}},
 		{Key: "search", Title: "备用检索", Fields: []Field{
-			{Key: "searxng_url", Label: "SearXNG 地址，默认 http://searxng:8080。宿主机调试用 http://127.0.0.1:8888"},
+			{Key: "searxng_enabled", Label: "启用 SearXNG。默认关闭，填 1 打开、填 0 关闭。关闭时不会调用"},
+			{Key: "searxng_url", Label: "SearXNG 地址。启用后留空则用 http://searxng:8080，宿主机调试用 http://127.0.0.1:8888"},
 			{Key: "searxng_engines", Label: "SearXNG 引擎，逗号分隔。默认 sogou,bing,360search,sogou wechat"},
 			{Key: "searxng_daily_cap", Label: "每人每天 SearXNG 次数，0 表示不限"},
 			{Key: "searxng_breaker", Label: "SearXNG 连续失败几次后熔断"},
@@ -111,6 +112,24 @@ func Sections() []Section {
 			{Key: "backup_url", Label: "搜狗 HTML"},
 			{Key: "baidu_url", Label: "百度 HTML"},
 		}},
+	}
+}
+
+func truthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func falsy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no", "off":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -332,6 +351,11 @@ func Apply(base config.Settings, docs map[string]Doc) config.Settings {
 	if v := set("search", "provider"); v != "" {
 		out.ResearchSearchProvider = strings.ToLower(v)
 	}
+	if doc, ok := docs["search"]; ok && doc.Plain != nil {
+		if v, exists := doc.Plain["searxng_enabled"]; exists {
+			out.SearxngEnabled = truthy(v)
+		}
+	}
 	if v := set("search", "searxng_url"); v != "" {
 		out.SearxngURL = v
 	}
@@ -464,6 +488,11 @@ func EnvValue(base config.Settings, section, key string) string {
 		return base.ResearchSearchKey
 	case "search.provider":
 		return base.ResearchSearchProvider
+	case "search.searxng_enabled":
+		if base.SearxngEnabled {
+			return "1"
+		}
+		return "0"
 	case "search.searxng_url":
 		return base.SearxngURL
 	case "search.searxng_engines":
@@ -563,6 +592,10 @@ func validate(section, key, value string) error {
 		case "bocha", "tavily", "bing":
 		default:
 			return fmt.Errorf("检索接口只能是 bocha、tavily 或 bing")
+		}
+	case "search.searxng_enabled":
+		if !truthy(value) && !falsy(value) {
+			return fmt.Errorf("启用 SearXNG 请填 1 或 0")
 		}
 	case "search.searxng_url", "search.tavily_url":
 		parsed, err := url.Parse(value)
@@ -674,7 +707,7 @@ func Ready(section string, cfg config.Settings) bool {
 		return strings.TrimSpace(cfg.PublicBaseURL) != ""
 	case "search":
 		keyed := strings.TrimSpace(cfg.ResearchSearchKey) != "" && (strings.TrimSpace(cfg.ResearchSearchAPI) != "" || strings.TrimSpace(cfg.ResearchSearchProvider) != "")
-		return strings.TrimSpace(cfg.ResearchBackupSearch) != "" || keyed || strings.TrimSpace(cfg.SearxngURL) != "" || strings.TrimSpace(cfg.TavilyAPIKey) != ""
+		return strings.TrimSpace(cfg.ResearchBackupSearch) != "" || keyed || cfg.ActiveSearxngURL() != "" || strings.TrimSpace(cfg.TavilyAPIKey) != ""
 	default:
 		return false
 	}

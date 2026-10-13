@@ -6,6 +6,24 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/config"
 )
 
+func TestAdminCanTurnSearxngOn(t *testing.T) {
+	base := config.Settings{SearxngURL: "http://searxng:8080"}
+	if base.ActiveSearxngURL() != "" {
+		t.Fatal(base.ActiveSearxngURL())
+	}
+	off := Apply(base, map[string]Doc{"search": {Plain: map[string]string{"searxng_enabled": "0"}}})
+	if off.SearxngEnabled || off.ActiveSearxngURL() != "" {
+		t.Fatal(off.SearxngEnabled, off.ActiveSearxngURL())
+	}
+	on := Apply(base, map[string]Doc{"search": {Plain: map[string]string{"searxng_enabled": "1", "searxng_url": "http://127.0.0.1:8888"}}})
+	if !on.SearxngEnabled || on.ActiveSearxngURL() != "http://127.0.0.1:8888" {
+		t.Fatal(on.SearxngEnabled, on.ActiveSearxngURL())
+	}
+	if EnvValue(base, "search", "searxng_enabled") != "0" {
+		t.Fatal(EnvValue(base, "search", "searxng_enabled"))
+	}
+}
+
 func TestCallbackDefaultsUsePublicBaseOnly(t *testing.T) {
 	empty := WithCallbackDefaults(config.Settings{})
 	if empty.WxPayNotifyURL != "" || empty.AlipayNotifyURL != "" || empty.AlipayReturnURL != "" || empty.WeChatOpenRedirect != "" || empty.WeChatComponentRedirect != "" {
