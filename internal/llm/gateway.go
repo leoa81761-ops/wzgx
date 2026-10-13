@@ -57,6 +57,7 @@ type Gateway struct {
 	BackupSearchBaidu   string
 	SearchAPIURL        string
 	SearchAPIKey        string
+	SearchAPIProvider   string
 	CacheTTL            time.Duration
 	cacheMu             sync.Mutex
 	cache               map[string]cachedCompletion

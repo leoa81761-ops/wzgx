@@ -38,6 +38,28 @@ func StageSchema(stageLabel string) *Schema {
 				"closing": strField("结尾收束"),
 			},
 		)}
+	case "来源判断":
+		return &Schema{Name: "source_judge", Body: objectSchema(
+			[]string{"items"},
+			map[string]any{
+				"items": map[string]any{
+					"type":        "array",
+					"description": "每条候选一个对象，index 与输入一致",
+					"items": objectSchema(
+						[]string{"index", "score", "facts"},
+						map[string]any{
+							"index": map[string]any{"type": "integer", "description": "候选序号，从 1 开始"},
+							"score": map[string]any{"type": "integer", "description": "和这篇选题的相关性，0 到 3。2 及以上才保留"},
+							"facts": map[string]any{
+								"type":        "array",
+								"description": "这条来源里能核对的关键事实。无关或没有事实时为空数组",
+								"items":       map[string]any{"type": "string"},
+							},
+						},
+					),
+				},
+			},
+		)}
 	case "资料检索":
 		return &Schema{Name: "research", Body: objectSchema(
 			[]string{"notes", "sources"},

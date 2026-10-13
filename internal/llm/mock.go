@@ -17,6 +17,20 @@ const namedSourceRule = "不要写出 research_sources 或 sources 里没有出�
 
 const citationRule = "用到 research_sources 里的事实时，在句末用 [1]、[2] 这种序号标出对应来源，序号从 1 开始，对应 sources 的顺序。没有用到的来源不要写进 sources。没有来源时不要编造 [n]。"
 
+const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据。每句事实的句末必须带上对应的 [n]，序号和事实清单一致。不要写清单以外的数字、机构、标准、新闻或网址。引用在写正文时就标上，不要留到后面再补。"
+
+const experienceRule = "writing_mode 是 experience：这是经验分享。不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。文末来源会标成经验分享。"
+
+func evidenceRule(payload map[string]any) string {
+	if asString(payload["writing_mode"]) == "experience" {
+		return experienceRule
+	}
+	if strings.TrimSpace(asString(payload["fact_sheet"])) != "" {
+		return factSheetRule + markerRule
+	}
+	return citationRule + markerRule
+}
+
 const markerRule = "保留正文里已有的 [n] 引用标记，不要删掉，也不要改动序号。"
 
 const anecdoteRule = "事例只能来自已经给出的来源，或者明确写成假设，例如「比如……假设」。不要编造读者的生活，不要编造别人的原话。"
@@ -39,7 +53,11 @@ func columnRule(payload map[string]any) string {
 	}
 	switch strings.ToLower(strings.TrimSpace(asString(payload["column_structure"]))) {
 	case "news", "news-brief", "快报":
-		b.WriteString("栏目是快报：每一段都要有可以核对的日期，至少一处 [n]，不要每段用同一个日期词开头。")
+		if asString(payload["writing_mode"]) == "experience" {
+			b.WriteString("栏目原是快报，但这篇没有可核对的新闻来源，改成经验分享：不要写外部新闻，不要使用 [n]。")
+		} else {
+			b.WriteString("栏目是快报：每一段都要有可以核对的日期，至少一处 [n]，不要每段用同一个日期词开头。")
+		}
 	case "steps", "step-by-step", "breakdown", "拆解":
 		b.WriteString("栏目是步骤：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。")
 	case "qa", "q&a", "faq", "问答":
@@ -97,6 +115,10 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	schema := StageSchema(stageLabel)
 	var system string
 	switch stageLabel {
+	case "来源判断":
+		system = "你是资料相关性判断。对照 topic，给 candidates 里每一条打 0 到 3 分：0 无关，1 只是沾到同一个词，2 确实在讲这件事，3 直接回答选题。" +
+			"同时列出该来源里能核对的关键事实，没有就给空数组。不要因为标题里有相同的两个字就给 2 分。" +
+			"软件下载、系统镜像、影视剧、视频站和应用商店一律 0 分。index 用候选里的序号。只输出 JSON。"
 	case "资料检索":
 		system = "你是资料检索助手。请立刻联网搜索，先用中文搜索，优先中文网页。" +
 			"为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。每条都要讲这篇选题本身，不要用只沾到一个词的页面。" +
@@ -118,13 +140,13 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"目标大约是 word_target 的 105%，收尾补写时按 expand_goal，大约是 word_target 的 110%。写到这个目标就停，不要为了凑到 130% 而注水。" +
 			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
-			sourcedFacts + namedSourceRule + anecdoteRule + markerRule +
+			sourcedFacts + namedSourceRule + anecdoteRule + evidenceRule(payload) +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。当前正文偏长。请压缩到不少于 word_target、不超过 word_target 的 130%，删掉重复和空话，保留事实、步骤和 sources，不要新增材料或网址。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。不要短于 word_target。" +
-			sourcedFacts + readerRule + markerRule +
+			sourcedFacts + readerRule + evidenceRule(payload) +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "标题":
 		system = "你是公众号标题编辑。请用输入里的语气，写 10 到 12 个彼此不同的标题。" +
@@ -192,7 +214,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是事实核对编辑。请对照 research_notes、research_sources 和可靠的领域常识，检查正文里的核心定义、阈值、标准编号和数字。" +
 			"与来源或领域常识冲突的说法要直接改对。来源没有支撑、又不是稳定常识的数字、电压阈值和标准编号，删掉或改成不带具体数字的说法。" +
 			"不要编造网址，也不要编造标准编号（包括 GB、GB/T）。research_sources 里没有的链接和标准号必须删掉，不能补一条看起来像真的网址或标准号。" +
-			sourcedFacts + namedSourceRule + markerRule +
+			sourcedFacts + namedSourceRule + evidenceRule(payload) +
 			"保留原有结构、标题和 sources，不要新造网址。核对时不要把正文撑过 word_target 的 130%。" + lengthRule
 		if elvContext(payload) {
 			system += "行业术语不要套用相邻概念。建筑智能化里的「弱电」指电子信息系统，包括通信、安防、楼宇自控、火灾报警和音视频，工作电压通常在安全特低电压（常见 36V 及以下）和信号电平，不是供配电里交流 1000V 或直流 1500V 以下的低压电力。不要把 1000V 写成弱电的定义。"
@@ -209,7 +231,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。"
 		}
 		if stageLabel == "正文" || stageLabel == "审核" {
-			system += lengthRule + citationRule + markerRule + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
+			system += lengthRule + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。"
 		}
 		system += readerRule + motifRule(payload)
@@ -275,6 +297,8 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 	switch stage {
 	case "资料检索":
 		return map[string]any{"notes": "", "sources": []any{}}
+	case "来源判断":
+		return mockJudge(payload)
 	case "选题":
 		title := asString(payload["subtopic"])
 		if title == "" {
@@ -358,6 +382,61 @@ func mockTitleChoice(payload map[string]any) map[string]any {
 		return map[string]any{"winner": strings.TrimSpace(asString(cands[0]))}
 	}
 	return map[string]any{"winner": ""}
+}
+
+func mockJudge(payload map[string]any) map[string]any {
+	topic := asString(payload["topic"])
+	var items []any
+	for i, raw := range anySlice(payload["candidates"]) {
+		row, _ := raw.(map[string]any)
+		blob := ""
+		if row != nil {
+			blob = asString(row["title"]) + asString(row["snippet"]) + asString(row["url"])
+		}
+		score := 0
+		if judgeOnTopic(topic, blob) {
+			score = 3
+		}
+		fact := ""
+		if row != nil {
+			fact = asString(row["snippet"])
+			if fact == "" {
+				fact = asString(row["title"])
+			}
+		}
+		facts := []any{}
+		if score >= 2 && fact != "" {
+			facts = []any{fact}
+		}
+		items = append(items, map[string]any{"index": i + 1, "score": score, "facts": facts})
+	}
+	if items == nil {
+		items = []any{}
+	}
+	return map[string]any{"items": items}
+}
+
+func judgeOnTopic(topic, blob string) bool {
+	if strings.TrimSpace(topic) == "" || strings.TrimSpace(blob) == "" {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(topic, func(r rune) bool {
+		return r == ' ' || r == '，' || r == '、' || r == '。'
+	}) {
+		runes := []rune(strings.TrimSpace(part))
+		for i := 0; i+2 <= len(runes); i++ {
+			term := string(runes[i : i+2])
+			if seen[term] {
+				continue
+			}
+			seen[term] = true
+			if strings.Contains(blob, term) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mockAddCitations(payload map[string]any) map[string]any {

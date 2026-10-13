@@ -382,6 +382,69 @@ func ReferenceEntry(title string) bool {
 	return false
 }
 
+// OffTopicPage is a hard drop for software-download, video or drama, and app-store pages.
+// Term overlap does not keep these. title may be empty when only the URL is known.
+func OffTopicPage(raw, title string) string {
+	blob := strings.ToLower(raw + " " + title)
+	host := sourceHost(raw)
+	if softwareDownload(host, blob) {
+		return "软件下载"
+	}
+	if videoOrDrama(host, blob) {
+		return "视频或剧集"
+	}
+	if appStore(host, blob) {
+		return "应用商店"
+	}
+	return ""
+}
+
+func softwareDownload(host, blob string) bool {
+	for _, domain := range []string{
+		"xitongzhijia.net", "xitongzhijia.com", "it168.com", "onlinedown.net", "onlinedown.com",
+		"pc6.com", "pc6.net", "crsky.com", "skycn.com", "newhua.com", "xiazaiba.com",
+		"downxia.com", "2265.com", "duote.com", "xz7.com",
+	} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	for _, word := range []string{"系统之家", "系统下载", "软件下载", "windows iso", ".iso", "ghost系统", "原版系统", "win10下载", "win11下载"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func videoOrDrama(host, blob string) bool {
+	for _, domain := range []string{"iqiyi.com", "youku.com", "v.qq.com", "mgtv.com", "le.com", "pptv.com", "tudou.com", "bilibili.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	for _, word := range []string{"电视剧", "在线观看", "韩剧", "美剧", "日剧", "追剧", "全集在线", "影视"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func appStore(host, blob string) bool {
+	for _, domain := range []string{"apps.apple.com", "itunes.apple.com", "play.google.com", "sj.qq.com", "wandoujia.com", "appgallery.huawei.com", "android.myapp.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	for _, word := range []string{"应用宝", "应用商店", "豌豆荚"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	return false
+}
+
 func junkPage(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

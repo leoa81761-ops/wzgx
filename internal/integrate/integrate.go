@@ -97,11 +97,12 @@ func Sections() []Section {
 			{Key: "webhook_url", Label: "Webhook 地址", Secret: true},
 		}},
 		{Key: "search", Title: "备用检索", Fields: []Field{
+			{Key: "provider", Label: "检索接口（bocha / tavily / bing），填了密钥就优先用"},
+			{Key: "api_url", Label: "接口地址，留空则用该接口的默认地址"},
+			{Key: "api_key", Label: "接口密钥", Secret: true},
 			{Key: "primary_url", Label: "必应 HTML（国内默认可达）"},
 			{Key: "backup_url", Label: "搜狗 HTML"},
 			{Key: "baidu_url", Label: "百度 HTML"},
-			{Key: "api_url", Label: "可选接口，例如博查"},
-			{Key: "api_key", Label: "接口密钥", Secret: true},
 		}},
 	}
 }
@@ -321,6 +322,9 @@ func Apply(base config.Settings, docs map[string]Doc) config.Settings {
 	if v := set("search", "api_key"); v != "" {
 		out.ResearchSearchKey = v
 	}
+	if v := set("search", "provider"); v != "" {
+		out.ResearchSearchProvider = strings.ToLower(v)
+	}
 	out = WithCallbackDefaults(out)
 	if doc, ok := docs["register"]; ok {
 		if v, exists := doc.Plain["verify"]; exists {
@@ -429,6 +433,8 @@ func EnvValue(base config.Settings, section, key string) string {
 		return base.ResearchSearchAPI
 	case "search.api_key":
 		return base.ResearchSearchKey
+	case "search.provider":
+		return base.ResearchSearchProvider
 	default:
 		return ""
 	}
@@ -510,6 +516,12 @@ func validate(section, key, value string) error {
 	case "sms.provider":
 		if value != "aliyun" && value != "tencent" {
 			return fmt.Errorf("短信服务商只能是 aliyun 或 tencent")
+		}
+	case "search.provider":
+		switch strings.ToLower(value) {
+		case "bocha", "tavily", "bing":
+		default:
+			return fmt.Errorf("检索接口只能是 bocha、tavily 或 bing")
 		}
 	case "wechat_component.aes_key":
 		if len(value) != 43 {
@@ -601,7 +613,8 @@ func Ready(section string, cfg config.Settings) bool {
 	case "public":
 		return strings.TrimSpace(cfg.PublicBaseURL) != ""
 	case "search":
-		return strings.TrimSpace(cfg.ResearchBackupSearch) != "" || (strings.TrimSpace(cfg.ResearchSearchAPI) != "" && strings.TrimSpace(cfg.ResearchSearchKey) != "")
+		keyed := strings.TrimSpace(cfg.ResearchSearchKey) != "" && (strings.TrimSpace(cfg.ResearchSearchAPI) != "" || strings.TrimSpace(cfg.ResearchSearchProvider) != "")
+		return strings.TrimSpace(cfg.ResearchBackupSearch) != "" || keyed
 	default:
 		return false
 	}

@@ -162,7 +162,11 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 			if source == nil {
 				continue
 			}
-			parts = append(parts, `<p style="`+theme["src"]+`">`+html.EscapeString(sourceLine(i+1, source))+`</p>`)
+			line := sourceLine(i+1, source)
+			if heading == "经验分享" {
+				line = experienceSourceLine(source)
+			}
+			parts = append(parts, `<p style="`+theme["src"]+`">`+html.EscapeString(line)+`</p>`)
 		}
 	}
 	footnotes := asList(article["footnotes"])
@@ -348,6 +352,28 @@ func InjectImage(htmlText, imageURL string) string {
 		return htmlText[:i+len(marker)] + tag + htmlText[i+len(marker):]
 	}
 	return tag + htmlText
+}
+
+func experienceSourceLine(source map[string]any) string {
+	name := strings.TrimSpace(asString(source["name"]))
+	note := strings.TrimSpace(asString(source["note"]))
+	if note == "" {
+		note = strings.TrimSpace(asString(source["title"]))
+	}
+	if utf8.RuneCountInString(note) > 40 {
+		note = string([]rune(note)[:40])
+	}
+	var bits []string
+	if name != "" {
+		bits = append(bits, name)
+	}
+	if note != "" && note != name {
+		bits = append(bits, note)
+	}
+	if len(bits) == 0 {
+		return strings.TrimSpace(asString(source["url"]))
+	}
+	return strings.Join(bits, " ")
 }
 
 func sourceLine(index int, source map[string]any) string {

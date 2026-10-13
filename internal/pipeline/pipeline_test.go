@@ -176,6 +176,9 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 			}
 			writeCited(w, "参见 [编造](https://made-up.invalid/gb)。", "https://www.example.com/notice")
 			return
+		case "来源判断":
+			writeSourceJudge(w, req)
+			return
 		case "大纲":
 			data = map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"}
 		default:
@@ -211,7 +214,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 		t.Fatal("empty tag")
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") || strings.Contains(articles[0].BodyHTML, "made-up") {
+	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") || strings.Contains(articles[0].BodyHTML, "made-up") {
 		html := ""
 		if len(articles) > 0 {
 			html = articles[0].BodyHTML
@@ -256,6 +259,8 @@ func TestResearchRetriesWhenEmpty(t *testing.T) {
 				return
 			}
 			writeCited(w, "参见近期通知，正文不写网址。", "https://www.example.com/notice")
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -271,7 +276,7 @@ func TestResearchRetriesWhenEmpty(t *testing.T) {
 		t.Fatalf("research calls %d", researchCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
+	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "www.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
 		t.Fatal(articles, err)
 	}
 }
@@ -368,23 +373,23 @@ func TestResearchStopsAfterOneRetry(t *testing.T) {
 	if err != nil || task == nil || traceStage(task.ModelTrace, "research")["ok"] != false {
 		t.Fatalf("%#v %v", task, err)
 	}
-	if article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "无参考来源") || !strings.Contains(article.DeliveryNote, "未写入") {
-		t.Fatalf("%s %s %s", article.Status, article.DraftMediaID, article.DeliveryNote)
+	if article.Status != "in_draft" || article.DraftMediaID == "" || strings.Contains(article.DeliveryNote, "无参考来源") || strings.Contains(article.BodyHTML, "参考来源") || strings.Contains(article.BodyHTML, "[1]") {
+		t.Fatalf("%s %s %s %s", article.Status, article.DraftMediaID, article.DeliveryNote, article.BodyHTML)
 	}
 	notes, _, err := st.ListNotifications(ctx, user.ID, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var held bool
+	var drafted bool
 	for _, note := range notes {
-		if strings.Contains(note.Body, "草稿箱") {
-			t.Fatal(note.Title, note.Body)
+		if note.Title == "有一篇稿没有写入草稿" {
+			t.Fatalf("%#v", notes)
 		}
-		if note.Title == "有一篇稿没有写入草稿" && strings.Contains(note.Body, "未写入") {
-			held = true
+		if note.Title == "有一篇稿已在草稿箱" {
+			drafted = true
 		}
 	}
-	if !held {
+	if !drafted {
 		t.Fatalf("%#v", notes)
 	}
 }
@@ -425,6 +430,8 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 				t.Errorf("short prompt %s", blob)
 			}
 			writeCited(w, "住建部有公开说明。", "https://www.mohurd.gov.cn/gongkai/1")
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -553,6 +560,8 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 				return
 			}
 			writeCited(w, "官方页面。", "https://www.gov.cn/zhengce/2024")
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -577,7 +586,7 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := articles[0].BodyHTML
-	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "www.gov.cn") || strings.Contains(html, "gov点cn") || strings.Contains(html, "xilu") || strings.Contains(html, "fyun") {
+	if !strings.Contains(html, "经验分享") || !strings.Contains(html, "www.gov.cn") || strings.Contains(html, "gov点cn") || strings.Contains(html, "xilu") || strings.Contains(html, "fyun") {
 		t.Fatal(html)
 	}
 }
@@ -599,6 +608,8 @@ func TestResearchReadsChatCitations(t *testing.T) {
 				return
 			}
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到公开资料，正文不写网址。"}}],"citations":[{"url":"https://www.gov.cn/zhengce/2024/elv","title":"弱电入门公开说明","snippet":"弱电入门要先看公开说明"},{"url":"https://openstd.samr.gov.cn/std/1","title":"弱电入门综合布线标准","snippet":"弱电入门的综合布线标准"}]}`))
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -635,6 +646,8 @@ func TestResearchRelaxesAllowlist(t *testing.T) {
 		case "资料检索":
 			researchCalls++
 			writeCited(w, "参见 [媒体](https://news.example.com/a)。", "https://news.example.com/a")
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -654,7 +667,7 @@ func TestResearchRelaxesAllowlist(t *testing.T) {
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if !strings.Contains(articles[0].BodyHTML, "参考来源") || !strings.Contains(articles[0].BodyHTML, "news.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
+	if !strings.Contains(articles[0].BodyHTML, "经验分享") || !strings.Contains(articles[0].BodyHTML, "news.example.com") || strings.Contains(articles[0].BodyHTML, "example点com") {
 		t.Fatal(articles[0].BodyHTML)
 	}
 	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
@@ -679,6 +692,8 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 				return
 			}
 			writeCited(w, "媒体。", "https://news.example.com/a")
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -699,7 +714,7 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := articles[0].BodyHTML
-	if !strings.Contains(html, "参考来源") || !strings.Contains(html, "news.example.com") || strings.Contains(html, "example点com") || strings.Contains(html, "xilu") {
+	if !strings.Contains(html, "经验分享") || !strings.Contains(html, "news.example.com") || strings.Contains(html, "example点com") || strings.Contains(html, "xilu") {
 		t.Fatal(html)
 	}
 	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
@@ -1545,6 +1560,37 @@ func seedPlan(t *testing.T, st *store.Store, email string) (*model.User, *model.
 	return user, account, plan
 }
 
+func writeSourceJudge(w http.ResponseWriter, req map[string]any) {
+	payload := map[string]any{}
+	msgs, _ := req["messages"].([]any)
+	if len(msgs) > 0 {
+		last, _ := msgs[len(msgs)-1].(map[string]any)
+		content, _ := last["content"].(string)
+		_ = json.Unmarshal([]byte(content), &payload)
+	}
+	var items []any
+	cands, _ := payload["candidates"].([]any)
+	for i, raw := range cands {
+		row, _ := raw.(map[string]any)
+		fact := ""
+		if row != nil {
+			fact, _ = row["title"].(string)
+			if fact == "" {
+				fact, _ = row["snippet"].(string)
+			}
+		}
+		facts := []any{}
+		if fact != "" {
+			facts = []any{fact}
+		}
+		items = append(items, map[string]any{"index": i + 1, "score": 3, "facts": facts})
+	}
+	if items == nil {
+		items = []any{}
+	}
+	writeChoice(w, map[string]any{"items": items})
+}
+
 func writeCited(w http.ResponseWriter, content string, citations ...string) {
 	payload := map[string]any{
 		"choices": []any{map[string]any{"message": map[string]any{"content": content}}},
@@ -1717,45 +1763,38 @@ func traceStage(rows []map[string]any, stage string) map[string]any {
 	return map[string]any{}
 }
 
-func TestRankKeepsUntitledAndPartialSources(t *testing.T) {
+func TestHardDropIgnoresTermOverlap(t *testing.T) {
 	_, kept, dropped, _ := takeSources(t.Context(), nil, "笔记", []map[string]any{
 		{"title": "", "snippet": "综合布线施工前要核对材料清单", "url": "https://www.mohurd.gov.cn/gongkai/untitled"},
-		{"title": "", "snippet": "机房验收记录里写了编号", "url": "https://www.gov.cn/zhengce/accept"},
 		{"title": "办公室网络布线的现场记录", "snippet": "线槽先看清楚再放线", "url": "https://www.example.com/office"},
-		{"title": "综合布线系统工程设计规范节选", "url": "https://www.gov.cn/zhengce/std"},
-		{"title": "验收要看的公开说明", "url": "https://www.people.com.cn/note"},
 		{"title": "奶奶的养生茶", "url": "https://www.example.com/tea"},
 		{"title": "", "url": "https://www.example.com/blank"},
-		{"title": "市场监管总局发出合规提示", "url": "https://www.samr.gov.cn/xw/zj/art/1.html"},
+		{"title": "综合布线验收 Windows ISO 系统之家", "url": "https://www.xitongzhijia.net/win10.iso"},
+		{"title": "综合布线验收电视剧全集在线观看", "url": "https://www.iqiyi.com/v/1"},
+		{"title": "综合布线验收", "url": "https://apps.apple.com/app/id1"},
 		{"title": "PPT模板下载", "url": "https://www.1ppt.com/moban/1"},
 		{"title": "弱电验收词典", "url": "https://www.json.cn/ci"},
 		{"title": "家里（汉语词语）_百度百科", "url": "https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C"},
 		{"title": "弱电验收检索", "url": "https://std.samr.gov.cn/search/orgOthers?q=1"},
 	}, content.DefaultSourcePolicy(), "弱电智能化 综合布线验收")
-	if len(kept) < 3 || len(kept) > 6 {
-		t.Fatal(len(kept), kept, dropped)
-	}
 	seen := map[string]bool{}
 	for _, row := range kept {
-		url := str(row["url"])
-		seen[url] = true
-		if score, _ := row["rank_score"].(int); score < sourceFloor {
-			t.Fatal(row)
-		}
+		seen[str(row["url"])] = true
 	}
 	for _, url := range []string{
 		"https://www.mohurd.gov.cn/gongkai/untitled",
-		"https://www.gov.cn/zhengce/accept",
 		"https://www.example.com/office",
+		"https://www.example.com/tea",
 	} {
 		if !seen[url] {
 			t.Fatal("missing", url, kept, dropped)
 		}
 	}
 	for _, url := range []string{
-		"https://www.example.com/tea",
 		"https://www.example.com/blank",
-		"https://www.samr.gov.cn/xw/zj/art/1.html",
+		"https://www.xitongzhijia.net/win10.iso",
+		"https://www.iqiyi.com/v/1",
+		"https://apps.apple.com/app/id1",
 		"https://www.1ppt.com/moban/1",
 		"https://www.json.cn/ci",
 		"https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C",
@@ -1764,6 +1803,48 @@ func TestRankKeepsUntitledAndPartialSources(t *testing.T) {
 		if seen[url] {
 			t.Fatal("kept junk", url, kept)
 		}
+	}
+}
+
+func TestJudgeKeepsRelevantFactsOnly(t *testing.T) {
+	sources := []map[string]any{
+		{"title": "综合布线验收说明", "snippet": "施工前要核对材料清单", "url": "https://www.mohurd.gov.cn/a"},
+		{"title": "综合布线现场记录", "snippet": "线槽先看清楚", "url": "https://www.example.com/office"},
+		{"title": "奶奶的养生茶", "url": "https://www.example.com/tea"},
+	}
+	items := []any{
+		map[string]any{"index": float64(1), "score": float64(3), "facts": []any{"施工前要核对材料清单"}},
+		map[string]any{"index": float64(2), "score": float64(2), "facts": []any{"线槽先看清楚"}},
+		map[string]any{"index": float64(3), "score": float64(1), "facts": []any{"茶"}},
+	}
+	kept, dropped := applyJudgeScores(sources, items)
+	if len(kept) != 2 {
+		t.Fatal(kept, dropped)
+	}
+	if str(kept[0]["url"]) != "https://www.mohurd.gov.cn/a" {
+		t.Fatal(kept)
+	}
+	facts, _ := kept[0]["facts"].([]any)
+	if len(facts) != 1 || facts[0] != "施工前要核对材料清单" {
+		t.Fatal(kept[0])
+	}
+	sheet := factSheet([]any{kept[0], kept[1]})
+	if !strings.Contains(sheet, "1. 综合布线验收说明") || !strings.Contains(sheet, "施工前要核对材料清单") || !strings.Contains(sheet, "2. 综合布线现场记录") {
+		t.Fatal(sheet)
+	}
+	gateway := llm.NewGateway(true, nil)
+	judged, extra, _ := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
+		Name: "判断", Protocol: "openai", BaseURL: "mock://", Model: "grok-chat-fast",
+	}}, "弱电智能化 综合布线验收", sources)
+	seen := map[string]bool{}
+	for _, row := range judged {
+		seen[str(row["url"])] = true
+		if len(asList(row["facts"])) == 0 {
+			t.Fatal("missing facts", row)
+		}
+	}
+	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.example.com/office"] || seen["https://www.example.com/tea"] {
+		t.Fatal(judged, extra)
 	}
 }
 
@@ -1797,6 +1878,30 @@ func TestUntitledSourcesUseFetchedTitle(t *testing.T) {
 	}
 }
 
+func TestBackupSearchUsesConfiguredAPIFirst(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		if r.URL.Path == "/html" {
+			t.Fatal("html search ran before the api returned rows")
+		}
+		_, _ = w.Write([]byte(`{"results":[{"title":"综合布线验收说明","url":"https://www.gov.cn/api"}]}`))
+	}))
+	defer srv.Close()
+	gateway := llm.NewGateway(false, srv.Client())
+	gateway.SearchAPIProvider = "tavily"
+	gateway.SearchAPIKey = "tvly"
+	gateway.SearchAPIURL = srv.URL + "/tavily"
+	gateway.BackupSearchURL = srv.URL + "/html"
+	rows, engines, err := backupHTMLSearch(t.Context(), gateway, "综合布线验收")
+	if err != nil || len(rows) != 1 || rows[0]["url"] != "https://www.gov.cn/api" {
+		t.Fatal(rows, err, hits)
+	}
+	if len(hits) != 1 || hits[0] != "/tavily" || len(engines) != 1 {
+		t.Fatal(hits, engines)
+	}
+}
+
 func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
 	var query string
 	var searches int
@@ -1808,6 +1913,13 @@ func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
 	defer search.Close()
 	var researchCalls int
 	research := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		if stageOf(req) == "来源判断" {
+			writeSourceJudge(w, req)
+			return
+		}
 		researchCalls++
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到一条公开说明。"}}],"citations":[{"url":"https://www.mohurd.gov.cn/gongkai/1","title":"综合布线验收说明"}]}`))
 	}))
@@ -1938,6 +2050,8 @@ func TestResearchUsesWebSearchAfterModelFailure(t *testing.T) {
 			researchCalls++
 			w.WriteHeader(502)
 			_, _ = w.Write([]byte("bad gateway"))
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:

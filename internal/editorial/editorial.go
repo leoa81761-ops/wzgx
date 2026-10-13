@@ -1395,7 +1395,24 @@ func citationSourceText(source map[string]any) string {
 	if snippet == "" {
 		snippet = strings.TrimSpace(textOf(source["note"]))
 	}
-	return strings.TrimSpace(title + " " + snippet)
+	return strings.TrimSpace(title + " " + snippet + " " + factText(source["facts"]))
+}
+
+func factText(raw any) string {
+	switch items := raw.(type) {
+	case []string:
+		return strings.Join(items, " ")
+	case []any:
+		var parts []string
+		for _, item := range items {
+			if text := strings.TrimSpace(textOf(item)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return strings.TrimSpace(textOf(raw))
+	}
 }
 
 // ShapeCopy repairs formatting the model drops: a run-on with no sentence breaks,
