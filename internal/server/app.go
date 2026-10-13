@@ -92,6 +92,7 @@ func syncSearch(gateway *llm.Gateway, cfg config.Settings) {
 	gateway.BackupSearchBaidu = cfg.ResearchBackupSearchBaidu
 	gateway.SearchAPIURL = cfg.ResearchSearchAPI
 	gateway.SearchAPIKey = cfg.ResearchSearchKey
+	gateway.SearchAPIProvider = cfg.ResearchSearchProvider
 }
 
 func (a *App) deps() pipeline.Deps {

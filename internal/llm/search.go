@@ -30,9 +30,49 @@ var (
 )
 
 // SearchTarget is one backup search endpoint. An API key selects the JSON provider.
+// Provider is bocha, tavily, or bing. An empty provider with a key stays on the Bocha-shaped POST.
 type SearchTarget struct {
-	URL    string
-	APIKey string
+	URL      string
+	APIKey   string
+	Provider string
+}
+
+// ConfiguredSearch is the API target when a key is set. The provider defaults to Bocha.
+// A known provider with a blank URL uses DefaultSearchEndpoint.
+func ConfiguredSearch(provider, endpoint, key string) (SearchTarget, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return SearchTarget{}, false
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	endpoint = strings.TrimSpace(endpoint)
+	if provider == "" && endpoint == "" {
+		return SearchTarget{}, false
+	}
+	if provider == "" {
+		provider = "bocha"
+	}
+	if endpoint == "" {
+		endpoint = DefaultSearchEndpoint(provider)
+	}
+	if endpoint == "" {
+		return SearchTarget{}, false
+	}
+	return SearchTarget{URL: endpoint, APIKey: key, Provider: provider}, true
+}
+
+// DefaultSearchEndpoint is the documented URL for a provider when the admin leaves the address blank.
+func DefaultSearchEndpoint(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "tavily":
+		return "https://api.tavily.com/search"
+	case "bing":
+		return "https://api.bing.microsoft.com/v7.0/search"
+	case "bocha":
+		return "https://api.bochaai.com/v1/web-search"
+	default:
+		return ""
+	}
 }
 
 // SearchWeb is the non-model backup when the research model returns 502 or no text.
@@ -144,7 +184,7 @@ func SearchChainLogged(ctx context.Context, client *http.Client, targets []Searc
 		var rows []map[string]any
 		var err error
 		if strings.TrimSpace(target.APIKey) != "" {
-			rows, err = SearchAPI(ctx, client, target.URL, target.APIKey, query)
+			rows, err = SearchProvider(ctx, client, target, query)
 		} else {
 			rows, err = SearchWeb(ctx, client, target.URL, query)
 		}
@@ -181,24 +221,69 @@ func searchEngineName(target SearchTarget) string {
 
 // SearchAPI calls an optional key-based search such as Bocha.
 func SearchAPI(ctx context.Context, client *http.Client, endpoint, apiKey, query string) ([]map[string]any, error) {
-	endpoint = strings.TrimSpace(endpoint)
+	return SearchProvider(ctx, client, SearchTarget{URL: endpoint, APIKey: apiKey, Provider: "bocha"}, query)
+}
+
+// SearchProvider calls Bocha, Tavily, or Bing. The request shape follows Provider.
+func SearchProvider(ctx context.Context, client *http.Client, target SearchTarget, query string) ([]map[string]any, error) {
 	query = strings.TrimSpace(query)
-	apiKey = strings.TrimSpace(apiKey)
-	if endpoint == "" || query == "" || apiKey == "" {
+	apiKey := strings.TrimSpace(target.APIKey)
+	if query == "" || apiKey == "" {
+		return nil, nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(target.Provider))
+	if provider == "" {
+		provider = "bocha"
+	}
+	endpoint := strings.TrimSpace(target.URL)
+	if endpoint == "" {
+		endpoint = DefaultSearchEndpoint(provider)
+	}
+	if endpoint == "" {
 		return nil, nil
 	}
 	if client == nil {
 		client = http.DefaultClient
 	}
-	payload, _ := json.Marshal(map[string]any{"query": query, "count": 5, "summary": true})
 	callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
-	if err != nil {
-		return nil, err
+	var req *http.Request
+	var err error
+	switch provider {
+	case "tavily":
+		payload, _ := json.Marshal(map[string]any{"api_key": apiKey, "query": query, "max_results": 5})
+		req, err = http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+	case "bing":
+		parsed, parseErr := url.Parse(endpoint)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		values := parsed.Query()
+		if values.Get("q") == "" {
+			values.Set("q", query)
+		}
+		if values.Get("count") == "" {
+			values.Set("count", "5")
+		}
+		parsed.RawQuery = values.Encode()
+		req, err = http.NewRequestWithContext(callCtx, http.MethodGet, parsed.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
+	default:
+		payload, _ := json.Marshal(map[string]any{"query": query, "count": 5, "summary": true})
+		req, err = http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "gonghao-research/1.0")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -279,8 +364,11 @@ func ParseSearchBody(body []byte) []map[string]any {
 
 func parseSearchJSON(body []byte) []map[string]any {
 	var wrapped struct {
-		Results []map[string]any `json:"results"`
-		Data    struct {
+		Results  []map[string]any `json:"results"`
+		WebPages struct {
+			Value []map[string]any `json:"value"`
+		} `json:"webPages"`
+		Data struct {
 			WebPages struct {
 				Value []map[string]any `json:"value"`
 			} `json:"webPages"`
@@ -291,6 +379,8 @@ func parseSearchJSON(body []byte) []map[string]any {
 		list = wrapped.Results
 	} else if json.Unmarshal(body, &wrapped) == nil && len(wrapped.Data.WebPages.Value) > 0 {
 		list = wrapped.Data.WebPages.Value
+	} else if json.Unmarshal(body, &wrapped) == nil && len(wrapped.WebPages.Value) > 0 {
+		list = wrapped.WebPages.Value
 	} else if json.Unmarshal(body, &list) != nil {
 		return nil
 	}
@@ -315,6 +405,9 @@ func parseSearchJSON(body []byte) []map[string]any {
 		snippet, _ := row["snippet"].(string)
 		if snippet == "" {
 			snippet, _ = row["summary"].(string)
+		}
+		if snippet == "" {
+			snippet, _ = row["content"].(string)
 		}
 		item := map[string]any{"url": raw, "name": name, "title": strings.TrimSpace(title), "source_type": "web"}
 		if text := strings.TrimSpace(snippet); text != "" {

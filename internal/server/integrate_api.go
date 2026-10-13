@@ -361,8 +361,8 @@ func (a *App) integrationView(ctx context.Context, docs map[string]integrate.Doc
 
 func searchTargets(cfg config.Settings) []llm.SearchTarget {
 	var out []llm.SearchTarget
-	if strings.TrimSpace(cfg.ResearchSearchAPI) != "" && strings.TrimSpace(cfg.ResearchSearchKey) != "" {
-		out = append(out, llm.SearchTarget{URL: cfg.ResearchSearchAPI, APIKey: cfg.ResearchSearchKey})
+	if target, ok := llm.ConfiguredSearch(cfg.ResearchSearchProvider, cfg.ResearchSearchAPI, cfg.ResearchSearchKey); ok {
+		out = append(out, target)
 	}
 	for _, raw := range []string{cfg.ResearchBackupSearch, cfg.ResearchBackupSearchAlt, cfg.ResearchBackupSearchBaidu} {
 		if strings.TrimSpace(raw) != "" {

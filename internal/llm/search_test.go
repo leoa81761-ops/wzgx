@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,6 +34,48 @@ func TestParseSearchBodyReadsJSONAndHTML(t *testing.T) {
 	bocha := ParseSearchBody([]byte(`{"data":{"webPages":{"value":[{"name":"弱电验收","url":"https://www.gov.cn/b","snippet":"公开说明"}]}}}`))
 	if len(bocha) != 1 || bocha[0]["url"] != "https://www.gov.cn/b" || bocha[0]["snippet"] != "公开说明" {
 		t.Fatal(bocha)
+	}
+}
+
+func TestSearchProvidersUseTheirOwnRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tavily":
+			if r.Method != http.MethodPost {
+				t.Errorf("tavily method %s", r.Method)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["api_key"] != "tvly" || body["query"] != "综合布线" {
+				t.Fatalf("%#v", body)
+			}
+			_, _ = w.Write([]byte(`{"results":[{"title":"验收","url":"https://www.gov.cn/t","content":"核对材料"}]}`))
+		case "/bing":
+			if r.Method != http.MethodGet || r.Header.Get("Ocp-Apim-Subscription-Key") != "bing-key" || r.URL.Query().Get("q") != "综合布线" {
+				t.Fatalf("%s %s %s", r.Method, r.Header.Get("Ocp-Apim-Subscription-Key"), r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"webPages":{"value":[{"name":"布线","url":"https://www.mohurd.gov.cn/b","snippet":"公开说明"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	tavily, err := SearchProvider(context.Background(), srv.Client(), SearchTarget{URL: srv.URL + "/tavily", APIKey: "tvly", Provider: "tavily"}, "综合布线")
+	if err != nil || len(tavily) != 1 || tavily[0]["url"] != "https://www.gov.cn/t" || tavily[0]["snippet"] != "核对材料" {
+		t.Fatal(tavily, err)
+	}
+	bing, err := SearchProvider(context.Background(), srv.Client(), SearchTarget{URL: srv.URL + "/bing", APIKey: "bing-key", Provider: "bing"}, "综合布线")
+	if err != nil || len(bing) != 1 || bing[0]["url"] != "https://www.mohurd.gov.cn/b" || bing[0]["snippet"] != "公开说明" {
+		t.Fatal(bing, err)
+	}
+	target, ok := ConfiguredSearch("bing", "", "key")
+	if !ok || target.Provider != "bing" || target.URL != "https://api.bing.microsoft.com/v7.0/search" {
+		t.Fatal(target, ok)
+	}
+	if _, ok := ConfiguredSearch("", "", "key"); ok {
+		t.Fatal("key alone is not a provider")
 	}
 }
 

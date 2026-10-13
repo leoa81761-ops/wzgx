@@ -1506,6 +1506,18 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			tokens += completion.PromptTokens + completion.CompletionTokens
 			trace = append(trace, traceRows("research", completion)...)
 		}
+		if urlCount(researchSources) >= 2 {
+			base["writing_mode"] = "sourced"
+			sheet := factSheet(researchSources)
+			base["fact_sheet"] = sheet
+			if sheet != "" {
+				base["research_notes"] = sheet
+			}
+		} else {
+			base["writing_mode"] = "experience"
+			base["fact_sheet"] = ""
+			delete(base, "research_notes")
+		}
 	}
 	noDatedNews := false
 	if usingColumn && columns.NormalizeStructure(picked.Structure) == "news" && !sourcesDated(researchSources) {
@@ -1659,18 +1671,14 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if usingColumn {
 		draft = quality.AlignStructure(picked.Structure, draft)
 	}
-	draft = editorial.SupportCitations(draft)
-	draft = editorial.CiteSupported(draft)
+	experience := str(base["writing_mode"]) == "experience"
+	if experience {
+		draft = stripCiteMarks(draft)
+	} else {
+		draft = editorial.SupportCitations(draft)
+	}
 	delete(draft, "_quality")
 	cited := citationMarks.MatchString(bodyPlain(draft))
-	if w.Tier != "free" && hadSources && !cited && strings.TrimSpace(w.CostNote) == "" {
-		added, citeTokens, citeTrace := addCitations(ctx, gateway, providers, draft, base)
-		draft = editorial.SupportCitations(added)
-		draft = editorial.CiteSupported(draft)
-		tokens += citeTokens
-		trace = append(trace, citeTrace...)
-		cited = citationMarks.MatchString(bodyPlain(draft))
-	}
 	if w.WordTarget > 0 && content.BodyRunes(draft) < w.WordTarget {
 		topped, topTokens, topTrace = topUpLength(ctx, gateway, providers, draft, base, w.WordTarget, w.CostNote)
 		draft = topped
@@ -1679,12 +1687,20 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if usingColumn {
 			draft = quality.AlignStructure(picked.Structure, draft)
 		}
-		draft = editorial.SupportCitations(draft)
-		draft = editorial.CiteSupported(draft)
+		if experience {
+			draft = stripCiteMarks(draft)
+		} else {
+			draft = editorial.SupportCitations(draft)
+		}
 		cited = citationMarks.MatchString(bodyPlain(draft))
 	}
 	uncited := false
-	if w.Tier != "free" && hadSources {
+	if experience {
+		if !listedHaveURL(asList(draft["sources"])) && listedHaveURL(researchSources) {
+			draft["sources"] = researchSources
+		}
+		draft["source_heading"] = "经验分享"
+	} else if w.Tier != "free" && hadSources {
 		if cited {
 			saved := append([]any{}, asList(draft["sources"])...)
 			if !applyCitations(draft) {
@@ -1697,7 +1713,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			uncited = true
 		}
 	}
-	missingSources := w.Tier != "free" && searched && !hadSources
+	missingSources := w.Tier != "free" && searched && !hadSources && !experience
 	noFacts := missingSources
 	if usingColumn && columns.NormalizeStructure(picked.Structure) != "custom" {
 		offStructure = !quality.StructureOK(columns.NormalizeStructure(picked.Structure), draftParagraphs(draft))
@@ -2397,12 +2413,6 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	client := httpClient(gateway)
 	if err1 == nil {
 		notes, sources, dropped, relaxed = takeSources(ctx, client, first.Content, first.ResearchSources, policy, topic)
-		if len(sources) >= 2 {
-			sources = preferMaps(sources, payload)
-			stampSourceTrace(&first, sources, dropped, relaxed, len(first.ResearchSources), nil)
-			stripRankScores(sources)
-			return notes, anySources(sources), first, nil
-		}
 	}
 	short := cloneMap(payload)
 	short["query_mode"] = "short"
@@ -2485,6 +2495,16 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			}
 		}
 	}
+	if len(sources) > 0 {
+		judged, extra, judgeCompletion := judgeAndKeep(ctx, gateway, providers, topic, sources)
+		dropped = append(dropped, extra...)
+		sources = judged
+		merged.PromptTokens += judgeCompletion.PromptTokens
+		merged.CompletionTokens += judgeCompletion.CompletionTokens
+		if len(judgeCompletion.Attempts) > 0 {
+			merged.Attempts = append(merged.Attempts, judgeCompletion.Attempts...)
+		}
+	}
 	if sourcesHaveURL(sources) || err2 == nil || err1 == nil {
 		if merged.Model == "" {
 			merged.ProviderID = first.ProviderID
@@ -2542,7 +2562,10 @@ func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string) (
 		return nil, nil, nil
 	}
 	var targets []llm.SearchTarget
-	for _, raw := range []string{gateway.BackupSearchURL, gateway.BackupSearchAlt} {
+	if target, ok := llm.ConfiguredSearch(gateway.SearchAPIProvider, gateway.SearchAPIURL, gateway.SearchAPIKey); ok {
+		targets = append(targets, target)
+	}
+	for _, raw := range []string{gateway.BackupSearchURL, gateway.BackupSearchAlt, gateway.BackupSearchBaidu} {
 		if strings.TrimSpace(raw) != "" {
 			targets = append(targets, llm.SearchTarget{URL: raw})
 		}
@@ -2822,24 +2845,19 @@ func enrichSources(ctx context.Context, client *http.Client, sources []map[strin
 	}
 }
 
-// sourceFloor is the lowest overlap that can be kept. One shared topic term clears it.
-// Authority alone does not, so an unrelated gov.cn page stays out without a hard phrase rule.
-const sourceFloor = 2
-
 const sourceKeepMax = 6
 
-func filterSourceQuality(sources []map[string]any, topic string) (kept []map[string]any, dropped []map[string]any) {
-	type scored struct {
-		source map[string]any
-		score  int
-	}
-	var ranked []scored
+const judgeMinScore = 2
+
+// filterSourceQuality hard-drops pages that cannot be a source. Relevance is the judge's job.
+func filterSourceQuality(sources []map[string]any, _ string) (kept []map[string]any, dropped []map[string]any) {
 	for _, source := range sources {
 		if source == nil {
 			continue
 		}
 		raw := str(source["url"])
 		title := strings.TrimSpace(str(source["title"]))
+		snippet := strings.TrimSpace(str(source["snippet"]) + " " + str(source["note"]) + " " + str(source["fetched_meta"]))
 		if templatePage(raw, title+" "+str(source["name"])) {
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "PPT模板或文库"})
 			continue
@@ -2852,13 +2870,112 @@ func filterSourceQuality(sources []map[string]any, topic string) (kept []map[str
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "搜索结果页"})
 			continue
 		}
-		score, overlap := scoreSource(source, topic)
-		if overlap < sourceFloor || score < sourceFloor {
-			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": score, "reason": "低于分数线"})
+		if reason := content.OffTopicPage(raw, title+" "+snippet); reason != "" {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": reason})
 			continue
 		}
-		source["rank_score"] = score
-		ranked = append(ranked, scored{source: source, score: score})
+		if title == "" && strings.TrimSpace(snippet) == "" {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "没有标题"})
+			continue
+		}
+		kept = append(kept, source)
+	}
+	return kept, dropped
+}
+
+func stripRankScores(sources []map[string]any) {
+	for _, source := range sources {
+		if source != nil {
+			delete(source, "rank_score")
+		}
+	}
+}
+
+func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic string, sources []map[string]any) ([]map[string]any, []map[string]any, llm.Completion) {
+	if len(sources) == 0 {
+		return nil, nil, llm.Completion{}
+	}
+	if gateway == nil || len(providers) == 0 {
+		return nil, dropAll(sources, "没有判断模型"), llm.Completion{}
+	}
+	candidates := make([]any, 0, len(sources))
+	for i, source := range sources {
+		candidates = append(candidates, map[string]any{
+			"index": i + 1, "title": str(source["title"]), "snippet": sourceSnippet(source), "url": str(source["url"]),
+		})
+	}
+	payload := map[string]any{"topic": topic, "candidates": candidates}
+	data, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("来源判断", payload), llm.StageSchema("来源判断"), validateJudge)
+	if err != nil || data == nil {
+		return nil, dropAll(sources, "来源判断失败"), completion
+	}
+	kept, dropped := applyJudgeScores(sources, asList(data["items"]))
+	return kept, dropped, completion
+}
+
+func validateJudge(data map[string]any) (map[string]any, error) {
+	if _, ok := data["items"].([]any); !ok {
+		return nil, errors.New("来源判断没有返回 items")
+	}
+	return data, nil
+}
+
+func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]any, dropped []map[string]any) {
+	type rating struct {
+		score int
+		facts []any
+	}
+	byIndex := map[int]rating{}
+	for order, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item == nil {
+			continue
+		}
+		index := asInt(item["index"])
+		if _, present := item["index"]; !present || index <= 0 {
+			index = order + 1
+		}
+		score := asInt(item["score"])
+		if score < 0 {
+			score = 0
+		}
+		if score > 3 {
+			score = 3
+		}
+		var facts []any
+		for _, fact := range asList(item["facts"]) {
+			text := strings.TrimSpace(str(fact))
+			if text != "" {
+				facts = append(facts, text)
+			}
+		}
+		byIndex[index] = rating{score: score, facts: facts}
+	}
+	type scored struct {
+		source map[string]any
+		score  int
+	}
+	var ranked []scored
+	for i, source := range sources {
+		if source == nil {
+			continue
+		}
+		rate, ok := byIndex[i+1]
+		if !ok || rate.score < judgeMinScore {
+			score := 0
+			if ok {
+				score = rate.score
+			}
+			dropped = append(dropped, map[string]any{
+				"url": str(source["url"]), "title": str(source["title"]), "score": score, "reason": "相关性不足",
+			})
+			continue
+		}
+		if len(rate.facts) > 0 {
+			source["facts"] = rate.facts
+		}
+		source["rank_score"] = rate.score
+		ranked = append(ranked, scored{source: source, score: rate.score})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
 		return ranked[i].score > ranked[j].score
@@ -2878,108 +2995,147 @@ func filterSourceQuality(sources []map[string]any, topic string) (kept []map[str
 	return kept, dropped
 }
 
-func scoreSource(source map[string]any, topic string) (score, overlap int) {
-	title := strings.TrimSpace(str(source["title"]))
-	meta := strings.TrimSpace(str(source["snippet"]) + " " + str(source["note"]) + " " + str(source["fetched_meta"]))
-	blob := strings.TrimSpace(title + " " + meta + " " + str(source["url"]))
-	phrases := 0
-	for _, phrase := range topicPhrases(topic) {
-		if !strings.Contains(blob, phrase) {
-			continue
-		}
-		points := 3
-		if strings.Contains(title, phrase) {
-			points = 4
-		}
-		overlap += points
-		phrases++
-		if phrases >= 3 {
-			break
-		}
-	}
-	terms := 0
-	seen := map[string]bool{}
-	for _, term := range topicTerms(topic) {
-		if seen[term] || !strings.Contains(blob, term) {
-			continue
-		}
-		seen[term] = true
-		overlap += 2
-		terms++
-		if terms >= 4 {
-			break
-		}
-	}
-	if content.SharesStandardNumber(topic, blob) {
-		overlap += 6
-	}
-	score = overlap
-	if overlap > 0 && content.OfficialHost(str(source["url"])) {
-		score += 3
-	}
-	if strings.Contains(title, "百科") || strings.Contains(title, "词典") || strings.Contains(title, "搜索") {
-		score -= 4
-	}
-	if score < 0 {
-		score = 0
-	}
-	return score, overlap
-}
-
-func stripRankScores(sources []map[string]any) {
+func dropAll(sources []map[string]any, reason string) []map[string]any {
+	var dropped []map[string]any
 	for _, source := range sources {
-		if source != nil {
-			delete(source, "rank_score")
-		}
-	}
-}
-
-func topicPhrases(topic string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, run := range hanRuns(topic) {
-		if len(run) < 4 {
+		if source == nil {
 			continue
 		}
-		for i := 0; i+4 <= len(run); i++ {
-			phrase := string(run[i : i+4])
-			if seen[phrase] || genericPhrase(phrase) {
-				continue
+		dropped = append(dropped, map[string]any{
+			"url": str(source["url"]), "title": str(source["title"]), "score": 0, "reason": reason,
+		})
+	}
+	return dropped
+}
+
+func sourceSnippet(source map[string]any) string {
+	text := strings.TrimSpace(str(source["snippet"]))
+	if text == "" {
+		text = strings.TrimSpace(str(source["note"]))
+	}
+	if text == "" {
+		text = strings.TrimSpace(str(source["fetched_meta"]))
+	}
+	return text
+}
+
+func factSheet(sources []any) string {
+	var b strings.Builder
+	n := 0
+	for _, raw := range sources {
+		source, _ := raw.(map[string]any)
+		if source == nil || strings.TrimSpace(str(source["url"])) == "" {
+			continue
+		}
+		n++
+		title := strings.TrimSpace(str(source["title"]))
+		if title == "" {
+			title = strings.TrimSpace(str(source["name"]))
+		}
+		if title == "" {
+			title = str(source["url"])
+		}
+		b.WriteString(itoa(n))
+		b.WriteString(". ")
+		b.WriteString(title)
+		b.WriteString("\n")
+		facts := factLines(source)
+		if len(facts) == 0 {
+			if text := sourceSnippet(source); text != "" {
+				facts = []string{text}
 			}
-			seen[phrase] = true
-			out = append(out, phrase)
+		}
+		for _, fact := range facts {
+			b.WriteString("- ")
+			b.WriteString(fact)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func factLines(source map[string]any) []string {
+	var out []string
+	for _, raw := range asList(source["facts"]) {
+		if text := strings.TrimSpace(str(raw)); text != "" {
+			out = append(out, text)
 		}
 	}
 	return out
 }
 
-func hanRuns(text string) [][]rune {
-	var out [][]rune
-	var buf []rune
-	flush := func() {
-		if len(buf) > 0 {
-			out = append(out, buf)
-			buf = nil
+func urlCount(sources []any) int {
+	n := 0
+	for _, raw := range sources {
+		source, _ := raw.(map[string]any)
+		if source != nil && strings.TrimSpace(str(source["url"])) != "" {
+			n++
 		}
 	}
-	for _, r := range text {
-		if r >= 0x4E00 && r <= 0x9FFF {
-			buf = append(buf, r)
+	return n
+}
+
+func stripCiteMarks(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, key := range []string{"title", "summary", "closing"} {
+		if text := str(draft[key]); text != "" {
+			draft[key] = citationMarks.ReplaceAllString(text, "")
+		}
+	}
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section == nil {
 			continue
 		}
-		flush()
+		if text := str(section["heading"]); text != "" {
+			section["heading"] = citationMarks.ReplaceAllString(text, "")
+		}
+		var paras []any
+		for _, item := range asList(section["paragraphs"]) {
+			paras = append(paras, citationMarks.ReplaceAllString(str(item), ""))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		if len(asList(section["list"])) > 0 {
+			var list []any
+			for _, item := range asList(section["list"]) {
+				list = append(list, citationMarks.ReplaceAllString(str(item), ""))
+			}
+			section["list"] = list
+		}
 	}
-	flush()
-	return out
+	return draft
 }
 
-func genericPhrase(text string) bool {
-	switch text {
-	case "国家标准", "标准公告", "住房城乡", "城乡建设", "市场监管", "监督管理", "正式发布", "关于发布", "关于废止", "有限公司":
-		return true
+func asInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
 	default:
-		return false
+		return 0
 	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [12]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 func topicTerms(topic string) []string {

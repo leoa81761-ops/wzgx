@@ -125,6 +125,8 @@ func TestUncitedSourcesStayOutOfTheArticle(t *testing.T) {
 			writeChoice(w, map[string]any{"title": "没有标引用", "angle": "今天就能做"})
 		case "资料检索":
 			writeCited(w, "官方页面。", "https://www.gov.cn/zhengce/2024")
+		case "来源判断":
+			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
@@ -152,7 +154,7 @@ func TestUncitedSourcesStayOutOfTheArticle(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.BodyHTML, "延伸阅读") || !strings.Contains(article.BodyHTML, "www.gov.cn") || strings.Contains(article.BodyHTML, "参考来源") || !strings.Contains(article.DeliveryNote, "没有引用") {
+	if article.Status != "in_draft" || article.DraftMediaID == "" || !strings.Contains(article.BodyHTML, "经验分享") || !strings.Contains(article.BodyHTML, "www.gov.cn") || strings.Contains(article.BodyHTML, "参考来源") || strings.Contains(article.BodyHTML, "[1]") || strings.Contains(article.DeliveryNote, "没有引用") || strings.Contains(article.DeliveryNote, "无参考来源") {
 		t.Fatal(article.Status, article.DraftMediaID, article.DeliveryNote, article.BodyHTML)
 	}
 }

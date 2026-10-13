@@ -253,6 +253,41 @@ func TestInvalidMedia(t *testing.T) {
 	}
 }
 
+func TestUploadSurvivesCanceledParentAndRetries(t *testing.T) {
+	var uploads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/stable_token":
+			_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":7200}`))
+		case "/cgi-bin/material/add_material":
+			uploads++
+			if uploads == 1 {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					t.Fatal("hijack")
+				}
+				conn, _, err := hj.Hijack()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.Close()
+				return
+			}
+			_, _ = w.Write([]byte(`{"media_id":"thumb-1"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	client := NewLive("wx123", "sec", srv.URL, srv.Client(), NewTokenCache())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	thumb, err := client.UploadThumb(ctx, []byte("png"), "cover.png")
+	if err != nil || thumb != "thumb-1" || uploads != 2 {
+		t.Fatalf("thumb %s uploads %d err %v", thumb, uploads, err)
+	}
+}
+
 func TestImageContentTypeFollowsFilename(t *testing.T) {
 	if imageContentType("cover.jpg") != "image/jpeg" || imageContentType("cover.jpeg") != "image/jpeg" || imageContentType("cover.png") != "image/png" {
 		t.Fatal(imageContentType("cover.jpg"), imageContentType("cover.png"))

@@ -65,6 +65,7 @@ type Settings struct {
 	ResearchBackupSearchBaidu string
 	ResearchSearchAPI         string
 	ResearchSearchKey         string
+	ResearchSearchProvider    string
 	SMSProvider               string
 	SMSAccessKey              string
 	SMSAccessSecret           string
@@ -172,6 +173,7 @@ func Load() Settings {
 		ResearchBackupSearchBaidu: getenv("RESEARCH_BACKUP_SEARCH_BAIDU", "https://www.baidu.com/s"),
 		ResearchSearchAPI:         strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_API")),
 		ResearchSearchKey:         os.Getenv("RESEARCH_SEARCH_KEY"),
+		ResearchSearchProvider:    strings.ToLower(strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_PROVIDER"))),
 		SMSProvider:               strings.ToLower(strings.TrimSpace(os.Getenv("SMS_PROVIDER"))),
 		SMSAccessKey:              strings.TrimSpace(os.Getenv("SMS_ACCESS_KEY")),
 		SMSAccessSecret:           os.Getenv("SMS_ACCESS_SECRET"),

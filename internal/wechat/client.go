@@ -401,6 +401,7 @@ type LiveClient struct {
 	BaseURL         string
 	HTTP            *http.Client
 	Timeout         time.Duration
+	UploadTimeout   time.Duration
 	Cache           *TokenCache
 	RefreshToken    string
 	ComponentAppID  string
@@ -675,22 +676,70 @@ func (c *LiveClient) DraftCount(ctx context.Context) (int, error) {
 
 func (c *LiveClient) upload(ctx context.Context, path string, query map[string]string, image []byte, filename string) (map[string]any, error) {
 	var last error
-	for attempt := 0; attempt < 2; attempt++ {
-		token, err := c.token(ctx, attempt == 1)
-		if err != nil {
-			return nil, err
+	refresh := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(200 * time.Millisecond)
+			<-timer.C
 		}
-		data, err := c.postFile(ctx, path, token, query, image, filename)
+		callCtx, cancel := c.uploadContext(ctx)
+		token, err := c.token(callCtx, refresh)
+		if err != nil {
+			cancel()
+			last = err
+			refresh = false
+			if !retryUpload(err) || attempt == 2 {
+				return nil, err
+			}
+			continue
+		}
+		data, err := c.postFileOnce(callCtx, path, token, query, image, filename)
+		cancel()
 		if err == nil {
 			return data, nil
 		}
 		last = err
-		if !tokenExpired(err) || attempt == 1 {
+		if tokenExpired(err) {
+			c.Cache.Delete(c.key)
+			refresh = true
+			if attempt == 2 {
+				return nil, err
+			}
+			continue
+		}
+		refresh = false
+		if !retryUpload(err) || attempt == 2 {
 			return nil, err
 		}
-		c.Cache.Delete(c.key)
 	}
 	return nil, last
+}
+
+func (c *LiveClient) uploadContext(parent context.Context) (context.Context, context.CancelFunc) {
+	timeout := c.UploadTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), timeout)
+}
+
+func retryUpload(err error) bool {
+	if err == nil {
+		return false
+	}
+	if tokenExpired(err) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, word := range []string{"deadline", "timeout", "网络", "eof", "reset", "broken pipe", "temporarily", "connection refused", "i/o timeout"} {
+		if strings.Contains(msg, word) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *LiveClient) request(ctx context.Context, method, path string, body map[string]any, auth bool) (map[string]any, error) {
@@ -775,6 +824,10 @@ func imageContentType(filename string) string {
 func (c *LiveClient) postFile(ctx context.Context, path, token string, extra map[string]string, image []byte, filename string) (map[string]any, error) {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()
+	return c.postFileOnce(ctx, path, token, extra, image, filename)
+}
+
+func (c *LiveClient) postFileOnce(ctx context.Context, path, token string, extra map[string]string, image []byte, filename string) (map[string]any, error) {
 	if filename == "" {
 		filename = "image.png"
 	}
