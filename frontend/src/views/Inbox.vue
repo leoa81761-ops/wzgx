@@ -1,7 +1,7 @@
 <template>
   <div class="stack">
     <h1 style="font-size: 32px">通知</h1>
-    <p class="muted">生成失败、高风险未推送，以及没有参考来源的稿会记在这里。若管理员配置了通知地址，同一条也会外发。</p>
+    <p class="muted">生成失败、高风险未推送、没有参考来源的稿，以及 Tavily 密钥失效会记在这里。若管理员配置了通知地址，同一条也会外发。</p>
     <p v-if="error" class="banner">{{ error }}</p>
     <p v-if="!items.length" class="muted">暂无通知。</p>
     <article v-for="item in items" :key="item.id" class="card stack">

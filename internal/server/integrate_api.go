@@ -360,13 +360,22 @@ func (a *App) integrationView(ctx context.Context, docs map[string]integrate.Doc
 }
 
 func searchTargets(cfg config.Settings) []llm.SearchTarget {
-	var out []llm.SearchTarget
-	if target, ok := llm.ConfiguredSearch(cfg.ResearchSearchProvider, cfg.ResearchSearchAPI, cfg.ResearchSearchKey); ok {
-		out = append(out, target)
-	}
-	for _, raw := range []string{cfg.ResearchBackupSearch, cfg.ResearchBackupSearchAlt, cfg.ResearchBackupSearchBaidu} {
-		if strings.TrimSpace(raw) != "" {
-			out = append(out, llm.SearchTarget{URL: raw})
+	out := llm.PlanTargets(llm.ChainOptions{
+		SearxngURL:        cfg.SearxngURL,
+		PlatformTavilyKey: cfg.TavilyAPIKey,
+		PlatformTavilyURL: cfg.TavilyAPIURL,
+		Provider:          cfg.ResearchSearchProvider,
+		APIURL:            cfg.ResearchSearchAPI,
+		APIKey:            cfg.ResearchSearchKey,
+		Bing:              cfg.ResearchBackupSearch,
+		Sogou:             cfg.ResearchBackupSearchAlt,
+		Baidu:             cfg.ResearchBackupSearchBaidu,
+	})
+	guard := llm.NewSearxGuard()
+	guard.SetLimits(0, cfg.SearxngBreaker)
+	for i := range out {
+		if out[i].Provider == "searxng" {
+			out[i].Guard = guard
 		}
 	}
 	return out

@@ -1928,7 +1928,7 @@ func TestBackupSearchUsesConfiguredAPIFirst(t *testing.T) {
 	gateway.SearchAPIKey = "tvly"
 	gateway.SearchAPIURL = srv.URL + "/tavily"
 	gateway.BackupSearchURL = srv.URL + "/html"
-	rows, engines, err := backupHTMLSearch(t.Context(), gateway, "综合布线验收")
+	rows, engines, err := backupHTMLSearch(t.Context(), gateway, "综合布线验收", searchActor{})
 	if err != nil || len(rows) != 1 || rows[0]["url"] != "https://www.gov.cn/api" {
 		t.Fatal(rows, err, hits)
 	}
@@ -1969,7 +1969,7 @@ func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
 	}}
 	notes, sources, _, err := fetchResearch(t.Context(), gateway, providers, map[string]any{
 		"topic_title": "综合布线验收", "direction": "弱电智能化", "keywords": "验收",
-	}, content.DefaultSourcePolicy())
+	}, content.DefaultSourcePolicy(), searchActor{})
 	if err != nil {
 		t.Fatal(err)
 	}
