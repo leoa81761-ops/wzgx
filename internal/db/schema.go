@@ -738,6 +738,7 @@ CREATE TABLE IF NOT EXISTS user_contract (
 		{"users", "quota_exempt", "INTEGER NOT NULL DEFAULT 0"},
 		{"plan_extra", "column_rotation", "TEXT NOT NULL DEFAULT 'weight'"},
 		{"plan_extra", "column_weekdays", "TEXT NOT NULL DEFAULT ''"},
+		{"article_task", "progress_at", "TEXT"},
 	} {
 		if err := d.ensureColumn(ctx, col.table, col.name, col.decl); err != nil {
 			return err

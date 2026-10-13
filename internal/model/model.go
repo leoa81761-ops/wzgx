@@ -81,6 +81,7 @@ type ArticleTask struct {
 	RetryCount       int
 	Priority         int
 	StartedAt        *time.Time
+	ProgressAt       *time.Time
 	FinishedAt       *time.Time
 	DurationMs       int
 	Tokens           int

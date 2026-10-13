@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -309,8 +310,9 @@ func TestLongStageDefaultsEffortLow(t *testing.T) {
 	}
 }
 
-func TestIdleCutRetriesWithResponses(t *testing.T) {
+func TestIdleCutFallsBackToFastModel(t *testing.T) {
 	var calls int
+	var models []string
 	var efforts []any
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -319,6 +321,8 @@ func TestIdleCutRetriesWithResponses(t *testing.T) {
 		var body map[string]any
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
+		model, _ := body["model"].(string)
+		models = append(models, model)
 		efforts = append(efforts, body["reasoning_effort"])
 		if calls == 1 {
 			if !strings.Contains(r.URL.Path, "/chat/completions") {
@@ -328,38 +332,89 @@ func TestIdleCutRetriesWithResponses(t *testing.T) {
 			_, _ = w.Write([]byte("error code: 524"))
 			return
 		}
-		if !strings.HasSuffix(r.URL.Path, "/responses") {
-			t.Errorf("retry path %s", r.URL.Path)
+		if !strings.Contains(r.URL.Path, "/chat/completions") {
+			t.Errorf("fallback path %s", r.URL.Path)
 		}
-		if body["stream"] != true || body["reasoning_effort"] != "low" {
-			t.Errorf("retry body %#v", body)
+		if model != FallbackModel {
+			t.Errorf("fallback model %s", model)
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先想一下\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"title\\\":\\\"好\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"))
+		if _, ok := body["reasoning_effort"]; ok {
+			t.Errorf("fallback effort %#v", body["reasoning_effort"])
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":\"好\"}"}}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
 	}))
 	defer srv.Close()
-	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 3, Backoff: time.Second}
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1, Backoff: time.Second}
 	messages := StageMessages("正文", map[string]any{"word_target": 1500})
+	started := time.Now()
 	_, completion, err := gw.CompleteJSON(context.Background(), []Provider{{
 		ID: 7, Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
 		ExtraParams: map[string]any{"reasoning_effort": "high"}, Timeout: 5 * time.Second,
 	}}, messages, nil, func(item map[string]any) (map[string]any, error) {
 		return item, nil
 	})
+	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || efforts[0] != "high" || efforts[1] != "low" {
-		t.Fatalf("calls %d efforts %#v paths %#v", calls, efforts, paths)
+	if elapsed > time.Second {
+		t.Fatalf("fallback waited %s", elapsed)
+	}
+	if calls != 2 || models[0] != "grok-4.7" || models[1] != FallbackModel || efforts[0] != "high" || efforts[1] != nil {
+		t.Fatalf("calls %d models %#v efforts %#v paths %#v", calls, models, efforts, paths)
 	}
 	if len(completion.Attempts) != 2 || completion.Attempts[0]["ok"] != false || completion.Attempts[1]["ok"] != true {
 		t.Fatalf("%#v", completion.Attempts)
 	}
-	if completion.Attempts[0]["protocol"] != "openai" || completion.Attempts[1]["protocol"] != "responses" {
+	if completion.Attempts[0]["model"] != "grok-4.7" || completion.Attempts[1]["model"] != FallbackModel {
 		t.Fatalf("%#v", completion.Attempts)
 	}
-	if completion.Protocol != "responses" || completion.ReasoningEffort != "low" {
+	if completion.Model != FallbackModel || completion.Protocol != "openai" || completion.ReasoningEffort != "" {
 		t.Fatalf("%#v", completion)
+	}
+}
+
+func TestSlowCallFallsBackWithinCap(t *testing.T) {
+	if callTimeoutCap != 60*time.Second {
+		t.Fatal(callTimeoutCap)
+	}
+	if boundTimeout(150*time.Second, 0) != 60*time.Second {
+		t.Fatal(boundTimeout(150*time.Second, 0))
+	}
+	if boundTimeout(80*time.Millisecond, 30*time.Second) != 80*time.Millisecond {
+		t.Fatal(boundTimeout(80*time.Millisecond, 30*time.Second))
+	}
+	var mu sync.Mutex
+	var models []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		model, _ := body["model"].(string)
+		mu.Lock()
+		models = append(models, model)
+		mu.Unlock()
+		if model != FallbackModel {
+			time.Sleep(2 * time.Second)
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1, Backoff: time.Second}
+	started := time.Now()
+	result, err := gw.Complete(context.Background(), Provider{
+		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7", Timeout: 80 * time.Millisecond,
+	}, []map[string]string{{"role": "user", "content": "写一段"}})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("slow call waited %s", elapsed)
+	}
+	if len(models) != 2 || models[0] != "grok-4.7" || models[1] != FallbackModel || result.Content != "ok" {
+		t.Fatalf("models %#v content %q", models, result.Content)
 	}
 }
 
@@ -438,8 +493,14 @@ func TestCompleteResearchDoesNotRetryInsideGateway(t *testing.T) {
 
 func TestCompleteResearchUsesConfiguredTimeout(t *testing.T) {
 	var calls int
+	var models []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		model, _ := body["model"].(string)
+		models = append(models, model)
 		time.Sleep(400 * time.Millisecond)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
 	}))
@@ -450,8 +511,8 @@ func TestCompleteResearchUsesConfiguredTimeout(t *testing.T) {
 		Name: "检索", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 30 * time.Second,
 	}}, []map[string]string{{"role": "user", "content": `{"环节":"资料检索"}`}})
 	elapsed := time.Since(started)
-	if err == nil || calls != 1 || elapsed > time.Second {
-		t.Fatalf("calls %d elapsed %s err %v", calls, elapsed, err)
+	if err == nil || calls != 2 || models[0] != "grok-chat-fast" || models[1] != FallbackModel || elapsed > time.Second {
+		t.Fatalf("calls %d models %#v elapsed %s err %v", calls, models, elapsed, err)
 	}
 }
 
@@ -488,18 +549,22 @@ func TestResearchChatFastStreamsAndKeepsFinalCitations(t *testing.T) {
 	}
 }
 
-func TestResearchNonStreamingCapsAt110Seconds(t *testing.T) {
+func TestResearchCallsCapAt60Seconds(t *testing.T) {
 	stream, timeout := researchTransport(Provider{Protocol: "openai", Model: "grok-chat-fast"}, 150*time.Second)
-	if !stream || timeout != 150*time.Second {
+	if !stream || timeout != 60*time.Second {
 		t.Fatalf("chat-fast %v %s", stream, timeout)
 	}
 	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "grok-4.7"}, 150*time.Second)
-	if stream || timeout != 110*time.Second {
+	if stream || timeout != 60*time.Second {
 		t.Fatalf("grok-4.7 %v %s", stream, timeout)
 	}
 	stream, timeout = researchTransport(Provider{Protocol: "responses", Model: "grok-4.7"}, 90*time.Second)
-	if stream || timeout != 90*time.Second {
+	if stream || timeout != 60*time.Second {
 		t.Fatalf("short %v %s", stream, timeout)
+	}
+	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "grok-chat-fast"}, 30*time.Second)
+	if !stream || timeout != 30*time.Second {
+		t.Fatalf("configured short %v %s", stream, timeout)
 	}
 }
 

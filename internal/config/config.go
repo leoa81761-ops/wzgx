@@ -167,7 +167,7 @@ func Load() Settings {
 		PricePack:                 positiveOr("PAY_PRICE_PACK", 1900),
 		PackArticles:              positiveOr("PAY_PACK_ARTICLES", 10),
 		ResearchTimeout:           researchTimeout(),
-		ResearchBackupModel:       getenv("RESEARCH_BACKUP_MODEL", "grok-4.7"),
+		ResearchBackupModel:       getenv("RESEARCH_BACKUP_MODEL", "grok-4.20-0309-non-reasoning"),
 		ResearchBackupSearch:      getenv("RESEARCH_BACKUP_SEARCH", "https://cn.bing.com/search"),
 		ResearchBackupSearchAlt:   getenv("RESEARCH_BACKUP_SEARCH_ALT", "https://www.sogou.com/web"),
 		ResearchBackupSearchBaidu: getenv("RESEARCH_BACKUP_SEARCH_BAIDU", "https://www.baidu.com/s"),

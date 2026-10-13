@@ -140,6 +140,41 @@ type callLimit struct {
 	research bool
 }
 
+// callTimeoutCap stops a model call before Cloudflare answers 524 at about 125s.
+const callTimeoutCap = 60 * time.Second
+
+// FastModel is the short topic and source-judge model.
+const FastModel = "grok-chat-fast"
+
+// FallbackModel is the model used as soon as a call times out or the gateway returns 524.
+const FallbackModel = "grok-4.20-0309-non-reasoning"
+
+func boundTimeout(requested, provider time.Duration) time.Duration {
+	timeout := requested
+	if timeout <= 0 {
+		timeout = provider
+	}
+	if timeout <= 0 || timeout > callTimeoutCap {
+		return callTimeoutCap
+	}
+	return timeout
+}
+
+// PreferFast keeps a fast or non-reasoning model and moves a reasoning model onto FastModel.
+func PreferFast(list []Provider) []Provider {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]Provider, len(list))
+	copy(out, list)
+	for i := range out {
+		if reasoningModel(out[i].Model) {
+			out[i].Model = FastModel
+		}
+	}
+	return out
+}
+
 func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messages []map[string]string, schema *Schema, validate func(map[string]any) (map[string]any, error)) (map[string]any, Completion, error) {
 	if len(providers) == 0 {
 		return nil, Completion{}, &Error{Message: "没有可用的模型服务。请管理员在配置中心添加供应商，或使用模拟模式。"}
@@ -191,9 +226,9 @@ func (g *Gateway) CompleteFirst(ctx context.Context, providers []Provider, messa
 	return g.CompleteText(ctx, providers, messages, schema, true)
 }
 
-// CompleteResearch 默认等 150 秒。同一次调用里，40 秒内失败的 502、503 和连接错误会短暂停后再试，最多两次。
-// 更慢的失败不再在这次里重试。资料检索自己还会做一次更短的补救检索。
-// grok-chat-fast 走流式，避免 Cloudflare 把没有字节的请求在大约 120 秒切断。不能流式的模型把等待压到 110 秒。
+// CompleteResearch 单次调用不超过 60 秒。同一次调用里，40 秒内失败的 502、503 和连接错误会短暂停后再试，最多两次。
+// 超时或 524 立刻改用 grok-4.20-0309-non-reasoning。资料检索自己还会做一次更短的补救检索。
+// grok-chat-fast 和 non-reasoning 走流式。
 func (g *Gateway) CompleteResearch(ctx context.Context, providers []Provider, messages []map[string]string) (Completion, error) {
 	return g.completeText(ctx, providers, messages, nil, false, callLimit{timeout: g.researchTimeout(), attempts: 1, research: true})
 }
@@ -202,13 +237,10 @@ func researchTransport(provider Provider, configured time.Duration) (bool, time.
 	if configured <= 0 {
 		configured = 150 * time.Second
 	}
-	if researchCanStream(provider) {
-		return true, configured
+	if configured > callTimeoutCap {
+		configured = callTimeoutCap
 	}
-	if configured > 110*time.Second {
-		configured = 110 * time.Second
-	}
-	return false, configured
+	return researchCanStream(provider), configured
 }
 
 func researchCanStream(provider Provider) bool {
@@ -283,17 +315,22 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 	var last error
 	retriedIdle := false
 	researchQuick := 0
+	switched := false
+	pendingFallback := false
 	for try := 0; ; try++ {
-		if limit.research {
-			if try > 0 && researchQuick == 0 {
+		if !pendingFallback {
+			if limit.research {
+				if try > 0 && researchQuick == 0 {
+					break
+				}
+				if researchQuick > 2 {
+					break
+				}
+			} else if try >= attempts {
 				break
 			}
-			if researchQuick > 2 {
-				break
-			}
-		} else if try >= attempts {
-			break
 		}
+		pendingFallback = false
 		if try > 0 && !retriedIdle {
 			wait := g.backoffWait(try, limit.research)
 			if wait > 0 {
@@ -328,11 +365,31 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 			"model": provider.Model, "reasoning_effort": effort, "ok": false, "error": clip(err.Error(), 300),
 			"ms": time.Since(started).Milliseconds(),
 		})
+		if ctx.Err() != nil {
+			break
+		}
+		if fastFallback(status, err) && !switched && !strings.EqualFold(strings.TrimSpace(provider.Model), FallbackModel) {
+			switched = true
+			provider.Model = FallbackModel
+			effort = ""
+			retriedIdle = true
+			pendingFallback = true
+			if limit.research {
+				researchQuick = 1
+			}
+			continue
+		}
+		if fastFallback(status, err) {
+			break
+		}
 		if limit.research {
 			if researchQuick < 2 && quickResearchError(status, err, time.Since(started)) {
 				researchQuick++
 				continue
 			}
+			break
+		}
+		if switched {
 			break
 		}
 		if idleCut(status, err) {
@@ -403,9 +460,13 @@ func quickResearchError(status int, err error, elapsed time.Duration) bool {
 }
 
 func successAttempt(provider Provider, completion Completion) map[string]any {
+	model := completion.Model
+	if model == "" {
+		model = provider.Model
+	}
 	attempt := map[string]any{
 		"provider_id": provider.ID, "provider_name": provider.Name, "protocol": completion.Protocol,
-		"model": provider.Model, "reasoning_effort": completion.ReasoningEffort, "ok": true,
+		"model": model, "reasoning_effort": completion.ReasoningEffort, "ok": true,
 	}
 	if completion.Duration > 0 {
 		attempt["ms"] = completion.Duration.Milliseconds()
@@ -523,6 +584,23 @@ func fasterTimeout(current, providerTimeout time.Duration) time.Duration {
 	return current
 }
 
+func fastFallback(status int, err error) bool {
+	if status == 522 || status == 524 {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "deadline") || strings.Contains(msg, "timeout") || strings.Contains(msg, "超时") {
+		return true
+	}
+	return strings.Contains(msg, "524") || strings.Contains(msg, "522")
+}
+
 func idleCut(status int, err error) bool {
 	if status == 522 || status == 524 {
 		return true
@@ -552,12 +630,7 @@ func retryable(status int, err error) bool {
 }
 
 func (g *Gateway) call(ctx context.Context, provider Provider, messages []map[string]string, schema *Schema, stream bool, timeout time.Duration, effort, protocol string) (Completion, int, error) {
-	if timeout <= 0 {
-		timeout = provider.Timeout
-	}
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
+	timeout = boundTimeout(timeout, provider.Timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	switch protocol {

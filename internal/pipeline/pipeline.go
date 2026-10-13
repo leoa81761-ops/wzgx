@@ -150,14 +150,27 @@ func (e *tracedError) Error() string {
 
 func (e *tracedError) Unwrap() error { return e.err }
 
-// StuckTaskLimit is how long a task may stay in generating before the watchdog marks it failed.
-// Article 50 stayed on generating because prepare writes that status before any model call returns,
-// and ScanOnce waits out the worker. A call that never comes back, or a process that dies mid-run,
-// never reaches finishFailure, and the old requeue only reset the task after an hour without touching the article.
-const StuckTaskLimit = 15 * time.Minute
+// StuckIdleLimit fires the watchdog when a stage has not reported progress.
+// StuckHardLimit is the longest a run may stay open even when stages keep moving.
+// The generation budget inside Build stays under about 12 minutes and skips optional work
+// instead of running into either limit with an empty article.
+const StuckIdleLimit = 10 * time.Minute
 
-// StuckTaskReason is stored on the task and the article when the watchdog or the run deadline fires.
-const StuckTaskReason = "生成超过 15 分钟未结束，已标记失败。文章在模型返回前就被标成生成中；这次调用没有在时限内结束，调度会一直等着，文章就停在生成中。"
+const StuckHardLimit = 25 * time.Minute
+
+const generationBudget = 12 * time.Minute
+
+const budgetCall = 125 * time.Second
+
+const budgetResearch = 130 * time.Second
+
+const optionalMin = 75 * time.Second
+
+const StuckIdleReason = "生成超过 10 分钟没有进入下一步，已停下。文章在模型返回前会被标成生成中；如果当时已经有正文，稿件会留在待核对，不会丢。"
+
+const StuckHardReason = "生成超过 25 分钟仍未结束，已停下。如果当时已经有正文，稿件会留在待核对，不会丢。"
+
+const StuckHoldNote = "生成超时，已把当时的稿留下待核对，没有写入公众号草稿。"
 
 func Execute(ctx context.Context, deps Deps, taskID int64, claim bool, now time.Time) {
 	if now.IsZero() {
@@ -167,18 +180,186 @@ func Execute(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 	if !ok {
 		return
 	}
-	runCtx, cancel := context.WithTimeout(ctx, StuckTaskLimit)
+	prog := &runProgress{template: w.TemplateKey}
+	prog.touch = func(at time.Time, draft map[string]any, topic topics.Choice) {
+		_ = deps.Store.TouchProgress(ctx, nil, taskID, at)
+		if draftReady(draft) {
+			saveGeneratingDraft(ctx, deps, taskID, w.TemplateKey, draft, topic)
+		}
+	}
+	runCtx, cancel := context.WithTimeout(ctx, StuckHardLimit)
 	defer cancel()
+	runCtx = context.WithValue(withBudget(runCtx), progressKey{}, prog)
 	result, err := generate(runCtx, deps, w, now)
 	if err != nil {
 		message := clip(err.Error(), 500)
-		if ctx.Err() == nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded)) {
-			message = StuckTaskReason
+		timedOut := ctx.Err() == nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded))
+		if timedOut {
+			message = StuckHardReason
+		}
+		snap := prog.snapshot()
+		if draftReady(snap.draft) && (timedOut || budgetLeft(runCtx) <= 0) {
+			if message == "" {
+				message = StuckHoldNote
+			}
+			finishHeld(ctx, deps, taskID, snap, message, now)
+			return
 		}
 		finishFailure(ctx, deps, taskID, message, now, authFailed(err), traceOf(err))
 		return
 	}
 	finishSuccess(ctx, deps, taskID, result, now)
+}
+
+type budgetKey struct{}
+
+type runBudget struct {
+	start time.Time
+	limit time.Duration
+}
+
+func withBudget(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if budgetFrom(ctx) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, budgetKey{}, &runBudget{start: time.Now(), limit: generationBudget})
+}
+
+func budgetFrom(ctx context.Context) *runBudget {
+	if ctx == nil {
+		return nil
+	}
+	b, _ := ctx.Value(budgetKey{}).(*runBudget)
+	return b
+}
+
+func budgetLeft(ctx context.Context) time.Duration {
+	b := budgetFrom(ctx)
+	if b == nil {
+		return generationBudget
+	}
+	left := b.limit - time.Since(b.start)
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+func budgetTight(ctx context.Context) bool {
+	return budgetLeft(ctx) < optionalMin
+}
+
+func stageContext(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+	left := budgetLeft(ctx)
+	if limit <= 0 || limit > left {
+		limit = left
+	}
+	if limit < time.Second {
+		done, cancel := context.WithCancel(ctx)
+		cancel()
+		return done, func() {}
+	}
+	return context.WithTimeout(ctx, limit)
+}
+
+func skipOptional(ctx context.Context, stage string, trace []map[string]any) ([]map[string]any, bool) {
+	if ctx.Err() != nil || budgetTight(ctx) {
+		return append(trace, map[string]any{"stage": stage, "ok": true, "skipped": "时间不够，这一步先不做"}), true
+	}
+	return trace, false
+}
+
+func optionalClosed(ctx context.Context) bool {
+	return ctx != nil && (ctx.Err() != nil || budgetTight(ctx))
+}
+
+type progressKey struct{}
+
+type runProgress struct {
+	mu       sync.Mutex
+	stage    string
+	at       time.Time
+	draft    map[string]any
+	topic    topics.Choice
+	trace    []map[string]any
+	tokens   int
+	template string
+	touch    func(time.Time, map[string]any, topics.Choice)
+}
+
+func (p *runProgress) mark(stage string, draft map[string]any, topic topics.Choice, trace []map[string]any, tokens int) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.stage = stage
+	p.at = time.Now().UTC()
+	if draft != nil {
+		p.draft = cloneMap(draft)
+	}
+	if topic.Subtopic != "" || topic.Column != "" || topic.Angle != "" {
+		p.topic = topic
+	}
+	if trace != nil {
+		p.trace = append([]map[string]any(nil), trace...)
+	}
+	p.tokens = tokens
+	at := p.at
+	draftCopy := p.draft
+	topicCopy := p.topic
+	touch := p.touch
+	p.mu.Unlock()
+	if touch != nil {
+		touch(at, draftCopy, topicCopy)
+	}
+}
+
+func (p *runProgress) snapshot() progressSnap {
+	if p == nil {
+		return progressSnap{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return progressSnap{draft: p.draft, topic: p.topic, trace: append([]map[string]any(nil), p.trace...), tokens: p.tokens, template: p.template}
+}
+
+type progressSnap struct {
+	draft    map[string]any
+	topic    topics.Choice
+	trace    []map[string]any
+	tokens   int
+	template string
+}
+
+func noteProgress(ctx context.Context, stage string, draft map[string]any, topic topics.Choice, trace []map[string]any, tokens int) {
+	p, _ := ctx.Value(progressKey{}).(*runProgress)
+	if p == nil {
+		return
+	}
+	p.mark(stage, draft, topic, trace, tokens)
+}
+
+func draftReady(draft map[string]any) bool {
+	if draft == nil {
+		return false
+	}
+	if len(asList(draft["sections"])) > 0 {
+		return true
+	}
+	return strings.TrimSpace(str(draft["title"])) != "" && strings.TrimSpace(str(draft["summary"])) != ""
+}
+
+func ArticleReady(article *model.Article) bool {
+	if article == nil {
+		return false
+	}
+	if strings.TrimSpace(article.BodyHTML) != "" {
+		return true
+	}
+	return draftReady(article.BodyJSON)
 }
 
 func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.Time) (*work, bool) {
@@ -782,6 +963,9 @@ func finishPiece(ctx context.Context, gateway *llm.Gateway, providers map[string
 	if draft == nil {
 		return draft, 0, nil
 	}
+	if optionalClosed(ctx) {
+		return draft, 0, []map[string]any{{"stage": "polish", "ok": true, "skipped": "时间不够，这一步先不做"}}
+	}
 	var tokens int
 	var trace []map[string]any
 	if strings.TrimSpace(w.CostNote) == "" {
@@ -867,6 +1051,9 @@ func keepBetterHook(ctx context.Context, gateway *llm.Gateway, providers map[str
 }
 
 func rewriteMotif(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
+	if optionalClosed(ctx) {
+		return draft, 0, []map[string]any{{"stage": "motif", "ok": true, "skipped": "时间不够，这一步先不做"}}
+	}
 	payload := cloneMap(base)
 	payload["draft"] = draft
 	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("意象改写", payload), llm.StageSchema("正文"), validateDraft)
@@ -1023,6 +1210,9 @@ func copySources(dst, src map[string]any) {
 // reviewSensitive repeats the sensitive-word rewrite on text produced after the main review.
 // One rewrite is requested. A remaining hit fails the article the same way the main path does.
 func reviewSensitive(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, draft, reviewPayload map[string]any, sensitive []string) (map[string]any, int, []map[string]any, error) {
+	if optionalClosed(ctx) {
+		return draft, 0, []map[string]any{{"stage": "review", "ok": true, "skipped": "时间不够，这一步先不做"}}, nil
+	}
 	hits := sensitiveHits(draft, sensitive)
 	if len(hits) == 0 {
 		return draft, 0, nil, nil
@@ -1338,6 +1528,7 @@ func coverDirection(direction, imageStyle string) string {
 }
 
 func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []string, providers map[string][]llm.Provider, policy content.SourcePolicy, now time.Time) (Built, error) {
+	ctx = withBudget(ctx)
 	w = fillPersona(w)
 	runAt := w.RunAt
 	if runAt.IsZero() {
@@ -1437,7 +1628,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		built.Topic = topic
 		return built, failErr
 	}
-	topicData, completion, err := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
+	noteProgress(ctx, "topic", nil, topic, trace, tokens)
+	topicCtx, topicCancel := stageContext(ctx, budgetCall)
+	topicData, completion, err := gateway.CompleteJSON(topicCtx, llm.PreferFast(providers["topic"]), llm.StageMessages("选题", base), llm.StageSchema("选题"), validateTopic)
+	topicCancel()
 	if err != nil {
 		return fail(trace, "topic", completion, err)
 	}
@@ -1452,7 +1646,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		retryPayload := cloneMap(base)
 		retryPayload["rejected_title"] = topicTitle
 		retryPayload["avoid_topics"] = topicMemoryLines
-		retried, retryCompletion, retryErr := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", retryPayload), llm.StageSchema("选题"), validateTopic)
+		retryCtx, retryCancel := stageContext(ctx, budgetCall)
+		retried, retryCompletion, retryErr := gateway.CompleteJSON(retryCtx, llm.PreferFast(providers["topic"]), llm.StageMessages("选题", retryPayload), llm.StageSchema("选题"), validateTopic)
+		retryCancel()
 		tokens += retryCompletion.PromptTokens + retryCompletion.CompletionTokens
 		trace = append(trace, traceRows("topic", retryCompletion)...)
 		if retryErr == nil {
@@ -1493,7 +1689,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if len(policy.Allow) > 0 {
 			researchPayload["allowed_domains"] = policy.Allow
 		}
-		notes, listed, completion, err := fetchResearch(ctx, gateway, providers["research"], researchPayload, policy)
+		noteProgress(ctx, "research", nil, topic, trace, tokens)
+		researchCtx, researchCancel := stageContext(ctx, budgetResearch)
+		notes, listed, completion, err := fetchResearch(researchCtx, gateway, providers["research"], researchPayload, policy)
+		researchCancel()
 		if err != nil {
 			trace = appendStage(trace, "research", completion, err)
 		} else {
@@ -1551,60 +1750,91 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			noDatedNews = true
 		}
 	}
+	noteProgress(ctx, "outline", nil, topic, trace, tokens)
 	outlinePayload := cloneMap(base)
 	outlinePayload["topic_title"] = topicTitle
-	outline, completion, err := gateway.CompleteJSON(ctx, providers["outline"], llm.StageMessages("大纲", outlinePayload), llm.StageSchema("大纲"), validateOutline)
+	outlineCtx, outlineCancel := stageContext(ctx, budgetCall)
+	outline, completion, err := gateway.CompleteJSON(outlineCtx, providers["outline"], llm.StageMessages("大纲", outlinePayload), llm.StageSchema("大纲"), validateOutline)
+	outlineCancel()
 	if err != nil {
 		return fail(trace, "outline", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("outline", completion)...)
+	noteProgress(ctx, "draft", nil, topic, trace, tokens)
 	draftPayload := cloneMap(outlinePayload)
 	draftPayload["outline"] = outline
-	draft, completion, err := gateway.CompleteJSON(ctx, providers["draft"], llm.StageMessages("正文", draftPayload), llm.StageSchema("正文"), validateDraft)
+	draftCtx, draftCancel := stageContext(ctx, budgetCall)
+	draft, completion, err := gateway.CompleteJSON(draftCtx, providers["draft"], llm.StageMessages("正文", draftPayload), llm.StageSchema("正文"), validateDraft)
+	draftCancel()
 	if err != nil {
 		return fail(trace, "draft", completion, err)
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("draft", completion)...)
+	noteProgress(ctx, "draft", draft, topic, trace, tokens)
 	fitted, fitTokens, fitTrace, lengthShort := fitBody(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget)
 	draft = fitted
 	tokens += fitTokens
 	trace = append(trace, fitTrace...)
+	noteProgress(ctx, "draft", draft, topic, trace, tokens)
 	reviewPayload := cloneMap(draftPayload)
-	checked, checkTokens, checkTrace := factCheck(ctx, gateway, providers["review"], reviewPayload, draft)
-	draft = checked
-	tokens += checkTokens
-	trace = append(trace, checkTrace...)
-	reviewPayload["draft"] = draft
-	reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
-	reviewed, completion, err := gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
-	if err != nil {
-		return fail(trace, "review", completion, err)
+	if next, skip := skipOptional(ctx, "factcheck", trace); skip {
+		trace = next
+	} else {
+		checkCtx, checkCancel := stageContext(ctx, budgetCall)
+		checked, checkTokens, checkTrace := factCheck(checkCtx, gateway, providers["review"], reviewPayload, draft)
+		checkCancel()
+		draft = checked
+		tokens += checkTokens
+		trace = append(trace, checkTrace...)
 	}
-	tokens += completion.PromptTokens + completion.CompletionTokens
-	trace = append(trace, traceRows("review", completion)...)
-	cleaned, _ := content.StripCliches(reviewed).(map[string]any)
-	draft = cleaned
-	hits := content.FindSensitive(draft, sensitive)
-	if len(hits) > 0 {
+	if next, skip := skipOptional(ctx, "review", trace); skip {
+		trace = next
+	} else {
 		reviewPayload["draft"] = draft
-		reviewPayload["issues"] = hits
-		reviewed, completion, err = gateway.CompleteJSON(ctx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
+		reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
+		reviewCtx, reviewCancel := stageContext(ctx, budgetCall)
+		reviewed, completion, err := gateway.CompleteJSON(reviewCtx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
+		reviewCancel()
 		if err != nil {
-			return fail(trace, "review", completion, err)
-		}
-		tokens += completion.PromptTokens + completion.CompletionTokens
-		trace = append(trace, traceRows("review", completion)...)
-		cleaned, _ = content.StripCliches(reviewed).(map[string]any)
-		draft = cleaned
-		hits = content.FindSensitive(draft, sensitive)
-		if len(hits) > 0 {
-			message := "审核未通过，命中敏感词：" + strings.Join(hits, "、")
-			trace = append(trace, map[string]any{"stage": "audit", "ok": false, "error": clip(message, 300)})
-			return Built{Trace: trace, Topic: topic}, &llm.Error{Message: message}
+			if reviewCtx.Err() == nil && !budgetTight(ctx) {
+				return fail(trace, "review", completion, err)
+			}
+			trace = append(trace, map[string]any{"stage": "review", "ok": true, "skipped": "时间不够，这一步先不做"})
+		} else {
+			tokens += completion.PromptTokens + completion.CompletionTokens
+			trace = append(trace, traceRows("review", completion)...)
+			cleaned, _ := content.StripCliches(reviewed).(map[string]any)
+			draft = cleaned
+			hits := content.FindSensitive(draft, sensitive)
+			if len(hits) > 0 {
+				reviewPayload["draft"] = draft
+				reviewPayload["issues"] = hits
+				secondCtx, secondCancel := stageContext(ctx, budgetCall)
+				reviewed, completion, err = gateway.CompleteJSON(secondCtx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
+				secondCancel()
+				if err != nil {
+					if secondCtx.Err() == nil && !budgetTight(ctx) {
+						return fail(trace, "review", completion, err)
+					}
+					trace = append(trace, map[string]any{"stage": "review", "ok": true, "skipped": "时间不够，这一步先不做"})
+				} else {
+					tokens += completion.PromptTokens + completion.CompletionTokens
+					trace = append(trace, traceRows("review", completion)...)
+					cleaned, _ = content.StripCliches(reviewed).(map[string]any)
+					draft = cleaned
+					hits = content.FindSensitive(draft, sensitive)
+					if len(hits) > 0 {
+						message := "审核未通过，命中敏感词：" + strings.Join(hits, "、")
+						trace = append(trace, map[string]any{"stage": "audit", "ok": false, "error": clip(message, 300)})
+						return Built{Trace: trace, Topic: topic}, &llm.Error{Message: message}
+					}
+				}
+			}
 		}
 	}
+	noteProgress(ctx, "draft", draft, topic, trace, tokens)
 	if w.Tier != "free" {
 		merged := asList(draft["sources"])
 		if len(researchSources) > 0 {
@@ -1792,6 +2022,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
 		"stages": stageCharList(trace),
 	})
+	noteProgress(ctx, "body", draft, topic, trace, tokens)
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
 	if err != nil {
 		return Built{Trace: trace, Topic: topic}, err
@@ -1983,7 +2214,7 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		if err != nil || task == nil || task.ArticleID == nil {
 			return err
 		}
-		if task.Status == "failed" && task.FailureReason == StuckTaskReason {
+		if task.Status == "success" {
 			return nil
 		}
 		article, err := deps.Store.GetArticle(ctx, tx, *task.ArticleID)
@@ -2195,6 +2426,109 @@ func taskUserID(ctx context.Context, deps Deps, taskID int64) int64 {
 		return 0
 	}
 	return task.UserID
+}
+
+func saveGeneratingDraft(ctx context.Context, deps Deps, taskID int64, template string, draft map[string]any, topic topics.Choice) {
+	if deps.Store == nil || !draftReady(draft) {
+		return
+	}
+	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := deps.Store.GetTask(ctx, tx, taskID)
+		if err != nil || task == nil || task.ArticleID == nil {
+			return err
+		}
+		if task.Status != "running" && task.Status != "pending" {
+			return nil
+		}
+		article, err := deps.Store.GetArticle(ctx, tx, *task.ArticleID)
+		if err != nil || article == nil || article.Status != "generating" {
+			return err
+		}
+		applySnapshot(article, draft, topic, template)
+		return deps.Store.UpdateArticle(ctx, tx, article)
+	})
+}
+
+func applySnapshot(article *model.Article, draft map[string]any, topic topics.Choice, template string) {
+	article.Title = str(draft["title"])
+	article.AltTitles = asList(draft["alt_titles"])
+	article.Summary = str(draft["summary"])
+	article.BodyJSON = draft
+	if template == "" {
+		template = article.TemplateKey
+	}
+	if html, err := render.RenderWithinLimit(draft, template, false); err == nil && html != "" {
+		article.BodyHTML = html
+	}
+	article.Sources = asList(draft["sources"])
+	if topic.Subtopic != "" {
+		article.Subtopic = topic.Subtopic
+	}
+	if topic.Column != "" {
+		article.ColumnType = topic.Column
+	}
+	if topic.TopicTag != "" {
+		article.TopicTag = topic.TopicTag
+	}
+	if template != "" {
+		article.TemplateKey = template
+	}
+}
+
+func finishHeld(ctx context.Context, deps Deps, taskID int64, snap progressSnap, reason string, now time.Time) {
+	if strings.TrimSpace(reason) == "" {
+		reason = StuckHoldNote
+	}
+	var userID int64
+	saved := false
+	_ = deps.Store.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := deps.Store.GetTask(ctx, tx, taskID)
+		if err != nil || task == nil || task.ArticleID == nil {
+			return err
+		}
+		if task.Status == "success" {
+			return nil
+		}
+		article, err := deps.Store.GetArticle(ctx, tx, *task.ArticleID)
+		if err != nil || article == nil {
+			return err
+		}
+		if article.Status == "held" || article.Status == "in_draft" || article.Status == "exported" {
+			return nil
+		}
+		applySnapshot(article, snap.draft, snap.topic, snap.template)
+		article.Status = "held"
+		article.FailureReason = reason
+		article.DeliveryNote = StuckHoldNote
+		if article.RiskLevel == "" {
+			article.RiskLevel = "low"
+		}
+		if err := deps.Store.UpdateArticle(ctx, tx, article); err != nil {
+			return err
+		}
+		if err := quota.Confirm(ctx, deps.Store, tx, task.ID); err != nil {
+			return err
+		}
+		task.Status = "success"
+		task.FailureReason = reason
+		task.Tokens = snap.tokens
+		if len(snap.trace) > 0 {
+			task.ModelTrace = snap.trace
+		}
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		stampDuration(task, now)
+		if err := deps.Store.UpdateTask(ctx, tx, task); err != nil {
+			return err
+		}
+		saved = true
+		userID = task.UserID
+		return nil
+	})
+	if saved && userID > 0 {
+		emitNotice(ctx, deps, userID, "risk", "有一篇稿没有写入草稿", StuckHoldNote)
+	}
 }
 
 func finishFailure(ctx context.Context, deps Deps, taskID int64, message string, now time.Time, auth bool, trace []map[string]any) {
@@ -2758,7 +3092,7 @@ func backupResearchProviders(providers []llm.Provider, backupModel, failedModel 
 	model := strings.TrimSpace(backupModel)
 	failedModel = strings.TrimSpace(failedModel)
 	if model == "" || strings.EqualFold(model, failedModel) || strings.Contains(strings.ToLower(model), "chat-fast") {
-		model = "grok-4.7"
+		model = llm.FallbackModel
 	}
 	if strings.EqualFold(model, failedModel) {
 		model = "grok-4"
@@ -2965,7 +3299,7 @@ func stripRankScores(sources []map[string]any) {
 
 const judgeBatchSize = 8
 
-const judgeModel = "grok-4.7"
+const judgeModel = llm.FastModel
 
 const judgeRetryModel = "grok-4.20-0309-non-reasoning"
 
@@ -4176,6 +4510,9 @@ func rewriteColumnStructure(ctx context.Context, gateway *llm.Gateway, providers
 	if strings.TrimSpace(costNote) != "" {
 		return draft, 0, nil, true
 	}
+	if optionalClosed(ctx) {
+		return draft, 0, []map[string]any{{"stage": "structure", "ok": true, "skipped": "时间不够，这一步先不做"}}, false
+	}
 	payload := cloneMap(base)
 	payload["draft"] = draft
 	payload["column_structure"] = kind
@@ -4244,6 +4581,9 @@ func softenTaboos(ctx context.Context, gateway *llm.Gateway, providers map[strin
 	if !editorial.HasTaboo(draft, taboos) {
 		return draft, 0, nil
 	}
+	if optionalClosed(ctx) {
+		return editorial.RewriteTaboos(draft, taboos), 0, []map[string]any{{"stage": "taboo", "ok": true, "skipped": "时间不够，这一步先不做"}}
+	}
 	if strings.TrimSpace(costNote) == "" && gateway != nil {
 		payload := cloneMap(base)
 		payload["draft"] = draft
@@ -4263,6 +4603,9 @@ func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string
 	if gateway == nil || target <= 0 || strings.TrimSpace(costNote) != "" || draft == nil {
 		return draft, 0, nil
 	}
+	if optionalClosed(ctx) {
+		return draft, 0, []map[string]any{{"stage": "expand", "ok": true, "skipped": "时间不够，这一步先不做"}}
+	}
 	goal := target * 110 / 100
 	high := target * 130 / 100
 	if content.BodyRunes(draft) >= goal {
@@ -4275,6 +4618,9 @@ func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string
 	var tokens int
 	var trace []map[string]any
 	for pass := 0; pass < limit && content.BodyRunes(draft) < goal; pass++ {
+		if pass > 0 && optionalClosed(ctx) {
+			break
+		}
 		before := content.BodyRunes(draft)
 		shortfall := goal - before
 		if shortfall < 1 {
@@ -4312,7 +4658,7 @@ func rewriteCliches(ctx context.Context, gateway *llm.Gateway, providers map[str
 		}
 		return cleaned
 	}
-	if strings.TrimSpace(costNote) != "" || gateway == nil {
+	if strings.TrimSpace(costNote) != "" || gateway == nil || optionalClosed(ctx) {
 		return fallback(), 0, nil
 	}
 	payload := cloneMap(base)
@@ -4331,7 +4677,7 @@ func rewriteCopiedSpans(ctx context.Context, gateway *llm.Gateway, providers map
 	if len(windows) == 0 || draft == nil {
 		return draft, 0, nil
 	}
-	if strings.TrimSpace(costNote) != "" || gateway == nil {
+	if strings.TrimSpace(costNote) != "" || gateway == nil || optionalClosed(ctx) {
 		return draft, 0, nil
 	}
 	payload := cloneMap(base)
@@ -4452,6 +4798,9 @@ func anySources(sources []map[string]any) []any {
 }
 
 func factCheck(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any) (map[string]any, int, []map[string]any) {
+	if optionalClosed(ctx) {
+		return draft, 0, []map[string]any{{"stage": "factcheck", "ok": true, "skipped": "时间不够，这一步先不做"}}
+	}
 	checkPayload := cloneMap(payload)
 	checkPayload["draft"] = draft
 	checked, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("事实核对", checkPayload), llm.StageSchema("正文"), validateDraft)
@@ -4474,7 +4823,16 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 	tokens := 0
 	stillShort := false
 	if content.BodyRunes(draft) < floor {
-		for pass := 0; pass < 3 && content.BodyRunes(draft) < floor; pass++ {
+		passes := 3
+		if budgetFrom(ctx) != nil && budgetLeft(ctx) < 5*time.Second {
+			passes = 0
+		} else if budgetTight(ctx) {
+			passes = 1
+		}
+		for pass := 0; pass < passes && content.BodyRunes(draft) < floor; pass++ {
+			if pass > 0 && budgetTight(ctx) {
+				break
+			}
 			before := content.BodyRunes(draft)
 			shortfall := goal - before
 			if shortfall < 1 {
@@ -4489,7 +4847,7 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 		}
 		stillShort = content.BodyRunes(draft) < low
 	}
-	if content.BodyRunes(draft) > high {
+	if content.BodyRunes(draft) > high && !budgetTight(ctx) {
 		before := content.BodyRunes(draft)
 		condensePayload := cloneMap(payload)
 		condensePayload["draft"] = draft
