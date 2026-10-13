@@ -28,4 +28,19 @@ func TestShortOfTargetUsesChineseCharacters(t *testing.T) {
 	if ShortOfTarget(0, 0) {
 		t.Fatal("no target")
 	}
+	withBlocks := map[string]any{
+		"sections": []any{map[string]any{
+			"heading":    "标题",
+			"paragraphs": []any{"甲"},
+			"list":       []string{"列表文字"},
+			"table": map[string]any{
+				"headers": []string{"表头"},
+				"rows":    []any{[]string{"单元格"}},
+			},
+		}},
+	}
+	// 标题2 + 甲1 + 列表文字4 + 表头2 + 单元格3
+	if BodyRunes(withBlocks) != 12 {
+		t.Fatal(BodyRunes(withBlocks))
+	}
 }

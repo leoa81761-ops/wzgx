@@ -2199,6 +2199,9 @@ func stripBrokenNumbers(items []any) []any {
 	if numbersContiguous(items) {
 		return items
 	}
+	if shifted, ok := renumberOffset(items); ok {
+		return shifted
+	}
 	var out []any
 	for _, item := range items {
 		text := textOf(item)
@@ -2214,6 +2217,34 @@ func stripBrokenNumbers(items []any) []any {
 		out = []any{}
 	}
 	return out
+}
+
+// renumberOffset turns a contiguous list that starts at 2 (2. 3. 4.) into 1..n.
+// A broken sequence such as 2. 3. 8. is left alone so the caller can strip it.
+func renumberOffset(items []any) ([]any, bool) {
+	var nums, idx []int
+	for i, item := range items {
+		n, ok := leadingIndex(textOf(item))
+		if !ok {
+			continue
+		}
+		nums = append(nums, n)
+		idx = append(idx, i)
+	}
+	if len(nums) < 2 || nums[0] <= 1 {
+		return nil, false
+	}
+	for i := 1; i < len(nums); i++ {
+		if nums[i] != nums[0]+i {
+			return nil, false
+		}
+	}
+	out := append([]any{}, items...)
+	for i, at := range idx {
+		rest := strings.TrimSpace(factIndex.ReplaceAllString(strings.TrimSpace(textOf(items[at])), ""))
+		out[at] = strconv.Itoa(i+1) + ". " + rest
+	}
+	return out, true
 }
 
 func numbersContiguous(items []any) bool {
@@ -2327,7 +2358,7 @@ func FillerHeavy(draft map[string]any) bool {
 	}
 	n := 0
 	text := fillerText(draft)
-	for _, word := range []string{"从容", "省力", "轻松", "杯子", "窗边", "桌前", "走动"} {
+	for _, word := range []string{"从容", "省力", "轻松", "杯子", "窗边", "桌前", "走动", "温馨", "默契"} {
 		n += strings.Count(text, word)
 	}
 	return n >= 3
