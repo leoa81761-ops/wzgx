@@ -2299,7 +2299,7 @@ func TestJudgeRetriesOnceOnAnotherModel(t *testing.T) {
 	judged, extra, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
 	}}, "综合布线验收", sources)
-	if len(models) != 2 || models[0] != "grok-4.7" || models[1] != "grok-4.20-0309-non-reasoning" {
+	if len(models) != 2 || models[0] != "grok-chat-fast" || models[1] != "grok-4.20-0309-non-reasoning" {
 		t.Fatal(models)
 	}
 	if len(judged) != 1 || str(judged[0]["url"]) != "https://www.mohurd.gov.cn/a" {
@@ -2334,7 +2334,7 @@ func TestJudgeFallsBackToRanking(t *testing.T) {
 	judged, _, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
 	}}, "综合布线验收", sources)
-	if len(models) != 2 || models[0] != "grok-4.7" || models[1] != "grok-4.20-0309-non-reasoning" {
+	if len(models) != 2 || models[0] != "grok-chat-fast" || models[1] != "grok-4.20-0309-non-reasoning" {
 		t.Fatal(models)
 	}
 	if len(judged) < 3 || len(judged) > 6 {
@@ -2384,7 +2384,7 @@ func TestJudgeBatchesAtMostEight(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
 		_ = json.Unmarshal(raw, &req)
-		if req["model"] != "grok-4.7" {
+		if req["model"] != "grok-chat-fast" {
 			t.Errorf("model %#v", req["model"])
 		}
 		mu.Lock()
@@ -2493,6 +2493,93 @@ func TestExperienceDraftSplitsAndDedupes(t *testing.T) {
 	}
 	if !quality.StructureOK("qa", paras) {
 		t.Fatal(paras)
+	}
+}
+
+func TestStageBudgetsStayUnderTwelveMinutes(t *testing.T) {
+	sum := budgetCall*4 + budgetResearch
+	if sum > generationBudget || generationBudget > 12*time.Minute {
+		t.Fatalf("sum %s budget %s", sum, generationBudget)
+	}
+	if StuckIdleLimit != 10*time.Minute || StuckHardLimit != 25*time.Minute {
+		t.Fatalf("idle %s hard %s", StuckIdleLimit, StuckHardLimit)
+	}
+}
+
+func TestTightBudgetSkipsExtraExpand(t *testing.T) {
+	var expands int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expands++
+		writeChoice(w, map[string]any{
+			"title": "短稿", "summary": "摘要",
+			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"还是很短。"}, "list": []any{}}},
+			"closing":  "结束", "sources": []any{},
+		})
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	ctx := withBudget(context.Background())
+	budgetFrom(ctx).start = time.Now().Add(-generationBudget + 30*time.Second)
+	draft := map[string]any{
+		"title": "短稿", "summary": "摘要",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
+		"closing":  "结束", "sources": []any{},
+	}
+	_, _, trace, _ := fitBody(ctx, gw, []llm.Provider{{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 5 * time.Second,
+	}}, map[string]any{"word_target": 800}, draft, 800)
+	if expands != 1 {
+		t.Fatalf("expands %d trace %#v", expands, trace)
+	}
+	_, skip := skipOptional(ctx, "factcheck", nil)
+	if !skip {
+		t.Fatal("tight budget should skip factcheck")
+	}
+	_, skip = skipOptional(withBudget(context.Background()), "review", nil)
+	if skip {
+		t.Fatal("a fresh budget still runs review")
+	}
+}
+
+func TestDeadlineSavesTheDraftAsHeld(t *testing.T) {
+	st, deps := openDeps(t, "mock", nil)
+	user, account, plan := seedPlan(t, st, "held-draft@example.com")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	started := now.Add(-time.Minute)
+	task := &model.ArticleTask{
+		PlanID: plan.ID, UserID: user.ID, WxAccountID: account.ID, IdempotencyKey: "held-draft",
+		TriggerType: "manual", Status: "running", RunAt: started, StartedAt: &started, CreatedAt: started,
+	}
+	if err := st.InsertTask(ctx, nil, task); err != nil {
+		t.Fatal(err)
+	}
+	article := &model.Article{
+		TaskID: task.ID, UserID: user.ID, PlanID: plan.ID, WxAccountID: account.ID,
+		Status: "generating", CreatedAt: started,
+	}
+	if err := st.InsertArticle(ctx, nil, article); err != nil {
+		t.Fatal(err)
+	}
+	task.ArticleID = &article.ID
+	if err := st.UpdateTask(ctx, nil, task); err != nil {
+		t.Fatal(err)
+	}
+	finishHeld(ctx, deps, task.ID, progressSnap{
+		template: "fresh",
+		draft: map[string]any{
+			"title": "已经写好的标题", "summary": "摘要",
+			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"已经写好的正文。"}, "list": []any{}}},
+			"closing":  "结束",
+		},
+	}, StuckHardReason, now)
+	fresh, err := st.GetTask(ctx, nil, task.ID)
+	if err != nil || fresh == nil || fresh.Status != "success" || !strings.Contains(fresh.FailureReason, "25 分钟") {
+		t.Fatalf("%#v %v", fresh, err)
+	}
+	got, err := st.GetArticle(ctx, nil, article.ID)
+	if err != nil || got == nil || got.Status != "held" || got.Title != "已经写好的标题" || !strings.Contains(got.BodyHTML, "已经写好的正文") || !strings.Contains(got.DeliveryNote, "待核对") {
+		t.Fatalf("%#v %v", got, err)
 	}
 }
 

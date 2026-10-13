@@ -164,8 +164,9 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 }
 
 func failStuck(ctx context.Context, r *Runner, tx *db.Tx, now time.Time) error {
-	cutoff := schedule.Format(now.Add(-pipeline.StuckTaskLimit))
-	ids, err := r.Deps.Store.ListStuckTaskIDs(ctx, tx, cutoff)
+	hard := schedule.Format(now.Add(-pipeline.StuckHardLimit))
+	idle := schedule.Format(now.Add(-pipeline.StuckIdleLimit))
+	ids, err := r.Deps.Store.ListStuckTaskIDs(ctx, tx, hard, idle)
 	if err != nil {
 		return err
 	}
@@ -177,8 +178,10 @@ func failStuck(ctx context.Context, r *Runner, tx *db.Tx, now time.Time) error {
 		if task == nil || (task.Status != "running" && task.Status != "pending") {
 			continue
 		}
-		task.Status = "failed"
-		task.FailureReason = pipeline.StuckTaskReason
+		reason := pipeline.StuckIdleReason
+		if task.StartedAt != nil && !now.Before(task.StartedAt.UTC().Add(pipeline.StuckHardLimit)) {
+			reason = pipeline.StuckHardReason
+		}
 		finished := now
 		task.FinishedAt = &finished
 		if task.StartedAt != nil {
@@ -188,9 +191,28 @@ func failStuck(ctx context.Context, r *Runner, tx *db.Tx, now time.Time) error {
 		if err != nil {
 			return err
 		}
+		if article != nil && article.Status == "generating" && pipeline.ArticleReady(article) {
+			article.Status = "held"
+			article.FailureReason = reason
+			article.DeliveryNote = pipeline.StuckHoldNote
+			if err := r.Deps.Store.UpdateArticle(ctx, tx, article); err != nil {
+				return err
+			}
+			task.Status = "success"
+			task.FailureReason = reason
+			if err := r.Deps.Store.UpdateTask(ctx, tx, task); err != nil {
+				return err
+			}
+			if err := quota.Confirm(ctx, r.Deps.Store, tx, task.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		task.Status = "failed"
+		task.FailureReason = reason
 		if article != nil && article.Status == "generating" {
 			article.Status = "failed"
-			article.FailureReason = pipeline.StuckTaskReason
+			article.FailureReason = reason
 			if err := r.Deps.Store.UpdateArticle(ctx, tx, article); err != nil {
 				return err
 			}
@@ -198,7 +220,7 @@ func failStuck(ctx context.Context, r *Runner, tx *db.Tx, now time.Time) error {
 		if err := r.Deps.Store.UpdateTask(ctx, tx, task); err != nil {
 			return err
 		}
-		if err := quota.Release(ctx, r.Deps.Store, tx, task.ID, pipeline.StuckTaskReason); err != nil {
+		if err := quota.Release(ctx, r.Deps.Store, tx, task.ID, reason); err != nil {
 			return err
 		}
 	}

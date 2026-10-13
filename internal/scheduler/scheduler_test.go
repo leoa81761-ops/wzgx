@@ -103,11 +103,116 @@ func TestStuckGeneratingIsFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh, err := st.GetTask(ctx, nil, task.ID)
-	if err != nil || fresh == nil || fresh.Status != "failed" || !strings.Contains(fresh.FailureReason, "15 分钟") {
+	if err != nil || fresh == nil || fresh.Status != "failed" || !strings.Contains(fresh.FailureReason, "10 分钟") {
 		t.Fatalf("%#v %v", fresh, err)
 	}
 	got, err := st.GetArticle(ctx, nil, article.ID)
-	if err != nil || got == nil || got.Status != "failed" || !strings.Contains(got.FailureReason, "15 分钟") {
+	if err != nil || got == nil || got.Status != "failed" || !strings.Contains(got.FailureReason, "10 分钟") {
+		t.Fatalf("%#v %v", got, err)
+	}
+}
+
+func TestRecentProgressIsNotStuck(t *testing.T) {
+	st, runner := openRunner(t)
+	now := time.Now().UTC()
+	user, account, plan := seed(t, st, "moving@example.com", now.Add(48*time.Hour))
+	ctx := context.Background()
+	started := now.Add(-12 * time.Minute)
+	task := &model.ArticleTask{
+		PlanID: plan.ID, UserID: user.ID, WxAccountID: account.ID, IdempotencyKey: "moving-task",
+		TriggerType: "manual", Status: "running", RunAt: started, StartedAt: &started, CreatedAt: started,
+	}
+	if err := st.InsertTask(ctx, nil, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchProgress(ctx, nil, task.ID, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	article := &model.Article{
+		TaskID: task.ID, UserID: user.ID, PlanID: plan.ID, WxAccountID: account.ID,
+		Title: "正在生成", Status: "generating", CreatedAt: started,
+	}
+	if err := st.InsertArticle(ctx, nil, article); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.ScanOnce(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := st.GetTask(ctx, nil, task.ID)
+	if err != nil || fresh == nil || fresh.Status != "running" {
+		t.Fatalf("%#v %v", fresh, err)
+	}
+}
+
+func TestStuckDraftIsHeld(t *testing.T) {
+	st, runner := openRunner(t)
+	now := time.Now().UTC()
+	user, account, plan := seed(t, st, "held@example.com", now.Add(48*time.Hour))
+	ctx := context.Background()
+	started := now.Add(-12 * time.Minute)
+	task := &model.ArticleTask{
+		PlanID: plan.ID, UserID: user.ID, WxAccountID: account.ID, IdempotencyKey: "held-task",
+		TriggerType: "manual", Status: "running", RunAt: started, StartedAt: &started, CreatedAt: started,
+	}
+	if err := st.InsertTask(ctx, nil, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchProgress(ctx, nil, task.ID, now.Add(-11*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	article := &model.Article{
+		TaskID: task.ID, UserID: user.ID, PlanID: plan.ID, WxAccountID: account.ID,
+		Title: "已经写好", Summary: "摘要", BodyHTML: "<p>已经写好的正文</p>", Status: "generating", CreatedAt: started,
+		BodyJSON: map[string]any{"title": "已经写好", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"已经写好的正文"}}}},
+	}
+	if err := st.InsertArticle(ctx, nil, article); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.ScanOnce(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := st.GetTask(ctx, nil, task.ID)
+	if err != nil || fresh == nil || fresh.Status != "success" || !strings.Contains(fresh.FailureReason, "10 分钟") {
+		t.Fatalf("%#v %v", fresh, err)
+	}
+	got, err := st.GetArticle(ctx, nil, article.ID)
+	if err != nil || got == nil || got.Status != "held" || !strings.Contains(got.BodyHTML, "已经写好的正文") || !strings.Contains(got.DeliveryNote, "待核对") {
+		t.Fatalf("%#v %v", got, err)
+	}
+}
+
+func TestHardCapHoldsEvenWithProgress(t *testing.T) {
+	st, runner := openRunner(t)
+	now := time.Now().UTC()
+	user, account, plan := seed(t, st, "hardcap@example.com", now.Add(48*time.Hour))
+	ctx := context.Background()
+	started := now.Add(-26 * time.Minute)
+	task := &model.ArticleTask{
+		PlanID: plan.ID, UserID: user.ID, WxAccountID: account.ID, IdempotencyKey: "hard-task",
+		TriggerType: "manual", Status: "running", RunAt: started, StartedAt: &started, CreatedAt: started,
+	}
+	if err := st.InsertTask(ctx, nil, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchProgress(ctx, nil, task.ID, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	article := &model.Article{
+		TaskID: task.ID, UserID: user.ID, PlanID: plan.ID, WxAccountID: account.ID,
+		Title: "超时稿", BodyHTML: "<p>超时前的正文</p>", Status: "generating", CreatedAt: started,
+	}
+	if err := st.InsertArticle(ctx, nil, article); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.ScanOnce(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := st.GetTask(ctx, nil, task.ID)
+	if err != nil || fresh == nil || fresh.Status != "success" || !strings.Contains(fresh.FailureReason, "25 分钟") {
+		t.Fatalf("%#v %v", fresh, err)
+	}
+	got, err := st.GetArticle(ctx, nil, article.ID)
+	if err != nil || got == nil || got.Status != "held" || !strings.Contains(got.BodyHTML, "超时前的正文") {
 		t.Fatalf("%#v %v", got, err)
 	}
 }

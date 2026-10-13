@@ -5,19 +5,20 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/leoa81761-ops/wzgx/internal/db"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 )
 
-const taskCols = `id, plan_id, user_id, wx_account_id, article_id, regen_of_article_id, idempotency_key, trigger_type, schedule_date, run_at, status, failure_reason, retry_count, priority, started_at, finished_at, duration_ms, tokens, model_trace, created_at`
+const taskCols = `id, plan_id, user_id, wx_account_id, article_id, regen_of_article_id, idempotency_key, trigger_type, schedule_date, run_at, status, failure_reason, retry_count, priority, started_at, finished_at, duration_ms, tokens, model_trace, created_at, progress_at`
 
 func scanTask(row interface{ Scan(dest ...any) error }) (*model.ArticleTask, error) {
 	var t model.ArticleTask
 	var articleID, regenID sql.NullInt64
-	var started, finished, trace sql.NullString
+	var started, finished, trace, progress sql.NullString
 	var runAt, created string
-	err := row.Scan(&t.ID, &t.PlanID, &t.UserID, &t.WxAccountID, &articleID, &regenID, &t.IdempotencyKey, &t.TriggerType, &t.ScheduleDate, &runAt, &t.Status, &t.FailureReason, &t.RetryCount, &t.Priority, &started, &finished, &t.DurationMs, &t.Tokens, &trace, &created)
+	err := row.Scan(&t.ID, &t.PlanID, &t.UserID, &t.WxAccountID, &articleID, &regenID, &t.IdempotencyKey, &t.TriggerType, &t.ScheduleDate, &runAt, &t.Status, &t.FailureReason, &t.RetryCount, &t.Priority, &started, &finished, &t.DurationMs, &t.Tokens, &trace, &created, &progress)
 	if err != nil {
 		return nil, err
 	}
@@ -25,6 +26,7 @@ func scanTask(row interface{ Scan(dest ...any) error }) (*model.ArticleTask, err
 	t.RegenOfArticleID = scanNullInt(regenID)
 	t.RunAt = mustTime(runAt)
 	t.StartedAt = parsePtr(started)
+	t.ProgressAt = parsePtr(progress)
 	t.FinishedAt = parsePtr(finished)
 	t.ModelTrace = decodeTrace(nstr(trace))
 	t.CreatedAt = mustTime(created)
@@ -100,17 +102,18 @@ func (s *Store) UpdateTask(ctx context.Context, q db.Q, t *model.ArticleTask) er
 	return err
 }
 
-// ListStuckTaskIDs returns tasks that have been generating longer than cutoff.
+// ListStuckTaskIDs returns tasks past the hard start cutoff or with no stage progress since the idle cutoff.
 // A running task counts, and so does a pending task whose article is still generating,
 // which is what a restart leaves behind after the old requeue.
-func (s *Store) ListStuckTaskIDs(ctx context.Context, q db.Q, cutoff string) ([]int64, error) {
+func (s *Store) ListStuckTaskIDs(ctx context.Context, q db.Q, hardCutoff, idleCutoff string) ([]int64, error) {
 	if q == nil {
 		q = s.DB
 	}
 	rows, err := q.Query(ctx, `SELECT DISTINCT t.id FROM article_task t
 		LEFT JOIN article a ON a.task_id = t.id
-		WHERE t.started_at IS NOT NULL AND t.started_at < ?
-		  AND (t.status = 'running' OR (t.status = 'pending' AND a.status = 'generating'))`, cutoff)
+		WHERE t.started_at IS NOT NULL
+		  AND (t.started_at < ? OR COALESCE(NULLIF(t.progress_at, ''), t.started_at) < ?)
+		  AND (t.status = 'running' OR (t.status = 'pending' AND a.status = 'generating'))`, hardCutoff, idleCutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +127,17 @@ func (s *Store) ListStuckTaskIDs(ctx context.Context, q db.Q, cutoff string) ([]
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (s *Store) TouchProgress(ctx context.Context, q db.Q, id int64, at time.Time) error {
+	if q == nil {
+		q = s.DB
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	_, err := q.Exec(ctx, `UPDATE article_task SET progress_at=? WHERE id=? AND status IN ('running', 'pending')`, at.UTC().Format("2006-01-02T15:04:05Z"), id)
+	return err
 }
 
 func (s *Store) RequeueStale(ctx context.Context, q db.Q, cutoff, now string) error {
