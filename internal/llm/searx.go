@@ -59,6 +59,23 @@ func NewSearxGuard() *SearxGuard {
 	}
 }
 
+// SetPace replaces the token bucket. Tests use it so a short run is not throttled.
+func (g *SearxGuard) SetPace(rate, burst float64) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if rate > 0 {
+		g.rate = rate
+	}
+	if burst > 0 {
+		g.burst = burst
+		g.tokens = burst
+	}
+	g.maxWait = time.Millisecond
+}
+
 // SetLimits updates the daily cap and the failure count that opens the circuit.
 // A daily cap of 0 means unlimited. A non-positive breaker leaves the current value.
 func (g *SearxGuard) SetLimits(dailyCap, breaker int) {
@@ -80,7 +97,7 @@ func (g *SearxGuard) SetLimits(dailyCap, breaker int) {
 func (g *SearxGuard) Search(ctx context.Context, client *http.Client, endpoint, query string, userID int64) ([]map[string]any, map[string]any, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	query = strings.Join(strings.Fields(query), " ")
-	meta := map[string]any{"provider": "searxng"}
+	meta := map[string]any{"provider": "searxng", "engines": "360search,sogou,sogou wechat"}
 	if g == nil || endpoint == "" || query == "" {
 		return nil, meta, nil
 	}
@@ -288,16 +305,29 @@ func searxEndpoint(endpoint, query string) (*url.URL, error) {
 	return target, nil
 }
 
-// searxHTTP talks only to the configured SearXNG host and port. A redirect anywhere else is refused,
-// so the local instance cannot be used as a proxy to a private URL.
+// searxHTTP talks only to the configured SearXNG host and port.
+// That host is an internal trusted URL, including a private Docker address on
+// port 8080, so this client does not reuse a public-web transport that would
+// refuse it. A redirect anywhere else is refused.
 func searxHTTP(base *http.Client, allowed string) *http.Client {
-	var transport http.RoundTripper = http.DefaultTransport
-	if base != nil && base.Transport != nil {
-		transport = base.Transport
+	dialer := &net.Dialer{Timeout: 6 * time.Second}
+	timeout := 6 * time.Second
+	if base != nil && base.Timeout > 0 && base.Timeout < timeout {
+		timeout = base.Timeout
 	}
 	return &http.Client{
-		Transport: transport,
-		Timeout:   6 * time.Second,
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				if !dialAllowed(address, allowed) {
+					return nil, &Error{Message: "searxng 地址不在允许名单"}
+				}
+				return dialer.DialContext(ctx, network, address)
+			},
+			TLSHandshakeTimeout:   4 * time.Second,
+			ResponseHeaderTimeout: timeout,
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 2 {
 				return &Error{Message: "searxng 跳转过多"}
@@ -308,6 +338,18 @@ func searxHTTP(base *http.Client, allowed string) *http.Client {
 			return nil
 		},
 	}
+}
+
+func dialAllowed(address, allowed string) bool {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	host = strings.TrimPrefix(strings.ToLower(host), "www.")
+	if port == "" {
+		port = "80"
+	}
+	return host+":"+port == allowed
 }
 
 func hostKey(raw *url.URL) string {

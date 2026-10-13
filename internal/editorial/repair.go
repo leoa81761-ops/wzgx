@@ -22,6 +22,7 @@ func RepairStructure(draft map[string]any) map[string]any {
 	draft = renumberBrokenLists(draft)
 	draft = dropHeaderLeaks(draft)
 	draft = restoreTruncatedCells(draft)
+	dropEmptySections(draft)
 	return StripReviewNote(draft)
 }
 
@@ -148,45 +149,10 @@ func joinKept(parts []string) string {
 	return strings.Join(kept, "")
 }
 
-// EnsureConcreteTips appends actionable steps until a reader can follow five of them.
+// EnsureConcreteTips does not invent steps. A draft that still lacks concrete
+// tips is held later; canned sentences were showing up in the published body.
 func EnsureConcreteTips(draft map[string]any) map[string]any {
-	if draft == nil || ConcreteTips(draft) >= 5 {
-		return draft
-	}
-	sections := sectionsOf(draft)
-	if len(sections) == 0 {
-		section := map[string]any{"heading": "可以照做的步骤", "paragraphs": []any{}, "list": []any{}}
-		draft["sections"] = []any{section}
-		sections = sectionsOf(draft)
-	}
-	section := sections[0]
-	list := anyList(section["list"])
-	body := fillerText(draft)
-	for _, tip := range concreteTipPool {
-		if ConcreteTips(draft) >= 5 {
-			break
-		}
-		if strings.Contains(body, tip) {
-			continue
-		}
-		list = append(list, tip)
-		section["list"] = list
-		body += tip
-	}
 	return draft
-}
-
-var concreteTipPool = []string{
-	"先打开检修口再看线槽。",
-	"用螺丝把线槽盖板固定住。",
-	"量一下插座离地的高度。",
-	"贴一条胶带标出弱电箱的位置。",
-	"把多余的线盘成两圈再扎好。",
-	"先量一下过道留出80厘米。",
-	"用抹布擦干地砖再让孩子进去。",
-	"打开纱窗之前先把花洒关掉。",
-	"晾10分钟再拧干抹布。",
-	"把白醋倒进杯里泡5分钟。",
 }
 
 func dedupeSectionHeadings(draft map[string]any) map[string]any {
@@ -256,9 +222,7 @@ func renumberBrokenLists(draft map[string]any) map[string]any {
 			section["paragraphs"] = shifted
 		}
 		if len(anyList(section["list"])) > 0 {
-			if shifted, ok := renumberOffset(anyList(section["list"])); ok {
-				section["list"] = shifted
-			}
+			section["list"] = renumberContinuous(anyList(section["list"]))
 		}
 	}
 	return draft

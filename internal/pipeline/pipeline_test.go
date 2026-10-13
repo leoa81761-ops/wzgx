@@ -613,13 +613,13 @@ func TestResearchReadsChatCitations(t *testing.T) {
 				_, _ = w.Write([]byte("upstream"))
 				return
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到公开资料，正文不写网址。"}}],"citations":[{"url":"https://www.gov.cn/zhengce/2024/elv","title":"弱电入门公开说明","snippet":"弱电入门要先看公开说明"},{"url":"https://openstd.samr.gov.cn/std/1","title":"弱电入门综合布线标准","snippet":"弱电入门的综合布线标准"}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"检索到公开资料，正文不写网址。"}}],"citations":[{"url":"https://www.gov.cn/zhengce/2024/elv","title":"会后复盘公开说明","snippet":"会后复盘要先看公开说明"},{"url":"https://openstd.samr.gov.cn/std/1","title":"会后复盘的做法","snippet":"会后复盘要留下可核对的做法"}]}`))
 		case "来源判断":
 			writeSourceJudge(w, req)
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "弱电入门公开说明和综合布线标准都写了这一步。[1][2]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "会后复盘公开说明和会后复盘的做法都写了这一步。[1][2]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -761,7 +761,7 @@ func TestFactCheckExpansionIsTrimmed(t *testing.T) {
 				"title": "核对后变长", "summary": "摘要",
 				"sections": []any{map[string]any{
 					"heading": "甲", "paragraphs": []any{inBand}, "list": []any{},
-					"table": map[string]any{"headers": []any{"项目", "说明"}, "rows": []any{[]any{cell, cell}}},
+					"table": map[string]any{"headers": []any{"项目", "说明"}, "rows": []any{[]any{cell, "另一格把说明写完整"}}},
 				}},
 				"closing": "结束", "sources": []any{},
 			})
@@ -1790,6 +1790,9 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 		{"title": "", "url": "https://www.example.com/blank"},
 		{"title": "综合布线验收 Windows ISO 系统之家", "url": "https://www.xitongzhijia.net/win10.iso"},
 		{"title": "综合布线验收电视剧全集在线观看", "url": "https://www.iqiyi.com/v/1"},
+		{"title": "综合布线验收视频", "url": "https://www.youtube.com/watch?v=1"},
+		{"title": "综合布线验收工具", "url": "https://item.taobao.com/item.htm?id=1"},
+		{"title": "综合布线标准下载", "url": "https://std.samr.gov.cn/gb/download/1"},
 		{"title": "综合布线验收", "url": "https://apps.apple.com/app/id1"},
 		{"title": "PPT模板下载", "url": "https://www.1ppt.com/moban/1"},
 		{"title": "弱电验收词典", "url": "https://www.json.cn/ci"},
@@ -1811,8 +1814,6 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 	for _, url := range []string{
 		"https://www.mohurd.gov.cn/gongkai/untitled",
 		"https://www.example.com/office",
-		"https://www.example.com/tea",
-		"https://www.example.com/blank",
 		"https://www.gov.cn/zhengce/loan",
 	} {
 		if !seen[url] {
@@ -1822,6 +1823,11 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 	for _, url := range []string{
 		"https://www.xitongzhijia.net/win10.iso",
 		"https://www.iqiyi.com/v/1",
+		"https://www.youtube.com/watch?v=1",
+		"https://item.taobao.com/item.htm?id=1",
+		"https://std.samr.gov.cn/gb/download/1",
+		"https://www.example.com/tea",
+		"https://www.example.com/blank",
 		"https://apps.apple.com/app/id1",
 		"https://www.1ppt.com/moban/1",
 		"https://www.json.cn/ci",

@@ -13,6 +13,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/editorial"
 	"github.com/leoa81761-ops/wzgx/internal/llm"
+	"github.com/leoa81761-ops/wzgx/internal/render"
 	"github.com/leoa81761-ops/wzgx/internal/topics"
 )
 
@@ -180,19 +181,69 @@ func TestSourcedPieceIsNotLabeledExperience(t *testing.T) {
 		"sources":  []any{map[string]any{"title": "住宅综合布线说明", "url": "https://www.gov.cn/a"}},
 	}
 	out := ensureInlineCitations(draft)
-	if !strings.Contains(bodyPlain(out), "[1]") || !strings.Contains(bodyPlain(out), "住宅综合布线说明") {
+	if strings.Contains(bodyPlain(out), "先核对这一处") || strings.Contains(bodyPlain(out), "住宅综合布线说明") || !strings.Contains(bodyPlain(out), "[1]") {
 		t.Fatal(bodyPlain(out))
 	}
 	warm := editorial.EnsureConcreteTips(editorial.StripWarmFiller(map[string]any{
 		"sections": []any{map[string]any{"paragraphs": []any{"今晚很温馨。", "彼此很有默契。"}}},
 	}))
-	if editorial.ConcreteTips(warm) < 5 || strings.Contains(editorialFiller(warm), "温馨") {
-		t.Fatal(editorial.ConcreteTips(warm))
+	if strings.Contains(editorialFiller(warm), "温馨") || strings.Contains(editorialFiller(warm), "先打开检修口再看线槽") {
+		t.Fatal(editorialFiller(warm))
 	}
 }
 
 func editorialFiller(draft map[string]any) string {
 	return bodyPlain(draft)
+}
+
+func TestSectionsStayInOutlineOrder(t *testing.T) {
+	table := map[string]any{
+		"headers": []any{"项目", "做法"},
+		"rows":    []any{[]any{"线槽", "盖板固定后再量高度"}},
+	}
+	part := map[string]any{"title": "插座高度", "sections": []any{
+		map[string]any{"heading": "先看问题", "paragraphs": []any{"先把检修口打开，看清线槽再动手。"}},
+		map[string]any{"heading": "对照表", "paragraphs": []any{"高度写在表里。"}, "table": table},
+		map[string]any{"heading": "空的一节", "paragraphs": []any{}},
+		map[string]any{"heading": "收尾", "paragraphs": []any{"量完再封板。"}, "list": []any{"1. 打开检修口。", "3. 固定盖板。", "1. 量插座高度。"}},
+	}}
+	headings := []string{"先看问题", "对照表", "空的一节", "收尾"}
+	var assembled map[string]any
+	for i, heading := range headings {
+		assembled = absorbSection(assembled, part, heading, i, len(headings))
+	}
+	assembled = compactOutline(assembled)
+	assembled = editorial.RepairStructure(assembled)
+	sections := asList(assembled["sections"])
+	if len(sections) != 3 {
+		t.Fatal(len(sections), bodyPlain(assembled))
+	}
+	var got []string
+	for _, raw := range sections {
+		section, _ := raw.(map[string]any)
+		got = append(got, str(section["heading"]))
+		if str(section["heading"]) == "对照表" {
+			if section["table"] == nil {
+				t.Fatal("table left its section")
+			}
+		} else if section["table"] != nil {
+			t.Fatal("table moved", section["heading"])
+		}
+	}
+	if strings.Join(got, ",") != "先看问题,对照表,收尾" {
+		t.Fatal(got)
+	}
+	list := asList(sections[2].(map[string]any)["list"])
+	if str(list[0]) != "1. 打开检修口。" || str(list[1]) != "2. 固定盖板。" || str(list[2]) != "3. 量插座高度。" {
+		t.Fatal(list)
+	}
+	md := render.Markdown(assembled)
+	tableAt := strings.Index(md, "| 线槽 | 盖板固定后再量高度 |")
+	headAt := strings.Index(md, "## 对照表")
+	nextAt := strings.Index(md, "## 收尾")
+	if strings.Index(md, "## 先看问题") < 0 || headAt < 0 || nextAt < headAt || tableAt < headAt || tableAt > nextAt || strings.Contains(md, "空的一节") {
+		t.Fatal(md)
+	}
 }
 
 func expandServer(t *testing.T, calls *int, data map[string]any) *httptest.Server {
