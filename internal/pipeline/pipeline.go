@@ -119,7 +119,6 @@ type Built struct {
 	Trace          []map[string]any
 	MissingSources bool
 	Uncited        bool
-	LengthShort    bool
 	NoFacts        bool
 	OffStructure   bool
 	NoDatedNews    bool
@@ -970,12 +969,6 @@ func finishPiece(ctx context.Context, gateway *llm.Gateway, providers map[string
 		tokens += rewriteTokens
 		trace = append(trace, rewriteTrace...)
 	}
-	if w.WordTarget > 0 && content.BodyRunes(draft) > w.WordTarget*130/100 {
-		shortened, condenseTokens, condenseTrace := condenseOnce(ctx, gateway, providers, draft, base)
-		draft = shortened
-		tokens += condenseTokens
-		trace = append(trace, condenseTrace...)
-	}
 	if strings.TrimSpace(w.CostNote) == "" {
 		ranked, titleTokens, titleTrace := rankTitles(ctx, gateway, providers, draft, w, fallbackTitle, base, sensitive)
 		draft = ranked
@@ -1796,11 +1789,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return fail(trace, "draft", completion, err)
 	}
 	noteProgress(ctx, "draft", draft, topic, trace, tokens)
-	rewrittenSections, rewriteTokens, rewriteTrace := rewriteShortSections(ctx, gateway, providers["draft"], draftPayload, draft)
-	draft = rewrittenSections
-	tokens += rewriteTokens
-	trace = append(trace, rewriteTrace...)
-	noteProgress(ctx, "draft", draft, topic, trace, tokens)
 	assembled := cloneDraft(draft)
 	reviewPayload := cloneMap(draftPayload)
 	// Sensitive words are a gate: one rewrite, then the task fails. The body is not replaced by a fact-check or a second review.
@@ -1832,8 +1820,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = finished
 	tokens += pieceTokens
 	trace = append(trace, pieceTrace...)
-	// Polish and the one condense may shorten a too-long draft on purpose.
-	// Later cleanup must not throw away that text, so the snapshot moves forward when the body is still there.
+	// The polish pass may edit the opening. Later cleanup must not throw that text away.
 	if content.BodyRunes(draft) > 0 {
 		assembled = cloneDraft(draft)
 	}
@@ -1969,10 +1956,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.RepairStructure(draft)
 	draft = keepBody(draft, assembled)
 	repeated := editorial.RepeatedBody(draft)
-	var lengthShort bool
-	if w.WordTarget > 0 {
-		lengthShort = content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget)
-	}
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
@@ -1984,7 +1967,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	html = editorial.RepairMarkup(html)
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
 }
 
 func heldDelivery(built Built) (bool, string) {
@@ -1995,8 +1978,8 @@ func heldDelivery(built Built) (bool, string) {
 	if built.NoDatedNews {
 		note = joinNote(note, "快报没有带日期的来源，未写入公众号草稿。")
 	}
-	if built.LengthShort {
-		note = joinNote(note, "篇幅不到目标的 85%，未写入公众号草稿。")
+	if built.Draft != nil && content.BodyRunes(built.Draft) == 0 {
+		note = joinNote(note, "正文没有写出来，未写入公众号草稿。")
 	}
 	if built.Uncited {
 		note = joinNote(note, "正文没有引用，未写入公众号草稿。")
@@ -4717,17 +4700,11 @@ func settleExperience(draft map[string]any, structure string, target int) map[st
 
 // dedupeExperience drops near-duplicate paragraphs. When that would push a draft
 // that already cleared the length floor back under it, the longer text stays.
-func dedupeExperience(draft map[string]any, target int) map[string]any {
-	before := content.BodyRunes(draft)
+func dedupeExperience(draft map[string]any, _ int) map[string]any {
 	next := cloneDraft(draft)
 	next = editorial.RepairNearDuplicates(next)
 	next = editorial.DedupeBlocks(next)
-	after := content.BodyRunes(next)
-	floor := 0
-	if target > 0 {
-		floor = target * 85 / 100
-	}
-	if floor > 0 && before >= floor && after < floor {
+	if next == nil {
 		return draft
 	}
 	return next
@@ -5145,54 +5122,6 @@ func softenTaboos(ctx context.Context, gateway *llm.Gateway, providers map[strin
 	return editorial.RewriteTaboos(draft, taboos), 0, nil
 }
 
-func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any, target int, costNote string) (map[string]any, int, []map[string]any) {
-	if gateway == nil || target <= 0 || strings.TrimSpace(costNote) != "" || draft == nil {
-		return draft, 0, nil
-	}
-	if optionalClosed(ctx) {
-		return draft, 0, []map[string]any{{"stage": "expand", "ok": true, "skipped": "时间不够，这一步先不做"}}
-	}
-	goal := target * 110 / 100
-	high := target * 130 / 100
-	if content.BodyRunes(draft) >= goal {
-		return draft, 0, nil
-	}
-	limit := 2
-	if target >= 1200 {
-		limit = 4
-	}
-	var tokens int
-	var trace []map[string]any
-	for pass := 0; pass < limit && content.BodyRunes(draft) < goal; pass++ {
-		if pass > 0 && optionalClosed(ctx) {
-			break
-		}
-		before := content.BodyRunes(draft)
-		shortfall := goal - before
-		if shortfall < 1 {
-			shortfall = 1
-		}
-		next, added, expandTrace := expandBody(ctx, gateway, pieceProviders(providers), base, draft, goal, shortfall, 0, nil)
-		tokens += added
-		trace = append(trace, expandTrace...)
-		nextRunes := content.BodyRunes(next)
-		if nextRunes > high && before < target*85/100 {
-			next = content.TrimToMax(next, target*120/100)
-			nextRunes = content.BodyRunes(next)
-		}
-		grew := false
-		if nextRunes > before && nextRunes <= high {
-			copySources(next, draft)
-			draft = next
-			grew = true
-		}
-		if !grew {
-			break
-		}
-	}
-	return draft, tokens, trace
-}
-
 func rewriteCliches(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any, costNote string) (map[string]any, int, []map[string]any) {
 	if draft == nil || !bodyHasAny(draft, catalog.Cliches) {
 		return draft, 0, nil
@@ -5357,156 +5286,6 @@ func factCheck(ctx context.Context, gateway *llm.Gateway, providers []llm.Provid
 	return checked, completion.PromptTokens + completion.CompletionTokens, trace
 }
 
-func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, target int) (map[string]any, int, []map[string]any, bool) {
-	if target <= 0 {
-		return draft, 0, nil, false
-	}
-	low := target * 85 / 100
-	floor := target * 95 / 100
-	high := target * 130 / 100
-	goal := target * 105 / 100
-	var trace []map[string]any
-	tokens := 0
-	stillShort := false
-	if content.BodyRunes(draft) < floor {
-		passes := 2
-		if budgetFrom(ctx) != nil && budgetLeft(ctx) < 5*time.Second {
-			passes = 0
-		} else if budgetTight(ctx) {
-			passes = 1
-		}
-		for pass := 0; pass < passes && content.BodyRunes(draft) < floor; pass++ {
-			if pass > 0 && budgetTight(ctx) {
-				break
-			}
-			before := content.BodyRunes(draft)
-			shortfall := goal - before
-			if shortfall < 1 {
-				shortfall = 1
-			}
-			next, added, expandTrace := expandBody(ctx, gateway, providers, payload, draft, goal, shortfall, 0, nil)
-			tokens += added
-			trace = append(trace, expandTrace...)
-			if content.BodyRunes(next) > before {
-				draft = next
-			} else {
-				break
-			}
-		}
-		stillShort = content.BodyRunes(draft) < low
-	}
-	if content.BodyRunes(draft) > high && !budgetTight(ctx) {
-		before := content.BodyRunes(draft)
-		condensePayload := cloneMap(payload)
-		condensePayload["draft"] = draft
-		condensePayload["current_chars"] = before
-		condensed, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("缩写", condensePayload), llm.StageSchema("正文"), validateDraft)
-		trace = appendStage(trace, "condense", completion, err)
-		if err == nil && condensed != nil {
-			tokens += completion.PromptTokens + completion.CompletionTokens
-			if kept, ok := keepCondensed(draft, condensed, target); ok {
-				draft = kept
-			}
-		}
-	}
-	return draft, tokens, trace, stillShort
-}
-
-func expandBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any, goal, shortfall, tokens int, trace []map[string]any) (map[string]any, int, []map[string]any) {
-	expandPayload := cloneMap(payload)
-	expandPayload["draft"] = draft
-	expandPayload["current_chars"] = content.BodyRunes(draft)
-	expandPayload["expand_goal"] = goal
-	if shortfall > 0 {
-		expandPayload["shortfall"] = shortfall
-	}
-	expanded, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("扩写", expandPayload), llm.StageSchema("正文"), validateDraft)
-	trace = appendStage(trace, "expand", completion, err)
-	if err != nil {
-		return draft, tokens, trace
-	}
-	merged, _ := mergeExpansion(draft, expanded)
-	return merged, tokens + completion.PromptTokens + completion.CompletionTokens, trace
-}
-
-// mergeExpansion keeps the original text. A longer draft that still contains it is kept.
-// A rewrite that drops the original is appended as new sections, and only if the body grows.
-func mergeExpansion(original, next map[string]any) (map[string]any, bool) {
-	if original == nil || next == nil {
-		return original, false
-	}
-	before := content.BodyRunes(original)
-	if keepsOriginalText(original, next) && content.BodyRunes(next) > before {
-		copySources(next, original)
-		return next, true
-	}
-	merged := cloneDraft(original)
-	sections := asList(merged["sections"])
-	existing := bodyPlain(merged)
-	for _, raw := range asList(next["sections"]) {
-		section, _ := raw.(map[string]any)
-		if section == nil {
-			continue
-		}
-		text := strings.TrimSpace(sectionPlain(section))
-		if text == "" || strings.Contains(existing, text) {
-			continue
-		}
-		sections = append(sections, section)
-		existing += "\n" + text
-	}
-	merged["sections"] = sections
-	if content.BodyRunes(merged) > before {
-		return merged, true
-	}
-	return original, false
-}
-
-func keepsOriginalText(original, next map[string]any) bool {
-	body := bodyPlain(next)
-	for _, bit := range significantBits(original) {
-		if !strings.Contains(body, bit) {
-			return false
-		}
-	}
-	return true
-}
-
-func significantBits(draft map[string]any) []string {
-	var out []string
-	for _, raw := range asList(draft["sections"]) {
-		section, _ := raw.(map[string]any)
-		if section == nil {
-			continue
-		}
-		for _, item := range asList(section["paragraphs"]) {
-			if text := strings.TrimSpace(str(item)); utf8.RuneCountInString(text) >= 2 {
-				out = append(out, text)
-			}
-		}
-		for _, item := range asList(section["list"]) {
-			if text := strings.TrimSpace(str(item)); utf8.RuneCountInString(text) >= 2 {
-				out = append(out, text)
-			}
-		}
-		if table, _ := section["table"].(map[string]any); table != nil {
-			for _, item := range asList(table["headers"]) {
-				if text := strings.TrimSpace(str(item)); utf8.RuneCountInString(text) >= 2 {
-					out = append(out, text)
-				}
-			}
-			for _, row := range asList(table["rows"]) {
-				for _, cell := range asList(row) {
-					if text := strings.TrimSpace(str(cell)); utf8.RuneCountInString(text) >= 2 {
-						out = append(out, text)
-					}
-				}
-			}
-		}
-	}
-	return out
-}
-
 func sectionPlain(section map[string]any) string {
 	var b strings.Builder
 	for _, item := range asList(section["paragraphs"]) {
@@ -5571,65 +5350,6 @@ func coreEntity(topic string) string {
 		}
 	}
 	return best
-}
-
-// rewriteShortSections asks once for each section that missed its budget.
-// It does not expand the whole article, and a rewrite that does not grow is discarded.
-func rewriteShortSections(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any) (map[string]any, int, []map[string]any) {
-	if draft == nil || gateway == nil || len(providers) == 0 {
-		return draft, 0, nil
-	}
-	points := outlineSections(payload)
-	sections := asList(draft["sections"])
-	var tokens int
-	var trace []map[string]any
-	for i, raw := range sections {
-		if ctx.Err() != nil || budgetLeft(ctx) < time.Second {
-			break
-		}
-		section, _ := raw.(map[string]any)
-		if section == nil {
-			continue
-		}
-		budget := 0
-		if i < len(points) {
-			budget = intOf(points[i]["word_budget"])
-		}
-		if budget < 1 {
-			continue
-		}
-		if sectionRunes(section) >= budget*95/100 {
-			continue
-		}
-		req := cloneMap(payload)
-		req["section_index"] = i + 1
-		req["section_count"] = len(sections)
-		req["section_heading"] = str(section["heading"])
-		req["section_intent"] = ""
-		if i < len(points) {
-			req["section_intent"] = str(points[i]["intent"])
-		}
-		req["section_target"] = budget
-		req["section"] = section
-		callCtx, cancel := stageContext(ctx, budgetCall)
-		part, completion, err := gateway.CompleteJSON(callCtx, providers, llm.StageMessages("正文", req), llm.StageSchema("正文"), validateDraft)
-		cancel()
-		tokens += completion.PromptTokens + completion.CompletionTokens
-		trace = append(trace, traceRows("draft", completion)...)
-		if err != nil {
-			continue
-		}
-		next := pickSection(part, str(section["heading"]), 0)
-		if sectionRunes(next) <= sectionRunes(section) {
-			continue
-		}
-		if str(section["heading"]) != "" {
-			next["heading"] = str(section["heading"])
-		}
-		sections[i] = next
-		draft["sections"] = sections
-	}
-	return draft, tokens, trace
 }
 
 func sectionRunes(section map[string]any) int {
@@ -5712,7 +5432,7 @@ func keepBody(current, assembled map[string]any) map[string]any {
 // writeSectionedDraft asks for one JSON section per outline point, then keeps
 // those sections in outline order. Rendering walks that structure and does not
 // trust a later rewrite to put a table or a heading back where it belongs.
-// A short result stays short and is held later.
+// A short result stays short and is delivered. An empty body is not.
 func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, topic topics.Choice, trace []map[string]any, tokens int) (map[string]any, int, []map[string]any, llm.Completion, error) {
 	sections := outlineSections(payload)
 	target := intOf(payload["word_target"])

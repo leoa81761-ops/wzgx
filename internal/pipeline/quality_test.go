@@ -20,45 +20,7 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/topics"
 )
 
-func TestExpandRetriesOnceWithTheShortfall(t *testing.T) {
-	var calls int
-	var sawShortfall bool
-	short := "只有一句。"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		var req map[string]any
-		_ = json.Unmarshal(raw, &req)
-		if stageOf(req) != "扩写" {
-			t.Errorf("stage %s", stageOf(req))
-		}
-		calls++
-		msgs, _ := req["messages"].([]any)
-		blob, _ := json.Marshal(msgs)
-		if strings.Contains(string(blob), "shortfall") {
-			sawShortfall = true
-		}
-		writeChoice(w, map[string]any{
-			"title": "短稿", "summary": "摘要",
-			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{short}, "list": []any{}}},
-			"closing":  "结束", "sources": []any{},
-		})
-	}))
-	defer srv.Close()
-	gw := llm.NewGateway(false, srv.Client())
-	draft := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{short}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	}
-	out, _, _, still := fitBody(context.Background(), gw, []llm.Provider{{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}, map[string]any{"word_target": 800}, draft, 800)
-	if calls != 1 || !sawShortfall || !still || content.BodyRunes(out) >= 800*85/100 {
-		t.Fatalf("calls %d shortfall %v still %v runes %d", calls, sawShortfall, still, content.BodyRunes(out))
-	}
-}
-
-func TestShortDraftIsNotPushed(t *testing.T) {
+func TestShortDraftIsDelivered(t *testing.T) {
 	var expands int
 	short := map[string]any{
 		"title": "短稿", "summary": "摘要",
@@ -109,7 +71,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 0 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 0 || article.Status != "in_draft" || article.DraftMediaID == "" || strings.Contains(article.DeliveryNote, "85%") || !strings.Contains(article.BodyHTML, "只有一句。") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }
@@ -279,73 +241,6 @@ func TestActiveColumnReplacesPackSubtopics(t *testing.T) {
 	}}, "", nil, "弱电智能化", "验收", []topics.Coverage{{Subtopic: "星形与环形", Angle: "损耗核算"}}, nil, []string{"星形和环形哪种损耗更低", "爷爷奶奶捧着温茶转圈"}, []string{"损耗核算"})
 	if !ok || strings.Contains(repeated.Subtopic, "星形") || strings.Contains(repeated.Angle, "损耗") {
 		t.Fatal(repeated, ok)
-	}
-}
-
-func TestFinalTopUpAimsAt110(t *testing.T) {
-	var calls int
-	var sawGoal bool
-	short := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{map[string]any{"url": "https://www.gov.cn/a", "title": "来源"}},
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		var req map[string]any
-		_ = json.Unmarshal(raw, &req)
-		if stageOf(req) != "扩写" {
-			t.Errorf("stage %s", stageOf(req))
-		}
-		calls++
-		msgs, _ := req["messages"].([]any)
-		blob, _ := json.Marshal(msgs)
-		if strings.Contains(string(blob), "880") {
-			sawGoal = true
-		}
-		writeChoice(w, short)
-	}))
-	defer srv.Close()
-	gw := llm.NewGateway(false, srv.Client())
-	out, _, _ := topUpLength(t.Context(), gw, map[string][]llm.Provider{"draft": {{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}}, short, map[string]any{"word_target": 800}, 800, "")
-	if calls != 1 || !sawGoal || content.BodyRunes(out) >= 800*110/100 {
-		t.Fatalf("calls %d goal %v runes %d", calls, sawGoal, content.BodyRunes(out))
-	}
-	grown := strings.Repeat("合适的正文。", 147)
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeChoice(w, map[string]any{"title": "短稿", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{grown}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
-	}))
-	defer srv2.Close()
-	gw2 := llm.NewGateway(false, srv2.Client())
-	out, _, _ = topUpLength(t.Context(), gw2, map[string][]llm.Provider{"draft": {{
-		Name: "写作", Protocol: "openai", BaseURL: srv2.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}}, short, map[string]any{"word_target": 800}, 800, "")
-	if content.BodyRunes(out) < 800*110/100 || str(asList(out["sources"])[0].(map[string]any)["url"]) != "https://www.gov.cn/a" {
-		t.Fatal(content.BodyRunes(out), out["sources"])
-	}
-}
-
-func TestLongColumnTopUpUsesFourPasses(t *testing.T) {
-	var calls int
-	short := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{map[string]any{"url": "https://www.gov.cn/a", "title": "来源"}},
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		text := strings.Repeat("合适的正文。", calls*20)
-		writeChoice(w, map[string]any{"title": "短稿", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{text}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
-	}))
-	defer srv.Close()
-	gw := llm.NewGateway(false, srv.Client())
-	_, _, _ = topUpLength(t.Context(), gw, map[string][]llm.Provider{"draft": {{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}}, short, map[string]any{"word_target": 1500}, 1500, "")
-	if calls != 4 {
-		t.Fatal(calls)
 	}
 }
 

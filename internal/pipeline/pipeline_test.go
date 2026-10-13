@@ -336,8 +336,8 @@ func TestDraftExpandsOnceWhenShort(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expandCalls != 0 || article.Status != "held" || !strings.Contains(article.BodyHTML, "只有一句。") || strings.Contains(article.BodyHTML, "步骤写清楚。") {
-		t.Fatalf("expands %d status %s html %s", expandCalls, article.Status, article.BodyHTML)
+	if expandCalls != 0 || article.Status != "in_draft" || article.DraftMediaID == "" || !strings.Contains(article.BodyHTML, "只有一句。") || strings.Contains(article.BodyHTML, "步骤写清楚。") || strings.Contains(article.DeliveryNote, "85%") {
+		t.Fatalf("expands %d status %s note %s html %s", expandCalls, article.Status, article.DeliveryNote, article.BodyHTML)
 	}
 }
 
@@ -479,60 +479,6 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 		if note.Title == "无参考来源" {
 			t.Fatalf("%#v", notes)
 		}
-	}
-}
-
-func TestExpandAsksToCondenseInsteadOfCutting(t *testing.T) {
-	long := strings.Repeat("步骤写清楚。", 400)
-	short := strings.Repeat("压短后仍是完整的句子。", 80)
-	var sawGoal bool
-	var condense int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		var req map[string]any
-		_ = json.Unmarshal(raw, &req)
-		body := long
-		switch stageOf(req) {
-		case "扩写":
-			msgs, _ := req["messages"].([]any)
-			if len(msgs) > 0 {
-				last, _ := msgs[len(msgs)-1].(map[string]any)
-				content, _ := last["content"].(string)
-				if strings.Contains(content, `"expand_goal":840`) || strings.Contains(content, `"expand_goal": 840`) {
-					sawGoal = true
-				}
-			}
-		case "缩写":
-			condense++
-			body = short
-		default:
-			t.Errorf("stage %s", stageOf(req))
-		}
-		writeChoice(w, map[string]any{
-			"title": "短稿", "summary": "摘要",
-			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body}, "list": []any{}}},
-			"closing":  "结束", "sources": []any{},
-		})
-	}))
-	defer srv.Close()
-	gw := llm.NewGateway(false, srv.Client())
-	draft := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	}
-	out, _, trace, stillShort := fitBody(context.Background(), gw, []llm.Provider{{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}, map[string]any{"word_target": 800}, draft, 800)
-	if stillShort {
-		t.Fatal("expanded draft should clear the short flag")
-	}
-	if !sawGoal || condense < 1 {
-		t.Fatalf("goal %v condense %d", sawGoal, condense)
-	}
-	raw, _ := json.Marshal(out)
-	if !strings.Contains(string(raw), "压短后仍是完整的句子。") || strings.Contains(string(raw), "步骤写清楚。") {
-		t.Fatalf("runes %d trace %#v body %s", content.BodyRunes(out), trace, raw)
 	}
 }
 
@@ -806,7 +752,7 @@ func TestFactCheckExpansionIsTrimmed(t *testing.T) {
 		t.Fatal(err)
 	}
 	high := 800 * 130 / 100
-	if n := content.BodyRunes(articles[0].BodyJSON); n > high || n < 800*85/100 {
+	if n := content.BodyRunes(articles[0].BodyJSON); n == 0 || n > high {
 		t.Fatalf("body runes %d", n)
 	}
 	if strings.Count(articles[0].BodyHTML, cell) >= 16 || !strings.Contains(articles[0].BodyHTML, "合适的正文。") {
@@ -849,15 +795,15 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "long@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 0 || condenseCalls < 1 {
+	if expandCalls != 0 || condenseCalls != 0 {
 		t.Fatalf("expand %d condense %d", expandCalls, condenseCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if !strings.Contains(articles[0].BodyHTML, short) || strings.Contains(articles[0].BodyHTML, "很长的说明文字") {
-		t.Fatal(articles[0].BodyHTML)
+	if strings.Contains(articles[0].BodyHTML, short) || !strings.Contains(articles[0].BodyHTML, "很长的说明文字") || strings.Contains(articles[0].DeliveryNote, "85%") {
+		t.Fatal(articles[0].DeliveryNote, articles[0].BodyHTML)
 	}
 }
 
@@ -901,8 +847,8 @@ func TestDraftSkipsRewriteWhenInBand(t *testing.T) {
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if n := content.BodyRunes(articles[0].BodyJSON); n < 800*85/100 || n > 800*130/100 {
-		t.Fatalf("body runes %d", n)
+	if n := content.BodyRunes(articles[0].BodyJSON); n == 0 || !strings.Contains(articles[0].BodyHTML, "合适的正文。") {
+		t.Fatalf("body runes %d html %s", n, articles[0].BodyHTML)
 	}
 }
 
@@ -1032,11 +978,11 @@ func TestDegradeSkipsRewriteAndTitles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if polish != 0 || titles != 0 || condense < 1 {
+	if polish != 0 || titles != 0 || condense != 0 {
 		t.Fatalf("polish %d titles %d condense %d", polish, titles, condense)
 	}
 	raw, _ := json.Marshal(built.Draft)
-	if !strings.Contains(string(raw), short) {
+	if !strings.Contains(string(raw), long) || strings.Contains(string(raw), short) {
 		t.Fatal(string(raw))
 	}
 	beforePolish, beforeTitles, beforeCondense := polish, titles, condense
@@ -2521,31 +2467,9 @@ func TestStageBudgetsStayUnderTwelveMinutes(t *testing.T) {
 	}
 }
 
-func TestTightBudgetSkipsExtraExpand(t *testing.T) {
-	var expands int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		expands++
-		writeChoice(w, map[string]any{
-			"title": "短稿", "summary": "摘要",
-			"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"还是很短。"}, "list": []any{}}},
-			"closing":  "结束", "sources": []any{},
-		})
-	}))
-	defer srv.Close()
-	gw := llm.NewGateway(false, srv.Client())
+func TestTightBudgetSkipsOptionalStages(t *testing.T) {
 	ctx := withBudget(context.Background())
 	budgetFrom(ctx).start = time.Now().Add(-generationBudget + 30*time.Second)
-	draft := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	}
-	_, _, trace, _ := fitBody(ctx, gw, []llm.Provider{{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 5 * time.Second,
-	}}, map[string]any{"word_target": 800}, draft, 800)
-	if expands != 1 {
-		t.Fatalf("expands %d trace %#v", expands, trace)
-	}
 	_, skip := skipOptional(ctx, "factcheck", nil)
 	if !skip {
 		t.Fatal("tight budget should skip factcheck")

@@ -89,8 +89,9 @@ func TestBuildBothColumnsStayOnTopic(t *testing.T) {
 		if body == "" || strings.Contains(str(built.Draft["title"]), "正在生成") {
 			t.Fatal(topic.Column, str(built.Draft["title"]), body)
 		}
-		if content.BodyRunes(built.Draft) < 800*85/100 {
-			t.Fatalf("%s runes %d", topic.Column, content.BodyRunes(built.Draft))
+		_, note := heldDelivery(built)
+		if strings.Contains(note, "85%") || strings.Contains(note, "篇幅") {
+			t.Fatalf("%s %s", topic.Column, note)
 		}
 		core := coreEntity(topic.Subtopic)
 		seen := map[string]bool{}

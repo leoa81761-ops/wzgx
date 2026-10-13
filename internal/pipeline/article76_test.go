@@ -1,12 +1,8 @@
 package pipeline
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/content"
@@ -229,32 +225,6 @@ func TestBingNoiseNeedsEntityOverlap(t *testing.T) {
 		if str(row["url"]) == "https://www.example.com/exam" && str(row["reason"]) != "和选题无关" {
 			t.Fatal(row)
 		}
-	}
-}
-
-func TestExpandStopsAfterTwoFailedPasses(t *testing.T) {
-	var n int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n++
-		text := strings.Repeat("现场补了一句。", n)
-		writeChoice(w, map[string]any{
-			"title": "短稿", "summary": "摘要",
-			"sections": []any{map[string]any{"heading": "现场案例", "paragraphs": []any{text}, "list": []any{}}},
-			"closing":  "结束", "sources": []any{},
-		})
-	}))
-	defer srv.Close()
-	draft := map[string]any{
-		"title": "短稿", "summary": "摘要",
-		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
-		"closing":  "结束", "sources": []any{},
-	}
-	gw := llm.NewGateway(false, srv.Client())
-	out, _, _, still := fitBody(context.Background(), gw, []llm.Provider{{
-		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
-	}}, map[string]any{"word_target": 800}, draft, 800)
-	if n != 2 || !still || !strings.Contains(bodyPlain(out), "只有一句。") {
-		t.Fatalf("passes %d still %v runes %d", n, still, content.BodyRunes(out))
 	}
 }
 
