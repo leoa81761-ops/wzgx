@@ -33,10 +33,19 @@ func tabooRule(payload map[string]any) string {
 }
 
 func columnRule(payload map[string]any) string {
-	if strings.TrimSpace(asString(payload["column_positioning"])) == "" {
-		return ""
+	var b strings.Builder
+	if strings.TrimSpace(asString(payload["column_positioning"])) != "" {
+		b.WriteString("column_positioning 是栏目定位的全文，要整段遵守，不要只取前几个字。")
 	}
-	return "column_positioning 是栏目定位的全文，要整段遵守，不要只取前几个字。"
+	switch strings.ToLower(strings.TrimSpace(asString(payload["column_structure"]))) {
+	case "news", "news-brief", "快报":
+		b.WriteString("栏目是快报：每一段都要有可以核对的日期，至少一处 [n]，不要每段用同一个日期词开头。")
+	case "steps", "step-by-step", "breakdown", "拆解":
+		b.WriteString("栏目是步骤：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。")
+	case "qa", "q&a", "faq", "问答":
+		b.WriteString("栏目是问答：至少一对。问句以问号结尾，答案用「答：」接在问号后面或单独成下一段；答案里不要再出现问号。")
+	}
+	return b.String()
 }
 
 func motifRule(payload map[string]any) string {
@@ -90,9 +99,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	switch stageLabel {
 	case "资料检索":
 		system = "你是资料检索助手。请立刻联网搜索，先用中文搜索，优先中文网页。" +
-			"为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。" +
+			"为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。每条都要讲这篇选题本身，不要用只沾到一个词的页面。" +
 			"优先 gov.cn、samr.gov.cn、std.samr.gov.cn、openstd.samr.gov.cn、mohurd.gov.cn、国家标准、中国行业协会和主流媒体，不要用转载站、聚合站、文库镜像或内容农场。" +
-			"不要网店、帮助台、登录页和购物车页面。同一网站最多两条。" +
+			"不要搜索结果页、百科词条、词典页面、标准下载器或检索页。不要网店、帮助台、登录页和购物车页面。同一网站最多两条。" +
 			"输入里的 blocked_domains 一律不要引用。" +
 			"如果输入里有 allowed_domains，只引用这些域名及其子域名。" +
 			"不要在回答里编写网址。程序只采用接口返回的 citations、search_results 或 annotations，正文里的链接不会被当作来源。" +
@@ -136,8 +145,8 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "补引用":
 		schema = StageSchema("正文")
-		system = "你是公众号编辑。正文漏了引用序号。请对照 research_sources，在用到这些事实的句末补上 [1]、[2]，序号从 1 开始，对应来源顺序。" +
-			"不要编造来源里没有的事实，不要新增网址，不要改已经写对的数字。没有用到的来源不要写进 sources。" +
+		system = "你是公众号编辑。正文漏了引用序号。请对照 research_sources，只在这句话确实能被该来源的标题或摘要支撑时，在句末补上 [1]、[2]，序号从 1 开始，对应来源顺序。" +
+			"来源没讲到的句子不要标引用。不要编造来源里没有的事实，不要新增网址，不要改已经写对的数字。没有用到的来源不要写进 sources。" +
 			markerRule + readerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "开头比较":
@@ -155,9 +164,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "栏目结构":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
-			"news 或快报：每段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
-			"qa 或问答：每个「答」紧跟一个以问号结尾的问题，答案里不要再出现问号。" +
-			"steps 或拆解：每段都要有序号。" +
+			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
+			"qa 或问答：至少一对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
+			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 			"不要在句首机械地加「近日」，不要补空泛的「答：」，不要给没有来源的句子加 [1]。" +
 			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule + markerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
@@ -196,8 +205,12 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"输入里如果有 research_notes 或 research_sources，事实和 sources 只能来自这些材料，sources 必须保留这些来源，不要删掉网址。" +
 			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
 			"免费或无来源时 sources 必须是空数组。"
+		if stageLabel == "选题" {
+			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。"
+		}
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthRule + citationRule + markerRule + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
+			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。"
 		}
 		system += readerRule + motifRule(payload)
 		if stageLabel == "审核" {

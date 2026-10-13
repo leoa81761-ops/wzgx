@@ -179,7 +179,7 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 		case "大纲":
 			data = map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"}
 		default:
-			data = map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}}
+			data = map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "职场成长说明写了这一步。[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}}
 		}
 		body, _ := json.Marshal(data)
 		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(body)}}}})
@@ -259,7 +259,7 @@ func TestResearchRetriesWhenEmpty(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "远程协作的一件小事", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "职场成长说明写了这一步。[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -428,7 +428,7 @@ func TestBackupResearchRetriesChatFast(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "补救检索成功", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "补救检索成功", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "职场成长说明写了这一步。[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -558,7 +558,7 @@ func TestResearchDropsAggregatorDomains(t *testing.T) {
 		default:
 			writeChoice(w, map[string]any{
 				"title": "只要官方来源", "summary": "摘要",
-				"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body + "[1]"}, "list": []any{}}},
+				"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body + "职场成长说明写了这一步。[1]"}, "list": []any{}}},
 				"closing":  "结束",
 				"sources":  []any{map[string]any{"name": "西陆", "title": "转载", "url": "https://fyun.com/a", "source_type": "news"}},
 			})
@@ -602,7 +602,7 @@ func TestResearchReadsChatCitations(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1][2]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "弱电入门", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "弱电入门公开说明和综合布线标准都写了这一步。[1][2]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -638,7 +638,7 @@ func TestResearchRelaxesAllowlist(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "允许名单外的来源", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "允许名单外的来源", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "职场成长说明写了这一步。[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -682,7 +682,7 @@ func TestResearchRetryDropsBlocklistThenRelaxes(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "屏蔽后再放宽", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "屏蔽后再放宽", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 120) + "职场成长说明写了这一步。[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -1147,7 +1147,7 @@ func TestResearchPrefersChatFast(t *testing.T) {
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
 		default:
-			writeChoice(w, map[string]any{"title": "先用快模型", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body + "[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			writeChoice(w, map[string]any{"title": "先用快模型", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{body + "职场成长说明写了这一步。[1]"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		}
 	}))
 	defer srv.Close()
@@ -1727,15 +1727,11 @@ func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
 		{"title": "", "url": "https://www.gov.cn/zhengce/untitled"},
 		{"title": "弱电验收词典", "url": "https://www.json.cn/ci"},
 		{"title": "验收说明", "url": "https://example.com/one"},
+		{"title": "弱电验收检索", "url": "https://std.samr.gov.cn/search/orgOthers?q=%E5%BC%B1%E7%94%B5"},
+		{"title": "家里（汉语词语）_百度百科", "url": "https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C"},
+		{"title": "市场监管总局发出合规提示", "url": "https://www.samr.gov.cn/xw/zj/art/1.html"},
 	}, content.DefaultSourcePolicy(), "弱电 验收")
-	if len(kept) != 4 {
-		t.Fatal(kept)
-	}
-	seen := map[string]bool{}
-	for _, row := range kept {
-		seen[str(row["url"])] = true
-	}
-	if !seen["https://www.mohurd.gov.cn/a"] || !seen["https://www.gov.cn/zhengce/1"] || !seen["https://www.gov.cn/tea"] || !seen["https://www.gov.cn/zhengce/untitled"] || seen["https://www.1ppt.com/moban/1"] || seen["https://example.com/tea"] || seen["https://www.json.cn/ci"] || seen["https://example.com/one"] {
+	if len(kept) != 1 || str(kept[0]["url"]) != "https://www.gov.cn/zhengce/1" {
 		t.Fatal(kept, dropped)
 	}
 }
@@ -1899,7 +1895,7 @@ func TestResearchUsesWebSearchAfterModelFailure(t *testing.T) {
 	}))
 	defer search.Close()
 	var researchCalls int
-	body := strings.Repeat("合适的正文。", 120) + "[1]"
+	body := strings.Repeat("合适的正文。", 120) + "弱电智能化验收说明写了这一步。[1]"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any

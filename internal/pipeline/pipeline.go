@@ -1430,6 +1430,37 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if topicTitle == "" {
 		topicTitle = clip(topic.Subtopic+"："+topic.Angle, 64)
 	}
+	topicMemoryLines := topicMemory(w.History, w.RecentTitles, w.RecentTopics)
+	if topics.SameSubject(topicTitle, topicMemoryLines) {
+		retryPayload := cloneMap(base)
+		retryPayload["rejected_title"] = topicTitle
+		retryPayload["avoid_topics"] = topicMemoryLines
+		retried, retryCompletion, retryErr := gateway.CompleteJSON(ctx, providers["topic"], llm.StageMessages("选题", retryPayload), llm.StageSchema("选题"), validateTopic)
+		tokens += retryCompletion.PromptTokens + retryCompletion.CompletionTokens
+		trace = append(trace, traceRows("topic", retryCompletion)...)
+		if retryErr == nil {
+			next := clip(str(retried["title"]), 64)
+			if next != "" && !topics.SameSubject(next, append(topicMemoryLines, topicTitle)) {
+				topicTitle = next
+				topicData = retried
+			}
+		}
+	}
+	if topics.SameSubject(topicTitle, topicMemoryLines) {
+		subs := []string{topic.Subtopic}
+		if usingColumn {
+			subs = columns.Topics(picked.Name, picked.Positioning, w.Direction, w.Keywords)
+		}
+		shifted := topics.Diverge(topic, subs, topics.AngleOptions(topic.Angle), append(topicMemoryLines, topicTitle))
+		alt := clip(shifted.Subtopic+"："+shifted.Angle, 64)
+		if alt != "" && !topics.SameSubject(alt, topicMemoryLines) {
+			topic = shifted
+			topicTitle = alt
+			base["subtopic"] = topic.Subtopic
+			base["angle"] = topic.Angle
+			base["column"] = topic.Column
+		}
+	}
 	base["topic_title"] = topicTitle
 	var researchSources []any
 	searched := false
@@ -1589,7 +1620,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = polishDraft(topped, w)
 	tokens += topTokens
 	trace = append(trace, topTrace...)
-	if motifs := topics.RepeatedMotifs(w.RecentTitles); strings.TrimSpace(w.CostNote) == "" && bodyHasAny(draft, motifs) {
+	motifs := topics.RepeatedMotifs(w.RecentTitles)
+	motifs = append(motifs, topics.SubjectHits(bodyPlain(draft), topicMemoryLines)...)
+	if strings.TrimSpace(w.CostNote) == "" && bodyHasAny(draft, motifs) {
 		motifBase := cloneMap(base)
 		motifBase["avoid_motifs"] = motifs
 		rewritten, motifTokens, motifTrace := rewriteMotif(ctx, gateway, providers, draft, motifBase)
@@ -1607,14 +1640,31 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.StripUnsourcedNames(draft)
 	tokens += copyTokens
 	trace = append(trace, copyTrace...)
+	if usingColumn {
+		draft = quality.AlignStructure(picked.Structure, draft)
+	}
 	draft = editorial.SupportCitations(draft)
+	draft = editorial.CiteSupported(draft)
 	delete(draft, "_quality")
 	cited := citationMarks.MatchString(bodyPlain(draft))
 	if w.Tier != "free" && hadSources && !cited && strings.TrimSpace(w.CostNote) == "" {
 		added, citeTokens, citeTrace := addCitations(ctx, gateway, providers, draft, base)
 		draft = editorial.SupportCitations(added)
+		draft = editorial.CiteSupported(draft)
 		tokens += citeTokens
 		trace = append(trace, citeTrace...)
+		cited = citationMarks.MatchString(bodyPlain(draft))
+	}
+	if w.WordTarget > 0 && content.BodyRunes(draft) < w.WordTarget {
+		topped, topTokens, topTrace = topUpLength(ctx, gateway, providers, draft, base, w.WordTarget, w.CostNote)
+		draft = topped
+		tokens += topTokens
+		trace = append(trace, topTrace...)
+		if usingColumn {
+			draft = quality.AlignStructure(picked.Structure, draft)
+		}
+		draft = editorial.SupportCitations(draft)
+		draft = editorial.CiteSupported(draft)
 		cited = citationMarks.MatchString(bodyPlain(draft))
 	}
 	uncited := false
@@ -1633,6 +1683,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	missingSources := w.Tier != "free" && searched && !hadSources
 	noFacts := missingSources
+	if usingColumn && columns.NormalizeStructure(picked.Structure) != "custom" {
+		offStructure = !quality.StructureOK(columns.NormalizeStructure(picked.Structure), draftParagraphs(draft))
+	}
 	if w.WordTarget > 0 {
 		lengthShort = content.BodyRunes(draft) < w.WordTarget*85/100
 	}
@@ -2393,6 +2446,21 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			}
 		}
 	}
+	if len(sources) < 3 {
+		found, searchErr := backupHTMLSearch(ctx, gateway, focusedQuery(payload))
+		if searchErr == nil && len(found) > 0 {
+			combined := append(append([]map[string]any{}, sources...), found...)
+			notes4, sources4, dropped4, relaxed4 := takeSources(ctx, client, notes, combined, policy, topic)
+			dropped = append(dropped, dropped4...)
+			if len(sources4) > len(sources) {
+				if notes == "" && notes4 != "" {
+					notes = notes4
+				}
+				sources = sources4
+				relaxed = relaxed || relaxed4
+			}
+		}
+	}
 	if sourcesHaveURL(sources) || err2 == nil || err1 == nil {
 		if merged.Model == "" {
 			merged.ProviderID = first.ProviderID
@@ -2456,6 +2524,29 @@ func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string) (
 		return nil, nil
 	}
 	return llm.SearchChain(ctx, gateway.Client, targets, query)
+}
+
+func focusedQuery(payload map[string]any) string {
+	title := strings.TrimSpace(str(payload["topic_title"]))
+	if title == "" {
+		title = strings.TrimSpace(str(payload["subtopic"]))
+	}
+	if title == "" {
+		return shortSearchQuery(payload)
+	}
+	title = strings.Map(func(r rune) rune {
+		switch r {
+		case '，', '。', '？', '?', '！', '、', '：', ':', '；', ';':
+			return ' '
+		default:
+			return r
+		}
+	}, title)
+	title = strings.Join(strings.Fields(title), " ")
+	if utf8.RuneCountInString(title) > 24 {
+		title = string([]rune(title)[:24])
+	}
+	return strings.TrimSpace(title)
 }
 
 func shortSearchQuery(payload map[string]any) string {
@@ -2664,8 +2755,6 @@ func enrichSources(ctx context.Context, client *http.Client, sources []map[strin
 }
 
 func filterSourceQuality(sources []map[string]any, topic string) (kept []map[string]any, dropped []map[string]any) {
-	terms := topicTerms(topic)
-	technical := content.TechnicalTopic(topic)
 	for _, source := range sources {
 		if source == nil {
 			continue
@@ -2676,22 +2765,128 @@ func filterSourceQuality(sources []map[string]any, topic string) (kept []map[str
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "PPT模板或文库"})
 			continue
 		}
-		if content.DictionaryHost(raw) {
-			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "词典站点"})
+		if content.DictionaryHost(raw) || content.ReferenceEntry(title) {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "词典或百科"})
 			continue
 		}
-		if technical && content.OfficialHost(raw) {
+		if content.SearchResultURL(raw) {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "搜索结果页"})
+			continue
+		}
+		blob := strings.TrimSpace(title + " " + str(source["snippet"]) + " " + str(source["note"]) + " " + raw)
+		if content.StandardNumberTopic(topic) && content.SharesStandardNumber(topic, blob) {
 			kept = append(kept, source)
 			continue
 		}
-		blob := strings.TrimSpace(title + " " + str(source["snippet"]) + " " + str(source["note"]))
-		if len(terms) > 0 && !relevantSource(blob, terms) {
+		if !onTopic(blob, topic) {
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "与选题无关"})
 			continue
 		}
 		kept = append(kept, source)
 	}
 	return kept, dropped
+}
+
+func onTopic(text, topic string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	phrases := topicPhrases(topic)
+	if len(phrases) > 0 {
+		for _, phrase := range phrases {
+			if strings.Contains(text, phrase) {
+				return true
+			}
+		}
+		return false
+	}
+	words := topicWords(topic)
+	need := 2
+	if len(words) < need {
+		need = len(words)
+	}
+	if need == 0 {
+		return false
+	}
+	hits := 0
+	seen := map[string]bool{}
+	for _, word := range words {
+		if seen[word] || !strings.Contains(text, word) {
+			continue
+		}
+		seen[word] = true
+		hits++
+		if hits >= need {
+			return true
+		}
+	}
+	return false
+}
+
+func topicPhrases(topic string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, run := range hanRuns(topic) {
+		if len(run) < 4 {
+			continue
+		}
+		for i := 0; i+4 <= len(run); i++ {
+			phrase := string(run[i : i+4])
+			if seen[phrase] || genericPhrase(phrase) {
+				continue
+			}
+			seen[phrase] = true
+			out = append(out, phrase)
+		}
+	}
+	return out
+}
+
+func topicWords(topic string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, run := range hanRuns(topic) {
+		if len(run) != 2 {
+			continue
+		}
+		word := string(run)
+		if seen[word] || noisyTerm(word) {
+			continue
+		}
+		seen[word] = true
+		out = append(out, word)
+	}
+	return out
+}
+
+func hanRuns(text string) [][]rune {
+	var out [][]rune
+	var buf []rune
+	flush := func() {
+		if len(buf) > 0 {
+			out = append(out, buf)
+			buf = nil
+		}
+	}
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+func genericPhrase(text string) bool {
+	switch text {
+	case "国家标准", "标准公告", "住房城乡", "城乡建设", "市场监管", "监督管理", "正式发布", "关于发布", "关于废止", "有限公司":
+		return true
+	default:
+		return false
+	}
 }
 
 func topicTerms(topic string) []string {
@@ -2729,29 +2924,6 @@ func noisyTerm(text string) bool {
 	switch text {
 	case "一个", "这个", "可以", "不要", "我们", "读者", "自己", "什么", "怎么", "如何", "进行", "通过", "为了", "栏目", "定位", "全文", "已经", "因为", "所以", "如果", "但是":
 		return true
-	}
-	return false
-}
-
-func relevantSource(text string, terms []string) bool {
-	need := 2
-	if len(terms) < need {
-		need = len(terms)
-	}
-	if need == 0 {
-		return false
-	}
-	hits := 0
-	seen := map[string]bool{}
-	for _, term := range terms {
-		if seen[term] || !strings.Contains(text, term) {
-			continue
-		}
-		seen[term] = true
-		hits++
-		if hits >= need {
-			return true
-		}
 	}
 	return false
 }
@@ -2807,6 +2979,10 @@ func rewriteColumnStructure(ctx context.Context, gateway *llm.Gateway, providers
 	model, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("栏目结构", payload), llm.StageSchema("正文"), validateDraft)
 	trace := appendStage(nil, "structure", completion, err)
 	if err != nil || model == nil || !quality.StructureOK(kind, draftParagraphs(model)) {
+		shaped := quality.AlignStructure(kind, draft)
+		if quality.StructureOK(kind, draftParagraphs(shaped)) {
+			return shaped, tokensOf(completion), trace, false
+		}
 		return draft, tokensOf(completion), trace, true
 	}
 	if content.BodyRunes(model)*2 < content.BodyRunes(draft) {
@@ -2886,9 +3062,13 @@ func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string
 	if content.BodyRunes(draft) >= goal {
 		return draft, 0, nil
 	}
+	limit := 2
+	if target >= 1200 {
+		limit = 4
+	}
 	var tokens int
 	var trace []map[string]any
-	for pass := 0; pass < 2 && content.BodyRunes(draft) < goal; pass++ {
+	for pass := 0; pass < limit && content.BodyRunes(draft) < goal; pass++ {
 		before := content.BodyRunes(draft)
 		shortfall := goal - before
 		if shortfall < 1 {
@@ -2898,6 +3078,10 @@ func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string
 		tokens += added
 		trace = append(trace, expandTrace...)
 		nextRunes := content.BodyRunes(next)
+		if nextRunes > high && before < target*85/100 {
+			next = content.TrimToMax(next, target*120/100)
+			nextRunes = content.BodyRunes(next)
+		}
 		if nextRunes > before && nextRunes <= high {
 			copySources(next, draft)
 			draft = next

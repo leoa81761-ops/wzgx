@@ -100,6 +100,34 @@ func TestColumnStructure(t *testing.T) {
 	if varied[0] != "近日，第一条。" || varied[1] != "近日，第二条。" || strings.Contains(varied[0].(string), "[1]") {
 		t.Fatal(varied)
 	}
+	combined := Fixture{Title: "问答", Paragraphs: []string{"问：验收要看什么？答：先对照图纸。", "后面这段不带问号。"}, Sources: 1, WordTarget: 8, Structure: "qa"}
+	if has(Check(combined), "structure") {
+		t.Fatal(Check(combined))
+	}
+	shaped := AlignStructure("qa", map[string]any{
+		"title":    "系统集成投标写得越全就越稳吗",
+		"sections": []any{map[string]any{"paragraphs": []any{"篇幅不能代替对准招标范围。", "写准才是底线。"}}},
+	})
+	shapedSection := shaped["sections"].([]any)[0].(map[string]any)
+	shapedParas := shapedSection["paragraphs"].([]any)
+	var texts []string
+	for _, item := range shapedParas {
+		texts = append(texts, item.(string))
+	}
+	if !StructureOK("qa", texts) {
+		t.Fatal(texts)
+	}
+	numbered := AlignStructure("steps", map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"先把常用的放到顺手处。", "再把来回的路并成一趟。"}}},
+	})
+	stepParas := numbered["sections"].([]any)[0].(map[string]any)["paragraphs"].([]any)
+	var stepText []string
+	for _, item := range stepParas {
+		stepText = append(stepText, item.(string))
+	}
+	if !StructureOK("steps", stepText) {
+		t.Fatal(stepText)
+	}
 	stray := Fixture{Title: "问答", Paragraphs: []string{"验收要看什么？", "答：这样做对吗？"}, Sources: 1, WordTarget: 10, Structure: "qa"}
 	if !has(Check(stray), "structure") {
 		t.Fatal(Check(stray))

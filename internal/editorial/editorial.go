@@ -1222,6 +1222,73 @@ func supportSentence(sentence string, sources []any) string {
 	return strings.TrimSpace(claim) + strings.Join(keep, "")
 }
 
+// CiteSupported adds [n] only where the sentence is actually backed by that source.
+func CiteSupported(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	sources := anyList(draft["sources"])
+	if len(sources) == 0 {
+		return draft
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			paras = append(paras, citeParagraph(textOf(item), sources))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+	}
+	if text := strings.TrimSpace(textOf(draft["closing"])); text != "" {
+		draft["closing"] = citeParagraph(text, sources)
+	}
+	return draft
+}
+
+func citeParagraph(text string, sources []any) string {
+	if strings.TrimSpace(text) == "" || !hasHan(text) {
+		return text
+	}
+	parts := splitSentences(text)
+	var out []string
+	for _, part := range parts {
+		out = append(out, citeSentence(part, sources))
+	}
+	return strings.Join(out, "")
+}
+
+func citeSentence(sentence string, sources []any) string {
+	if citeMark.MatchString(sentence) {
+		return sentence
+	}
+	claim := strings.TrimSpace(sentence)
+	if utf8.RuneCountInString(compact(claim)) < 8 {
+		return sentence
+	}
+	best := 0
+	for i := range sources {
+		if citationSupported(claim, i+1, sources) {
+			best = i + 1
+			break
+		}
+	}
+	if best == 0 {
+		return sentence
+	}
+	return strings.TrimSpace(sentence) + "[" + strconv.Itoa(best) + "]"
+}
+
+func hasHan(text string) bool {
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
 func citationSupported(claim string, n int, sources []any) bool {
 	if n < 1 || n > len(sources) {
 		return false
@@ -1231,16 +1298,95 @@ func citationSupported(claim string, n int, sources []any) bool {
 		return false
 	}
 	backing := citationSourceText(source)
-	if backing == "" || strings.TrimSpace(claim) == "" {
+	claim = strings.TrimSpace(claim)
+	if backing == "" || claim == "" {
 		return false
 	}
-	if utf8.RuneCountInString(compact(claim)) < 12 {
+	if utf8.RuneCountInString(compact(claim)) < 8 {
+		return false
+	}
+	if sharedHanPhrase(claim, backing, 4) {
 		return true
 	}
-	if ShingleSimilarity(claim, backing, 2) >= 0.18 {
-		return true
+	return distinctiveShared(claim, backing) >= 2
+}
+
+func sharedHanPhrase(a, b string, n int) bool {
+	ar := hanRunes(a)
+	br := hanRunes(b)
+	if len(ar) < n || len(br) < n {
+		return false
 	}
-	return sharesTerm(claim, backing)
+	seen := map[string]bool{}
+	for i := 0; i+n <= len(ar); i++ {
+		seen[string(ar[i:i+n])] = true
+	}
+	for i := 0; i+n <= len(br); i++ {
+		if seen[string(br[i:i+n])] {
+			return true
+		}
+	}
+	return false
+}
+
+func hanRunes(text string) []rune {
+	var out []rune
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func distinctiveShared(a, b string) int {
+	seen := map[string]bool{}
+	for _, term := range distinctiveTerms(a) {
+		seen[term] = true
+	}
+	hits := 0
+	used := map[string]bool{}
+	for _, term := range distinctiveTerms(b) {
+		if seen[term] && !used[term] {
+			used[term] = true
+			hits++
+		}
+	}
+	return hits
+}
+
+func distinctiveTerms(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	var buf []rune
+	flush := func() {
+		if len(buf) >= 2 && len(buf) <= 6 {
+			term := string(buf)
+			if !seen[term] && !genericCiteTerm(term) {
+				seen[term] = true
+				out = append(out, term)
+			}
+		}
+		buf = nil
+	}
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+func genericCiteTerm(text string) bool {
+	switch text {
+	case "标准", "工程", "设计", "公告", "发布", "规范", "系统", "建设", "国家", "要求", "文件", "技术", "管理", "工作", "相关", "进行", "通过", "可以", "需要", "应当", "必须", "关于", "住房", "城乡", "市场", "监管", "公司", "有限", "单位", "项目", "内容", "情况", "问题", "方法", "以及", "一个", "我们", "这个", "没有", "不是", "公开", "说明", "正文", "合适":
+		return true
+	default:
+		return false
+	}
 }
 
 func citationSourceText(source map[string]any) string {
@@ -1250,44 +1396,6 @@ func citationSourceText(source map[string]any) string {
 		snippet = strings.TrimSpace(textOf(source["note"]))
 	}
 	return strings.TrimSpace(title + " " + snippet)
-}
-
-func sharesTerm(a, b string) bool {
-	seen := map[string]bool{}
-	for _, term := range hanTerms(a) {
-		seen[term] = true
-	}
-	for _, term := range hanTerms(b) {
-		if seen[term] {
-			return true
-		}
-	}
-	return false
-}
-
-func hanTerms(text string) []string {
-	var out []string
-	var buf []rune
-	flush := func() {
-		if len(buf) >= 2 {
-			out = append(out, string(buf))
-			if len(buf) <= 8 {
-				for i := 0; i+2 <= len(buf); i++ {
-					out = append(out, string(buf[i:i+2]))
-				}
-			}
-		}
-		buf = nil
-	}
-	for _, r := range text {
-		if unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r) {
-			buf = append(buf, r)
-			continue
-		}
-		flush()
-	}
-	flush()
-	return out
 }
 
 func clone(draft map[string]any) map[string]any {
