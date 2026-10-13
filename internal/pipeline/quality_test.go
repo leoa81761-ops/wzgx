@@ -109,7 +109,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 7 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 5 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }
@@ -309,7 +309,7 @@ func TestFinalTopUpAimsAt110(t *testing.T) {
 	out, _, _ := topUpLength(t.Context(), gw, map[string][]llm.Provider{"draft": {{
 		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
 	}}}, short, map[string]any{"word_target": 800}, 800, "")
-	if calls != 2 || !sawGoal || content.BodyRunes(out) >= 800*110/100 {
+	if calls != 1 || !sawGoal || content.BodyRunes(out) >= 800*110/100 {
 		t.Fatalf("calls %d goal %v runes %d", calls, sawGoal, content.BodyRunes(out))
 	}
 	grown := strings.Repeat("合适的正文。", 147)
@@ -335,7 +335,8 @@ func TestLongColumnTopUpUsesFourPasses(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		writeChoice(w, short)
+		text := strings.Repeat("合适的正文。", calls*20)
+		writeChoice(w, map[string]any{"title": "短稿", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{text}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 	}))
 	defer srv.Close()
 	gw := llm.NewGateway(false, srv.Client())

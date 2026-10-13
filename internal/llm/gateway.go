@@ -41,6 +41,7 @@ type Completion struct {
 	Protocol         string
 	Model            string
 	ReasoningEffort  string
+	Duration         time.Duration
 	Attempts         []map[string]any
 	ResearchSources  []map[string]any
 }
@@ -174,7 +175,7 @@ func (g *Gateway) CompleteJSON(ctx context.Context, providers []Provider, messag
 			continue
 		}
 		attempts = append(attempts, completion.Attempts...)
-		attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": completion.Protocol, "model": provider.Model, "reasoning_effort": completion.ReasoningEffort, "ok": true})
+		attempts = append(attempts, successAttempt(provider, completion))
 		completion.Attempts = attempts
 		return validated, completion, nil
 	}
@@ -251,7 +252,7 @@ func (g *Gateway) completeText(ctx context.Context, providers []Provider, messag
 			continue
 		}
 		attempts = append(attempts, completion.Attempts...)
-		attempts = append(attempts, map[string]any{"provider_id": provider.ID, "provider_name": provider.Name, "protocol": completion.Protocol, "model": provider.Model, "reasoning_effort": completion.ReasoningEffort, "ok": true})
+		attempts = append(attempts, successAttempt(provider, completion))
 		completion.Attempts = attempts
 		return completion, nil
 	}
@@ -315,6 +316,7 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 		if err == nil {
 			completion.Attempts = failed
 			completion.ReasoningEffort = effort
+			completion.Duration = time.Since(started)
 			if cacheKey != "" {
 				g.remember(cacheKey, completion)
 			}
@@ -324,6 +326,7 @@ func (g *Gateway) complete(ctx context.Context, provider Provider, messages []ma
 		failed = append(failed, map[string]any{
 			"provider_id": provider.ID, "provider_name": provider.Name, "protocol": protocol,
 			"model": provider.Model, "reasoning_effort": effort, "ok": false, "error": clip(err.Error(), 300),
+			"ms": time.Since(started).Milliseconds(),
 		})
 		if limit.research {
 			if researchQuick < 2 && quickResearchError(status, err, time.Since(started)) {
@@ -397,6 +400,17 @@ func quickResearchError(status int, err error, elapsed time.Duration) bool {
 		return false
 	}
 	return true
+}
+
+func successAttempt(provider Provider, completion Completion) map[string]any {
+	attempt := map[string]any{
+		"provider_id": provider.ID, "provider_name": provider.Name, "protocol": completion.Protocol,
+		"model": provider.Model, "reasoning_effort": completion.ReasoningEffort, "ok": true,
+	}
+	if completion.Duration > 0 {
+		attempt["ms"] = completion.Duration.Milliseconds()
+	}
+	return attempt
 }
 
 func failureAttempts(provider Provider, completion Completion, err error) []map[string]any {

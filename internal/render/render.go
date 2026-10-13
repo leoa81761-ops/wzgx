@@ -131,7 +131,7 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 			}
 			parts = append(parts, `<ul style="`+theme["ul"]+`">`+lis.String()+`</ul>`)
 		}
-		if table, _ := section["table"].(map[string]any); table != nil && !compact {
+		if table, _ := section["table"].(map[string]any); table != nil {
 			if rendered := renderTable(theme, table); rendered != "" {
 				parts = append(parts, rendered)
 			}
@@ -229,6 +229,10 @@ func renderTable(theme map[string]string, table map[string]any) string {
 		case []any:
 			for _, cell := range row {
 				cells = append(cells, strings.TrimSpace(asString(cell)))
+			}
+		case []string:
+			for _, cell := range row {
+				cells = append(cells, strings.TrimSpace(cell))
 			}
 		}
 		if len(cells) > 0 {
@@ -426,6 +430,12 @@ func asList(v any) []any {
 	switch t := v.(type) {
 	case []any:
 		return t
+	case []string:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = item
+		}
+		return out
 	case nil:
 		return nil
 	default:

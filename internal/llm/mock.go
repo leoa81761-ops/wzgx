@@ -15,22 +15,24 @@ const sourcedFacts = "不得编造来源里没有的阈值、电压、标准编�
 
 const namedSourceRule = "不要写出 research_sources 或 sources 里没有出现的机构名、标准号或文件名。来源名单里没有的部委、协会、学会、GB、GB/T 和书名号标题都不要写。"
 
-const citationRule = "用到 research_sources 里的事实时，在句末用 [1]、[2] 这种序号标出对应来源，序号从 1 开始，对应 sources 的顺序。没有用到的来源不要写进 sources。没有来源时不要编造 [n]。"
+const citationRule = "用到 research_sources 里的事实时，在句末用 [1]、[2] 这种序号标出对应来源，序号从 1 开始连续编号，不能只有 [2] 而没有 [1]。没有用到的来源不要写进 sources。没有来源时不要编造 [n]。不要整句照抄来源里的原句，用自己的话转述，事实和数字保持一致。"
 
-const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据。每句事实的句末必须带上对应的 [n]，序号和事实清单一致。不要写清单以外的数字、机构、标准、新闻或网址。引用在写正文时就标上，不要留到后面再补。"
+const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据。每句事实的句末必须带上对应的 [n]，序号和事实清单一致，从 [1] 连续编号。不要写清单以外的数字、机构、标准、新闻或网址。引用在写正文时就标上，不要留到后面再补。不要整句照抄来源里的原句，用自己的话转述。"
+
+const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
 const experienceRule = "writing_mode 是 experience：这是经验分享。不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。文末来源会标成经验分享。" +
-	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少一对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
-	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。"
+	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少三对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
+	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。不要写诊断、剂量、疗效或用药。"
 
 func evidenceRule(payload map[string]any) string {
 	if asString(payload["writing_mode"]) == "experience" {
 		return experienceRule
 	}
 	if strings.TrimSpace(asString(payload["fact_sheet"])) != "" {
-		return factSheetRule + markerRule
+		return factSheetRule + healthRule + markerRule
 	}
-	return citationRule + markerRule
+	return citationRule + healthRule + markerRule
 }
 
 const markerRule = "保留正文里已有的 [n] 引用标记，不要删掉，也不要改动序号。"
@@ -63,7 +65,7 @@ func columnRule(payload map[string]any) string {
 	case "steps", "step-by-step", "breakdown", "拆解":
 		b.WriteString("栏目是步骤：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。")
 	case "qa", "q&a", "faq", "问答":
-		b.WriteString("栏目是问答：至少一对。问句以问号结尾，答案用「答：」接在问号后面或单独成下一段；答案里不要再出现问号。")
+		b.WriteString("栏目是问答：至少三对。问句以问号结尾，答案用「答：」接在问号后面或单独成下一段；答案里不要再出现问号。")
 	}
 	return b.String()
 }
@@ -118,9 +120,12 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	var system string
 	switch stageLabel {
 	case "来源判断":
-		system = "你是资料相关性判断。对照 topic，给 candidates 里每一条打 0 到 3 分：0 无关，1 只是沾到同一个词，2 确实在讲这件事，3 直接回答选题。" +
-			"同时列出该来源里能核对的关键事实，没有就给空数组。不要因为标题里有相同的两个字就给 2 分。" +
-			"软件下载、系统镜像、影视剧、视频站和应用商店一律 0 分。index 必须使用候选里的 index，不要改序号。" +
+		system = "你是资料相关性判断。对照 topic，判断 candidates 里每一条能不能当这篇的来源。" +
+			"每条必须给出 page_type、on_topic、snippet 和 fact。page_type 只能是 news、official、standard、professional、forum、ad、novel、dictionary、job、ecommerce、other。professional 表示专业文章。" +
+			"只有 news、official、standard、professional 才可能保留。on_topic 表示是不是在讲这个选题本身，只沾到同一个词必须是 false。" +
+			"snippet 必须是页面原文里连续出现的一句，用来支撑 fact，不要改写，不要编造。" +
+			"下面这些一律判成对应类型，而且 on_topic 为 false：TXT小说下载、章节全文、全文阅读是 novel；小说帖、同人、虚构故事是 novel；词典、百科、例句、造句是 dictionary；贷款、借钱、信用卡是 ad；招聘、职位、月薪是 job；豆瓣图书、书评是 other；手机或数码论坛帖是 forum。" +
+			"软件下载、系统镜像、影视剧、视频站和应用商店是 other，on_topic 为 false。index 必须使用候选里的 index，不要改序号。" +
 			"没有标题时用 url 和 snippet 判断。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要增加字段，不要输出解释。" +
 			"\nJSON Schema：\n" + schemaText(schema)
 	case "资料检索":
@@ -192,7 +197,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if asString(payload["writing_mode"]) == "experience" {
 			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按 column_structure 和 structure 里的栏目结构模板重写成一篇完整稿。" +
 				"不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。" +
-				"qa 或问答：至少一对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
+				"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
 				"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 				"news 或快报：没有可核对的新闻时不要编造日期和 [n]，按栏目定位写成经验分享。" +
 				"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。" +
@@ -202,7 +207,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		}
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
-			"qa 或问答：至少一对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
+			"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
 			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 			"不要在句首机械地加「近日」，不要补空泛的「答：」，不要给没有来源的句子加 [1]。" +
 			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule + markerRule +
@@ -427,7 +432,18 @@ func mockJudge(payload map[string]any) map[string]any {
 		if row != nil && intOf(row["index"]) > 0 {
 			index = intOf(row["index"])
 		}
-		items = append(items, map[string]any{"index": index, "score": score, "facts": facts})
+		pageType := "other"
+		onTopic := false
+		snippet := ""
+		if score >= 2 {
+			pageType = "professional"
+			onTopic = true
+			snippet = fact
+		}
+		items = append(items, map[string]any{
+			"index": index, "score": score, "facts": facts,
+			"page_type": pageType, "on_topic": onTopic, "snippet": snippet, "fact": fact,
+		})
 	}
 	if items == nil {
 		items = []any{}
@@ -582,7 +598,11 @@ func mockStructured(payload map[string]any) map[string]any {
 	case "news", "news-brief", "快报":
 		section["paragraphs"] = []any{"2024年10月12日，综合布线验收有一条公开说明。[1]", "10月11日，另一条记录写的是现场编号。[1]"}
 	case "qa", "q&a", "faq", "问答":
-		section["paragraphs"] = []any{"验收要先看哪一项？", "答：先对照图纸核对编号。"}
+		section["paragraphs"] = []any{
+			"验收要先看哪一项？答：先对照图纸核对编号。",
+			"材料清单放在哪一步？答：放在进场之前核对。",
+			"编号对不上怎么办？答：先停下再对照图纸。",
+		}
 	case "steps", "step-by-step", "breakdown", "拆解":
 		section["paragraphs"] = []any{"1. 先看现场。", "2. 再核对编号。"}
 	}
@@ -701,7 +721,7 @@ func draftFromPayload(payload map[string]any) map[string]any {
 				lead,
 				follows[i%len(follows)],
 			},
-			"list": []any{"先做一个最小步骤", "做完后用一句话记下结果", "不追求一次到位"},
+			"list": []any{"先做一个最小步骤", "做完后用一句话记下结果", "不追求一次到位", "语气是" + style},
 		}
 		if point != nil && point["need_table"] == true {
 			section["table"] = map[string]any{

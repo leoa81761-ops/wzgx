@@ -179,7 +179,7 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 		t.Fatal(steps[0]["content"])
 	}
 	judge := StageMessages("来源判断", map[string]any{"topic": "综合布线验收"})
-	if !strings.Contains(judge[0]["content"], "JSON Schema") || !strings.Contains(judge[0]["content"], "items") {
+	if !strings.Contains(judge[0]["content"], "JSON Schema") || !strings.Contains(judge[0]["content"], "items") || !strings.Contains(judge[0]["content"], "page_type") || !strings.Contains(judge[0]["content"], "小说") {
 		t.Fatal(judge[0]["content"])
 	}
 	for _, stage := range []string{"缩写", "事实核对", "审核", "结构润色", "补引用", "意象改写"} {

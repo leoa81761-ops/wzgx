@@ -46,10 +46,18 @@ func StageSchema(stageLabel string) *Schema {
 					"type":        "array",
 					"description": "每条候选一个对象，index 与输入一致",
 					"items": objectSchema(
-						[]string{"index", "score", "facts"},
+						[]string{"index", "page_type", "on_topic", "snippet", "fact"},
 						map[string]any{
 							"index": map[string]any{"type": "integer", "description": "候选序号，从 1 开始"},
-							"score": map[string]any{"type": "integer", "description": "和这篇选题的相关性，0 到 3。2 及以上才保留"},
+							"page_type": map[string]any{
+								"type":        "string",
+								"enum":        []any{"news", "official", "standard", "professional", "forum", "ad", "novel", "dictionary", "job", "ecommerce", "other"},
+								"description": "页面类型。professional 是专业文章。只有 news、official、standard、professional 才可能保留",
+							},
+							"on_topic": map[string]any{"type": "boolean", "description": "是不是在讲这个选题本身。只沾到同一个词必须为 false"},
+							"snippet":  strField("页面原文里连续出现的一句，用来支撑 fact，不要改写"),
+							"fact":     strField("这句原句支撑的事实。没有就空字符串"),
+							"score":    map[string]any{"type": "integer", "description": "和这篇选题的相关性，0 到 3"},
 							"facts": map[string]any{
 								"type":        "array",
 								"description": "这条来源里能核对的关键事实。无关或没有事实时为空数组",

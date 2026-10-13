@@ -101,8 +101,16 @@ func TestColumnStructure(t *testing.T) {
 		t.Fatal(varied)
 	}
 	combined := Fixture{Title: "问答", Paragraphs: []string{"问：验收要看什么？答：先对照图纸。", "后面这段不带问号。"}, Sources: 1, WordTarget: 8, Structure: "qa"}
-	if has(Check(combined), "structure") {
+	if !has(Check(combined), "structure") {
 		t.Fatal(Check(combined))
+	}
+	three := Fixture{Title: "问答", Paragraphs: []string{
+		"问：验收要看什么？答：先对照图纸。",
+		"问：材料放哪里？答：放在进场前。",
+		"问：编号不对怎么办？答：先停下。",
+	}, Sources: 1, WordTarget: 8, Structure: "qa"}
+	if has(Check(three), "structure") {
+		t.Fatal(Check(three))
 	}
 	shaped := AlignStructure("qa", map[string]any{
 		"title":    "系统集成投标写得越全就越稳吗",

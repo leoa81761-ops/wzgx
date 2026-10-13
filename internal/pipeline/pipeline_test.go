@@ -51,7 +51,7 @@ func TestPipelineReachesDraftAndRotatesTopics(t *testing.T) {
 	if older.Status != "in_draft" || !strings.HasPrefix(older.DraftMediaID, "mock_draft_") {
 		t.Fatalf("%s %s", older.Status, older.DraftMediaID)
 	}
-	if !strings.Contains(older.BodyHTML, "style=") || !strings.Contains(older.BodyHTML, "温暖亲和") || !strings.Contains(older.BodyHTML, "#1f6a4d") {
+	if !strings.Contains(older.BodyHTML, "style=") || !strings.Contains(older.BodyHTML, "先做一个最小步骤") || !strings.Contains(older.BodyHTML, "#1f6a4d") {
 		t.Fatal(older.BodyHTML)
 	}
 	coverage, err := st.ListCoverage(ctx, nil, plan.ID)
@@ -234,7 +234,13 @@ func TestResearchMarkdownBecomesSources(t *testing.T) {
 			continue
 		}
 		sawResearch = true
-		if row["provider_name"] != "检索" || row["model"] != "grok-chat-fast" {
+		if row["provider_name"] != "检索" {
+			t.Fatalf("%#v", row)
+		}
+		if row["model"] == "grok-4.7" {
+			continue
+		}
+		if row["model"] != "grok-chat-fast" {
 			t.Fatalf("%#v", row)
 		}
 	}
@@ -314,7 +320,7 @@ func TestDraftExpandsOnceWhenShort(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "short@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 3 {
+	if expandCalls != 2 {
 		t.Fatalf("expand calls %d", expandCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
@@ -831,7 +837,7 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "long@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 2 || condenseCalls < 1 {
+	if expandCalls != 1 || condenseCalls < 1 {
 		t.Fatalf("expand %d condense %d", expandCalls, condenseCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
@@ -1789,6 +1795,14 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 		{"title": "弱电验收词典", "url": "https://www.json.cn/ci"},
 		{"title": "家里（汉语词语）_百度百科", "url": "https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C"},
 		{"title": "弱电验收检索", "url": "https://std.samr.gov.cn/search/orgOthers?q=1"},
+		{"title": "章节目录", "url": "https://www.qidian.com/book/1"},
+		{"title": "综合布线", "url": "https://www.example.com/novel/a.txt"},
+		{"title": "综合布线验收职位月薪", "url": "https://www.zhaopin.com/job/1"},
+		{"title": "综合布线验收", "url": "https://book.douban.com/subject/1"},
+		{"title": "网贷借钱", "url": "https://www.example.com/loan"},
+		{"title": "造句词典", "url": "https://www.example.com/zaoju"},
+		{"title": "手机论坛", "url": "https://www.zol.com.cn/thread/1"},
+		{"title": "综合布线贷款政策", "url": "https://www.gov.cn/zhengce/loan"},
 	}, content.DefaultSourcePolicy(), "弱电智能化 综合布线验收")
 	seen := map[string]bool{}
 	for _, row := range kept {
@@ -1799,6 +1813,7 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 		"https://www.example.com/office",
 		"https://www.example.com/tea",
 		"https://www.example.com/blank",
+		"https://www.gov.cn/zhengce/loan",
 	} {
 		if !seen[url] {
 			t.Fatal("missing", url, kept, dropped)
@@ -1812,6 +1827,13 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 		"https://www.json.cn/ci",
 		"https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C",
 		"https://std.samr.gov.cn/search/orgOthers?q=1",
+		"https://www.qidian.com/book/1",
+		"https://www.example.com/novel/a.txt",
+		"https://www.zhaopin.com/job/1",
+		"https://book.douban.com/subject/1",
+		"https://www.example.com/loan",
+		"https://www.example.com/zaoju",
+		"https://www.zol.com.cn/thread/1",
 	} {
 		if seen[url] {
 			t.Fatal("kept junk", url, kept)
@@ -1822,12 +1844,12 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 func TestJudgeKeepsRelevantFactsOnly(t *testing.T) {
 	sources := []map[string]any{
 		{"title": "综合布线验收说明", "snippet": "施工前要核对材料清单", "url": "https://www.mohurd.gov.cn/a"},
-		{"title": "综合布线现场记录", "snippet": "线槽先看清楚", "url": "https://www.example.com/office"},
+		{"title": "综合布线现场记录", "snippet": "线槽先看清楚再放线", "url": "https://www.example.com/office"},
 		{"title": "奶奶的养生茶", "url": "https://www.example.com/tea"},
 	}
 	items := []any{
 		map[string]any{"index": float64(1), "score": float64(3), "facts": []any{"施工前要核对材料清单"}},
-		map[string]any{"index": float64(2), "score": float64(2), "facts": []any{"线槽先看清楚"}},
+		map[string]any{"index": float64(2), "score": float64(2), "facts": []any{"线槽先看清楚再放线"}},
 		map[string]any{"index": float64(3), "score": float64(1), "facts": []any{"茶"}},
 	}
 	kept, dropped := applyJudgeScores(sources, items)
@@ -2277,7 +2299,7 @@ func TestJudgeRetriesOnceOnAnotherModel(t *testing.T) {
 	judged, extra, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
 	}}, "综合布线验收", sources)
-	if len(models) != 2 || models[0] != "grok-chat-fast" || models[1] != "grok-4.20-0309-non-reasoning" {
+	if len(models) != 2 || models[0] != "grok-4.7" || models[1] != "grok-4.20-0309-non-reasoning" {
 		t.Fatal(models)
 	}
 	if len(judged) != 1 || str(judged[0]["url"]) != "https://www.mohurd.gov.cn/a" {
@@ -2312,7 +2334,7 @@ func TestJudgeFallsBackToRanking(t *testing.T) {
 	judged, _, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
 		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
 	}}, "综合布线验收", sources)
-	if len(models) != 2 || models[1] != "grok-4.20-0309-non-reasoning" {
+	if len(models) != 2 || models[0] != "grok-4.7" || models[1] != "grok-4.20-0309-non-reasoning" {
 		t.Fatal(models)
 	}
 	if len(judged) < 3 || len(judged) > 6 {
@@ -2357,14 +2379,17 @@ func TestJudgeUsesFencedRatingsWithoutRetry(t *testing.T) {
 
 func TestJudgeBatchesAtMostEight(t *testing.T) {
 	var calls int
+	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
 		_ = json.Unmarshal(raw, &req)
-		if req["model"] != "grok-chat-fast" {
+		if req["model"] != "grok-4.7" {
 			t.Errorf("model %#v", req["model"])
 		}
+		mu.Lock()
 		calls++
+		mu.Unlock()
 		payload := map[string]any{}
 		msgs, _ := req["messages"].([]any)
 		if len(msgs) > 0 {
@@ -2384,7 +2409,7 @@ func TestJudgeBatchesAtMostEight(t *testing.T) {
 	var sources []map[string]any
 	for i := 0; i < 9; i++ {
 		sources = append(sources, map[string]any{
-			"title": "综合布线验收说明", "snippet": "施工前要核对材料清单",
+			"title": "综合布线验收说明" + itoa(i), "snippet": "施工前要核对材料清单",
 			"url": "https://www.example.com/s" + itoa(i),
 		})
 	}
@@ -2397,6 +2422,51 @@ func TestJudgeBatchesAtMostEight(t *testing.T) {
 	raw, _ := completion.Attempts[len(completion.Attempts)-1]["judge_raw"].(string)
 	if !strings.Contains(raw, "综合布线验收说明") {
 		t.Fatal(raw)
+	}
+}
+
+func TestJudgeDropsInflatedJunk(t *testing.T) {
+	sources := []map[string]any{
+		{"title": "小说下载", "snippet": "章节全文免费阅读不收费", "url": "https://www.example.com/novel", "fetched_text": "章节全文免费阅读不收费"},
+		{"title": "布线验收", "snippet": "施工前要核对材料清单", "url": "https://www.gov.cn/a", "fetched_text": "施工前要核对材料清单并记录"},
+		{"title": "词典页面", "snippet": "这个词的例句在这里", "url": "https://www.example.com/dict", "fetched_text": "这个词的例句在这里可以查"},
+		{"title": "招聘广告", "snippet": "这个职位月薪面议欢迎投递", "url": "https://www.example.com/job", "fetched_text": "这个职位月薪面议欢迎投递"},
+	}
+	items := []any{
+		map[string]any{"index": 1, "score": 3, "page_type": "novel", "on_topic": true, "snippet": "章节全文免费阅读不收费", "facts": []any{"章节全文免费阅读不收费"}},
+		map[string]any{"index": 2, "score": 3, "page_type": "official", "on_topic": true, "snippet": "施工前要核对材料清单", "facts": []any{"施工前要核对材料清单"}},
+		map[string]any{"index": 3, "score": 3, "page_type": "dictionary", "on_topic": true, "snippet": "这个词的例句在这里", "facts": []any{"这个词的例句在这里"}},
+		map[string]any{"index": 4, "score": 3, "page_type": "job", "on_topic": false, "snippet": "这个职位月薪面议欢迎投递", "facts": []any{"这个职位月薪面议欢迎投递"}},
+	}
+	kept, dropped := applyJudgeScores(sources, items)
+	if len(kept) != 1 || str(kept[0]["url"]) != "https://www.gov.cn/a" {
+		t.Fatal(kept, dropped)
+	}
+	miss := []map[string]any{{"title": "布线验收", "snippet": "施工前要核对材料清单", "url": "https://www.gov.cn/a", "fetched_text": "页面里没有这句原话"}}
+	kept, dropped = applyJudgeScores(miss, []any{
+		map[string]any{"index": 1, "score": 3, "page_type": "official", "on_topic": true, "snippet": "施工前要核对材料清单"},
+	})
+	if len(kept) != 0 || dropped[0]["reason"] != "原句对不上" {
+		t.Fatal(kept, dropped)
+	}
+}
+
+func TestDedupeSourcesByURLAndTitle(t *testing.T) {
+	_, kept, dropped, _ := takeSources(t.Context(), nil, "笔记", []map[string]any{
+		{"title": "综合布线验收说明", "url": "https://www.Example.com/a?utm_source=x"},
+		{"title": "综合布线验收说明", "url": "https://example.com/a/"},
+		{"title": "综合布线验收说明", "url": "https://example.com/b"},
+		{"title": "另一条布线记录", "url": "https://example.com/c"},
+	}, content.DefaultSourcePolicy(), "综合布线验收")
+	if len(kept) != 2 {
+		t.Fatal(kept, dropped)
+	}
+	reasons := map[string]int{}
+	for _, row := range dropped {
+		reasons[str(row["reason"])]++
+	}
+	if reasons["重复网址"] != 1 || reasons["重复标题"] != 1 {
+		t.Fatal(dropped)
 	}
 }
 

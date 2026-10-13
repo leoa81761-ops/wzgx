@@ -119,34 +119,41 @@ func SearchWeb(ctx context.Context, client *http.Client, endpoint, query string)
 // The provided client only decides whether a fetch is attempted. The request itself uses PublicClient,
 // which refuses private and loopback addresses.
 func FetchPageMeta(ctx context.Context, client *http.Client, rawURL string) (string, string) {
+	title, desc, _ := FetchPageText(ctx, client, rawURL)
+	return title, desc
+}
+
+// FetchPageText reads a page title, meta description, and a tag-stripped excerpt.
+// The request uses PublicClient, which refuses private and loopback addresses.
+func FetchPageText(ctx context.Context, client *http.Client, rawURL string) (string, string, string) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" || client == nil {
-		return "", ""
+		return "", "", ""
 	}
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		return "", ""
+		return "", "", ""
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; gonghao-research/1.0)")
 	resp, err := content.PublicClient().Do(req)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 || !htmlContent(resp.Header.Get("Content-Type")) {
-		return "", ""
+		return "", "", ""
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
-	title, desc := pageMeta(string(body))
-	return clipRunes(title, 80), clipRunes(desc, 180)
+	title, desc, text := pageExcerpt(string(body))
+	return clipRunes(title, 80), clipRunes(desc, 180), clipRunes(text, 1500)
 }
 
 func htmlContent(header string) bool {
@@ -166,6 +173,12 @@ func pageMeta(html string) (string, string) {
 		desc = match[1]
 	}
 	return title, strings.TrimSpace(htmlTag.ReplaceAllString(desc, ""))
+}
+
+func pageExcerpt(html string) (string, string, string) {
+	title, desc := pageMeta(html)
+	text := strings.Join(strings.Fields(htmlTag.ReplaceAllString(html, " ")), " ")
+	return title, desc, text
 }
 
 // SearchChain tries each endpoint until one returns a result. An API key uses the JSON provider.
