@@ -16,6 +16,7 @@ import (
 // SearxGuard is the process-wide guard for the self-hosted SearXNG.
 // One token bucket (1 request/s, burst 3), a 24h cache of identical queries,
 // and a circuit that opens after repeated failures. Result pages are not fetched here.
+// The instance itself exempts this backend from its limiter; calls use http://searxng:8080 on the Docker network.
 type SearxGuard struct {
 	mu        sync.Mutex
 	tokens    float64
@@ -258,6 +259,10 @@ func (g *SearxGuard) fetch(ctx context.Context, client *http.Client, endpoint, q
 	return dropPrivateResults(ParseSearchBody(body)), nil
 }
 
+// searxEngines are the engines this instance actually answers. Bing and Baidu do not.
+// "sogou wechat" only runs when it is requested in the same engines list.
+const searxEngines = "engines=360search,sogou,sogou%20wechat"
+
 func searxEndpoint(endpoint, query string) (*url.URL, error) {
 	raw := strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if !strings.HasSuffix(strings.ToLower(raw), "/search") {
@@ -273,7 +278,13 @@ func searxEndpoint(endpoint, query string) (*url.URL, error) {
 	values := target.Query()
 	values.Set("q", query)
 	values.Set("format", "json")
-	target.RawQuery = values.Encode()
+	values.Del("engines")
+	encoded := strings.ReplaceAll(values.Encode(), "+", "%20")
+	if encoded != "" {
+		encoded += "&"
+	}
+	// The space in "sogou wechat" stays %20, and the commas stay literal.
+	target.RawQuery = encoded + searxEngines
 	return target, nil
 }
 
