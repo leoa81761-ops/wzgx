@@ -698,6 +698,20 @@ CREATE TABLE IF NOT EXISTS user_contract (
   note TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_secret (
+  user_id INTEGER PRIMARY KEY,
+  tavily_key_encrypted TEXT NOT NULL DEFAULT '',
+  tavily_notice TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS search_day (
+  user_id INTEGER NOT NULL,
+  day TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day)
+);
 `
 	schema = strings.ReplaceAll(schema, "{{PK}}", pk)
 	schema = strings.ReplaceAll(schema, "{{BLOB}}", blob)

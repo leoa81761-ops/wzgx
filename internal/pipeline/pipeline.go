@@ -55,6 +55,7 @@ type Deps struct {
 type work struct {
 	TaskID            int64
 	UserID            int64
+	UserTavilyKey     string
 	Tier              string
 	PlanID            int64
 	Direction         string
@@ -123,7 +124,11 @@ type Built struct {
 	OffStructure   bool
 	NoDatedNews    bool
 	Thin           bool
+	Repeated       bool
 	Searched       bool
+	OwnSearch      bool
+	TavilyNotice   string
+	TavilyOK       bool
 }
 
 type pushed struct {
@@ -599,6 +604,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			uses = []string{}
 		}
 		w.ColumnUses = uses
+		w.UserTavilyKey = loadUserTavily(ctx, deps, tx, user.ID)
 		ok = true
 		return nil
 	})
@@ -698,6 +704,12 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		}
 	}
 	built, err := Build(ctx, deps.Gateway, in, sensitive, providers, policy, now)
+	if built.TavilyNotice != "" && w.UserID > 0 {
+		emitNotice(ctx, deps, w.UserID, "tavily", "Tavily 密钥不可用", built.TavilyNotice)
+		_ = deps.Store.SetTavilyNotice(ctx, w.UserID, built.TavilyNotice)
+	} else if built.TavilyOK && w.UserID > 0 {
+		_ = deps.Store.SetTavilyNotice(ctx, w.UserID, "")
+	}
 	if err != nil {
 		if built.Topic.Column != "" {
 			rememberColumn(ctx, deps, w, built.Topic)
@@ -708,26 +720,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		content.AnnotateAccess(ctx, deps.HTTP, built.Draft)
 	}
 	var push pushed
-	if built.NoFacts || built.LengthShort || built.Uncited || built.OffStructure || built.NoDatedNews || built.Thin {
-		note := ""
-		if built.NoFacts {
-			note = joinNote(note, "无参考来源，未写入公众号草稿。")
-		}
-		if built.NoDatedNews {
-			note = joinNote(note, "快报没有带日期的来源，未写入公众号草稿。")
-		}
-		if built.LengthShort {
-			note = joinNote(note, "篇幅不到目标的 85%，已再扩写，仍偏短，未写入公众号草稿。")
-		}
-		if built.Uncited {
-			note = joinNote(note, "正文没有引用，未写入公众号草稿。")
-		}
-		if built.OffStructure {
-			note = joinNote(note, "栏目结构和正文对不上，未写入公众号草稿。")
-		}
-		if built.Thin {
-			note = joinNote(note, "经验分享缺少能照做的具体做法，未写入公众号草稿。")
-		}
+	if held, note := heldDelivery(built); held {
 		push = pushed{
 			Status: "held", HTML: built.HTML, RiskLevel: draftRisk(w.Direction, built.Draft),
 			DeliveryNote: note,
@@ -761,10 +754,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if in.CostNote != "" {
 		note = joinNote(note, "本月成本已达上限")
 	}
-	searchCents := 0
-	if built.Searched {
-		searchCents = costPolicy.SearchCents
-	}
+	searchCents := chargeSearch(built.Searched, built.OwnSearch, costPolicy.SearchCents)
 	return map[string]any{
 		"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace,
 		"status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID,
@@ -817,6 +807,8 @@ type Input struct {
 	ColumnRotation string
 	ColumnWeekdays map[int]int64
 	RunAt          time.Time
+	UserID         int64
+	UserTavilyKey  string
 }
 
 func hotAllowed(in *Input) bool {
@@ -864,7 +856,7 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, RecentTopics: w.RecentTopics, ColumnUses: w.ColumnUses, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, RecentTopics: w.RecentTopics, ColumnUses: w.ColumnUses, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt, UserID: w.UserID, UserTavilyKey: w.UserTavilyKey}
 }
 
 // AppendSiblingCoverage keeps another account's recent angles out of this plan's rotation.
@@ -1688,8 +1680,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	base["topic_title"] = topicTitle
 	var researchSources []any
 	searched := false
-	if w.Tier != "free" && len(providers["research"]) > 0 {
+	ownSearch := false
+	tavilyNotice := ""
+	tavilyOK := false
+	if w.Tier != "free" && (len(providers["research"]) > 0 || strings.TrimSpace(w.UserTavilyKey) != "") {
 		searched = true
+		ownSearch = strings.TrimSpace(w.UserTavilyKey) != ""
 		researchPayload := cloneMap(base)
 		researchPayload["topic_title"] = topicTitle
 		blocked := policy.Block
@@ -1702,7 +1698,17 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		}
 		noteProgress(ctx, "research", nil, topic, trace, tokens)
 		researchCtx, researchCancel := stageContext(ctx, budgetResearch)
-		notes, listed, completion, err := fetchResearch(researchCtx, gateway, providers["research"], researchPayload, policy)
+		actor := searchActor{UserID: w.UserID, TavilyKey: w.UserTavilyKey}
+		var notes string
+		var listed []any
+		var completion llm.Completion
+		var err error
+		if len(providers["research"]) > 0 {
+			notes, listed, completion, err = fetchResearch(researchCtx, gateway, providers["research"], researchPayload, policy, actor)
+		} else {
+			notes, listed, completion, err = searchWithoutModel(researchCtx, gateway, researchPayload, policy, actor)
+		}
+		tavilyNotice, tavilyOK = tavilyKeyState(completion)
 		researchCancel()
 		if err != nil {
 			trace = appendStage(trace, "research", completion, err)
@@ -1776,14 +1782,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	noteProgress(ctx, "draft", nil, topic, trace, tokens)
 	draftPayload := cloneMap(outlinePayload)
 	draftPayload["outline"] = outline
-	draftCtx, draftCancel := stageContext(ctx, budgetCall)
-	draft, completion, err := gateway.CompleteJSON(draftCtx, providers["draft"], llm.StageMessages("正文", draftPayload), llm.StageSchema("正文"), validateDraft)
-	draftCancel()
+	draft, tokens, trace, completion, err := writeSectionedDraft(ctx, gateway, providers["draft"], draftPayload, topic, trace, tokens)
 	if err != nil {
 		return fail(trace, "draft", completion, err)
 	}
-	tokens += completion.PromptTokens + completion.CompletionTokens
-	trace = append(trace, traceRows("draft", completion)...)
 	noteProgress(ctx, "draft", draft, topic, trace, tokens)
 	fitted, fitTokens, fitTrace, lengthShort := fitBody(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget)
 	draft = fitted
@@ -2013,10 +2015,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft = editorial.StripWarmFiller(draft)
 		draft = editorial.EnsureConcreteTips(draft)
 	}
-	if factsThin(base) && w.WordTarget > 0 && content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget) {
-		draft = appendColumnTemplate(draft, base, w.WordTarget*85/100)
-		draft = editorial.RepairStructure(draft)
-	}
 	if sourcedPiece && !citationMarks.MatchString(bodyPlain(draft)) {
 		draft = ensureInlineCitations(draft)
 	}
@@ -2048,6 +2046,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.WordTarget > 0 {
 		lengthShort = content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget)
 	}
+	repeated := editorial.RepeatedBody(draft)
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
@@ -2059,7 +2058,33 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	html = editorial.RepairMarkup(html)
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Searched: searched}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Repeated: repeated, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
+}
+
+func heldDelivery(built Built) (bool, string) {
+	note := ""
+	if built.NoFacts {
+		note = joinNote(note, "无参考来源，未写入公众号草稿。")
+	}
+	if built.NoDatedNews {
+		note = joinNote(note, "快报没有带日期的来源，未写入公众号草稿。")
+	}
+	if built.LengthShort {
+		note = joinNote(note, "篇幅不到目标的 85%，已再扩写，仍偏短，未写入公众号草稿。")
+	}
+	if built.Uncited {
+		note = joinNote(note, "正文没有引用，未写入公众号草稿。")
+	}
+	if built.OffStructure {
+		note = joinNote(note, "栏目结构和正文对不上，未写入公众号草稿。")
+	}
+	if built.Thin {
+		note = joinNote(note, "经验分享缺少能照做的具体做法，未写入公众号草稿。")
+	}
+	if built.Repeated {
+		note = joinNote(note, "正文在重复同一句，或把题目嵌进了套话，未写入公众号草稿。")
+	}
+	return note != "", note
 }
 
 func thinExperience(draft map[string]any, experience bool, column string) bool {
@@ -2811,7 +2836,7 @@ func chooseCover(ctx context.Context, deps Deps, image *llm.Provider, title, dir
 	return body, filename, row
 }
 
-func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, policy content.SourcePolicy) (string, []any, llm.Completion, error) {
+func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, policy content.SourcePolicy, actor searchActor) (string, []any, llm.Completion, error) {
 	topic := topicText(payload)
 	messages := llm.StageMessages("资料检索", payload)
 	var first llm.Completion
@@ -2899,7 +2924,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			searchWG.Add(1)
 			go func(i int, query string) {
 				defer searchWG.Done()
-				foundRows[i], foundLogs[i], foundErr[i] = backupHTMLSearch(ctx, gateway, query)
+				foundRows[i], foundLogs[i], foundErr[i] = backupHTMLSearch(ctx, gateway, query, actor)
 			}(i, query)
 		}
 		searchWG.Wait()
@@ -2994,17 +3019,113 @@ func retryResearch(completion llm.Completion, err error) bool {
 	return strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "没有返回文本")
 }
 
-func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string) ([]map[string]any, []map[string]any, error) {
+type searchActor struct {
+	UserID    int64
+	TavilyKey string
+	TavilyURL string
+}
+
+func chargeSearch(searched, own bool, cents int) int {
+	if searched && !own {
+		return cents
+	}
+	return 0
+}
+
+func loadUserTavily(ctx context.Context, deps Deps, q db.Q, userID int64) string {
+	if deps.Store == nil || userID <= 0 {
+		return ""
+	}
+	cipher, _, err := deps.Store.TavilySecret(ctx, q, userID)
+	if err != nil || strings.TrimSpace(cipher) == "" {
+		return ""
+	}
+	plain, err := security.DecryptSecret(deps.Settings.MasterKey, cipher)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(plain)
+}
+
+func tavilyKeyState(completion llm.Completion) (string, bool) {
+	notice := ""
+	ok := false
+	for _, attempt := range completion.Attempts {
+		list, _ := attempt["engines"].([]map[string]any)
+		for _, engine := range list {
+			if str(engine["owner"]) != "user" {
+				continue
+			}
+			switch str(engine["key_error"]) {
+			case "quota":
+				notice = "你的 Tavily 额度已用完，这篇已改用站内检索。可以在会员页更换密钥，或等额度恢复后再试。"
+			case "invalid":
+				notice = "你的 Tavily 密钥无效，这篇已改用站内检索。请在会员页更换密钥。"
+			default:
+				if intOf(engine["count"]) > 0 {
+					ok = true
+				}
+			}
+		}
+	}
+	if notice != "" {
+		ok = false
+	}
+	return notice, ok
+}
+
+func searchWithoutModel(ctx context.Context, gateway *llm.Gateway, payload map[string]any, policy content.SourcePolicy, actor searchActor) (string, []any, llm.Completion, error) {
+	topic := topicText(payload)
+	queries := backupQueries(payload)
+	rows, engines := collectBackup(ctx, gateway, queries, actor)
+	client := httpClient(gateway)
+	notes, sources, dropped, relaxed := takeSources(ctx, client, "", rows, policy, topic)
+	merged := llm.Completion{ProviderName: "检索"}
+	stampSourceTrace(&merged, sources, dropped, relaxed, len(rows), engines)
+	stripRankScores(sources)
+	return notes, anySources(sources), merged, nil
+}
+
+func collectBackup(ctx context.Context, gateway *llm.Gateway, queries []string, actor searchActor) ([]map[string]any, []map[string]any) {
+	foundRows := make([][]map[string]any, len(queries))
+	foundLogs := make([][]map[string]any, len(queries))
+	foundErr := make([]error, len(queries))
+	var searchWG sync.WaitGroup
+	for i, query := range queries {
+		searchWG.Add(1)
+		go func(i int, query string) {
+			defer searchWG.Done()
+			foundRows[i], foundLogs[i], foundErr[i] = backupHTMLSearch(ctx, gateway, query, actor)
+		}(i, query)
+	}
+	searchWG.Wait()
+	var rows []map[string]any
+	var engines []map[string]any
+	for i, query := range queries {
+		engines = append(engines, foundLogs[i]...)
+		if foundErr[i] != nil && len(foundLogs[i]) == 0 {
+			engines = append(engines, map[string]any{"engine": "backup", "provider": "backup", "query": query, "count": 0, "error": clip(foundErr[i].Error(), 180)})
+		}
+		rows = append(rows, foundRows[i]...)
+	}
+	return rows, engines
+}
+
+func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string, actor searchActor) ([]map[string]any, []map[string]any, error) {
 	if gateway == nil {
 		return nil, nil, nil
 	}
-	var targets []llm.SearchTarget
-	if target, ok := llm.ConfiguredSearch(gateway.SearchAPIProvider, gateway.SearchAPIURL, gateway.SearchAPIKey); ok {
-		targets = append(targets, target)
-	}
-	for _, raw := range []string{gateway.BackupSearchURL, gateway.BackupSearchAlt, gateway.BackupSearchBaidu} {
-		if strings.TrimSpace(raw) != "" {
-			targets = append(targets, llm.SearchTarget{URL: raw})
+	targets := llm.PlanTargets(llm.ChainOptions{
+		UserTavilyKey: actor.TavilyKey, UserTavilyURL: actor.TavilyURL,
+		SearxngURL: gateway.SearxngURL, PlatformTavilyKey: gateway.PlatformTavilyKey, PlatformTavilyURL: gateway.PlatformTavilyURL,
+		Provider: gateway.SearchAPIProvider, APIURL: gateway.SearchAPIURL, APIKey: gateway.SearchAPIKey,
+		Bing: gateway.BackupSearchURL, Sogou: gateway.BackupSearchAlt, Baidu: gateway.BackupSearchBaidu,
+	})
+	guard := gateway.EnsureSearx()
+	for i := range targets {
+		if targets[i].Provider == "searxng" {
+			targets[i].Guard = guard
+			targets[i].UserID = actor.UserID
 		}
 	}
 	if len(targets) == 0 {
@@ -4862,9 +4983,6 @@ func topUpLength(ctx context.Context, gateway *llm.Gateway, providers map[string
 	if content.BodyRunes(draft) >= goal {
 		return draft, 0, nil
 	}
-	if factsThin(base) {
-		return appendColumnTemplate(draft, base, goal), 0, nil
-	}
 	limit := 2
 	if target >= 1200 {
 		limit = 4
@@ -5077,32 +5195,28 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 	tokens := 0
 	stillShort := false
 	if content.BodyRunes(draft) < floor {
-		if factsThin(payload) {
-			draft = appendColumnTemplate(draft, payload, floor)
-		} else {
-			passes := 3
-			if budgetFrom(ctx) != nil && budgetLeft(ctx) < 5*time.Second {
-				passes = 0
-			} else if budgetTight(ctx) {
-				passes = 1
+		passes := 3
+		if budgetFrom(ctx) != nil && budgetLeft(ctx) < 5*time.Second {
+			passes = 0
+		} else if budgetTight(ctx) {
+			passes = 1
+		}
+		for pass := 0; pass < passes && content.BodyRunes(draft) < floor; pass++ {
+			if pass > 0 && budgetTight(ctx) {
+				break
 			}
-			for pass := 0; pass < passes && content.BodyRunes(draft) < floor; pass++ {
-				if pass > 0 && budgetTight(ctx) {
-					break
-				}
-				before := content.BodyRunes(draft)
-				shortfall := goal - before
-				if shortfall < 1 {
-					shortfall = 1
-				}
-				next, added, expandTrace := expandBody(ctx, gateway, providers, payload, draft, goal, shortfall, 0, nil)
-				tokens += added
-				trace = append(trace, expandTrace...)
-				if content.BodyRunes(next) > before {
-					draft = next
-				} else {
-					break
-				}
+			before := content.BodyRunes(draft)
+			shortfall := goal - before
+			if shortfall < 1 {
+				shortfall = 1
+			}
+			next, added, expandTrace := expandBody(ctx, gateway, providers, payload, draft, goal, shortfall, 0, nil)
+			tokens += added
+			trace = append(trace, expandTrace...)
+			if content.BodyRunes(next) > before {
+				draft = next
+			} else {
+				break
 			}
 		}
 		stillShort = content.BodyRunes(draft) < low
@@ -5230,83 +5344,155 @@ func sectionPlain(section map[string]any) string {
 	return b.String()
 }
 
-func factsThin(payload map[string]any) bool {
-	return payload != nil && str(payload["writing_mode"]) == "experience"
+// writeSectionedDraft asks for one column section per call so the first draft
+// can reach word_target without local padding. A short result stays short and
+// is held later.
+func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, topic topics.Choice, trace []map[string]any, tokens int) (map[string]any, int, []map[string]any, llm.Completion, error) {
+	sections := outlineSections(payload)
+	target := intOf(payload["word_target"])
+	if target < 1 {
+		target = 800
+	}
+	share := target / len(sections)
+	if share < 1 {
+		share = 1
+	}
+	extra := target - share*len(sections)
+	var assembled map[string]any
+	var completion llm.Completion
+	for i, point := range sections {
+		if i > 0 && (ctx.Err() != nil || budgetLeft(ctx) < time.Second) {
+			break
+		}
+		goal := share
+		if i == len(sections)-1 {
+			goal += extra
+		}
+		req := cloneMap(payload)
+		req["section_index"] = i + 1
+		req["section_count"] = len(sections)
+		req["section_heading"] = str(point["heading"])
+		req["section_intent"] = str(point["intent"])
+		req["section_target"] = goal
+		req["section"] = point
+		callCtx, cancel := stageContext(ctx, budgetCall)
+		part, callCompletion, err := gateway.CompleteJSON(callCtx, providers, llm.StageMessages("正文", req), llm.StageSchema("正文"), validateDraft)
+		cancel()
+		completion = callCompletion
+		tokens += callCompletion.PromptTokens + callCompletion.CompletionTokens
+		if err != nil {
+			if assembled != nil && (callCtx.Err() != nil || budgetTight(ctx)) {
+				break
+			}
+			return assembled, tokens, trace, callCompletion, err
+		}
+		trace = append(trace, traceRows("draft", callCompletion)...)
+		assembled = absorbSection(assembled, part, str(point["heading"]), i, len(sections))
+		noteProgress(ctx, "draft", assembled, topic, trace, tokens)
+	}
+	if assembled == nil {
+		if ctx.Err() != nil {
+			return nil, tokens, trace, completion, ctx.Err()
+		}
+		return nil, tokens, trace, completion, errStr("正文没有写出来")
+	}
+	return assembled, tokens, trace, completion, nil
 }
 
-func appendColumnTemplate(draft, payload map[string]any, goal int) map[string]any {
-	if draft == nil || goal < 1 || content.BodyRunes(draft) >= goal {
-		return draft
-	}
-	draft = cloneDraft(draft)
-	kind := strings.ToLower(strings.TrimSpace(str(payload["column_structure"])))
-	entity := templateEntity(payload)
-	titles := []string{"一个现场案例", "可以照做的步骤", "容易踩的坑", "读者还会问"}
-	sections := asList(draft["sections"])
-	for _, title := range titles {
-		if headingExists(sections, title) {
+func outlineSections(payload map[string]any) []map[string]any {
+	outline, _ := payload["outline"].(map[string]any)
+	var out []map[string]any
+	for _, raw := range asList(outline["points"]) {
+		point, _ := raw.(map[string]any)
+		if point == nil {
 			continue
 		}
-		sections = append(sections, map[string]any{"heading": title, "paragraphs": []any{}, "list": []any{}})
+		heading := strings.TrimSpace(str(point["heading"]))
+		if heading == "" {
+			heading = "小节"
+		}
+		out = append(out, map[string]any{"heading": heading, "intent": str(point["intent"])})
 	}
-	draft["sections"] = sections
-	for i := 0; content.BodyRunes(draft) < goal && i < 48; i++ {
-		addTemplateLine(draft, kind, templateLine(kind, entity, i), i)
-	}
-	return draft
-}
-
-func templateEntity(payload map[string]any) string {
-	for _, key := range []string{"subtopic", "direction", "column"} {
-		text := stripComparison(str(payload[key]))
-		if text != "" && !topics.ComparisonFrame(text) && utf8.RuneCountInString(text) <= 12 {
-			return text
+	if len(out) == 0 {
+		out = []map[string]any{
+			{"heading": "先把事情说清楚", "intent": "用一个具体场景说明问题"},
+			{"heading": "可以照做的做法", "intent": "写出能照做的步骤"},
 		}
 	}
-	return "这件事"
+	return out
 }
 
-func templateLine(kind, entity string, i int) string {
-	n := itoa(i + 1)
-	switch kind {
-	case "qa", "q&a", "faq", "问答":
-		return "第" + n + "处要先看什么？答：先打开" + entity + "的检修口，用螺丝把盖板固定住。"
-	case "steps", "step-by-step", "breakdown", "拆解":
-		return n + ". 先打开" + entity + "的检修口，用螺丝把盖板固定住。"
-	case "news", "news-brief", "快报":
-		return "先打开" + entity + "的检修口，用螺丝把第" + n + "块盖板固定住。"
-	default:
-		return "晚饭后先把" + entity + "旁边的椅子挪开" + itoa(40+i) + "厘米，再让老人走这一段。"
-	}
-}
-
-func addTemplateLine(draft map[string]any, kind, line string, i int) {
-	sections := asList(draft["sections"])
-	if len(sections) == 0 {
-		return
-	}
-	at := i % len(sections)
-	section, _ := sections[at].(map[string]any)
+func absorbSection(assembled, part map[string]any, heading string, index, count int) map[string]any {
+	section := pickSection(part, heading, index)
 	if section == nil {
-		return
+		return assembled
 	}
-	if kind == "news" || kind == "news-brief" || kind == "快报" {
-		section["list"] = append(asList(section["list"]), line)
-	} else {
-		section["paragraphs"] = append(asList(section["paragraphs"]), line)
+	if heading != "" {
+		section["heading"] = heading
 	}
-	sections[at] = section
-	draft["sections"] = sections
+	text := strings.TrimSpace(sectionPlain(section))
+	if assembled == nil {
+		assembled = cloneMap(part)
+		if assembled == nil {
+			assembled = map[string]any{}
+		}
+		assembled["sections"] = []any{}
+	}
+	if text != "" && strings.Contains(bodyPlain(assembled), text) {
+		return assembled
+	}
+	assembled["sections"] = append(asList(assembled["sections"]), section)
+	if str(assembled["title"]) == "" {
+		assembled["title"] = str(part["title"])
+	}
+	if str(assembled["summary"]) == "" {
+		assembled["summary"] = str(part["summary"])
+	}
+	if closing := str(part["closing"]); closing != "" && (index == count-1 || str(assembled["closing"]) == "") {
+		assembled["closing"] = closing
+	}
+	if !listedHaveURL(asList(assembled["sources"])) && listedHaveURL(asList(part["sources"])) {
+		assembled["sources"] = part["sources"]
+	}
+	if assembled["sources"] == nil {
+		assembled["sources"] = []any{}
+	}
+	return assembled
 }
 
-func headingExists(sections []any, heading string) bool {
-	for _, raw := range sections {
-		section, _ := raw.(map[string]any)
-		if section != nil && strings.TrimSpace(str(section["heading"])) == heading {
-			return true
+func pickSection(part map[string]any, heading string, index int) map[string]any {
+	sections := asList(part["sections"])
+	if heading != "" {
+		for _, raw := range sections {
+			section, _ := raw.(map[string]any)
+			if section != nil && strings.TrimSpace(str(section["heading"])) == heading {
+				return cloneSection(section)
+			}
 		}
 	}
-	return false
+	if index >= 0 && index < len(sections) {
+		if section, _ := sections[index].(map[string]any); section != nil {
+			return cloneSection(section)
+		}
+	}
+	if len(sections) == 1 {
+		if section, _ := sections[0].(map[string]any); section != nil {
+			return cloneSection(section)
+		}
+	}
+	return nil
+}
+
+func cloneSection(section map[string]any) map[string]any {
+	raw, err := json.Marshal(section)
+	if err != nil {
+		return section
+	}
+	var out map[string]any
+	if json.Unmarshal(raw, &out) != nil || out == nil {
+		return section
+	}
+	return out
 }
 
 func ensureInlineCitations(draft map[string]any) map[string]any {

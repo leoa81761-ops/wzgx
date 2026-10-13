@@ -97,7 +97,12 @@ func Sections() []Section {
 			{Key: "webhook_url", Label: "Webhook 地址", Secret: true},
 		}},
 		{Key: "search", Title: "备用检索", Fields: []Field{
-			{Key: "provider", Label: "检索接口（bocha / tavily / bing），填了密钥就优先用"},
+			{Key: "searxng_url", Label: "SearXNG 地址，默认 http://searxng:8080。宿主机调试用 http://127.0.0.1:8888"},
+			{Key: "searxng_daily_cap", Label: "每人每天 SearXNG 次数，0 表示不限"},
+			{Key: "searxng_breaker", Label: "SearXNG 连续失败几次后熔断"},
+			{Key: "tavily_key", Label: "平台 Tavily 密钥（可选）。用户自备钥匙时不会用这把", Secret: true},
+			{Key: "tavily_url", Label: "平台 Tavily 地址，留空则用官方地址"},
+			{Key: "provider", Label: "其他检索接口（bocha / tavily / bing），用户没有自己的钥匙时才用"},
 			{Key: "api_url", Label: "接口地址，留空则用该接口的默认地址"},
 			{Key: "api_key", Label: "接口密钥", Secret: true},
 			{Key: "primary_url", Label: "必应 HTML（国内默认可达）"},
@@ -325,6 +330,25 @@ func Apply(base config.Settings, docs map[string]Doc) config.Settings {
 	if v := set("search", "provider"); v != "" {
 		out.ResearchSearchProvider = strings.ToLower(v)
 	}
+	if v := set("search", "searxng_url"); v != "" {
+		out.SearxngURL = v
+	}
+	if v := set("search", "searxng_daily_cap"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			out.SearxngDailyCap = n
+		}
+	}
+	if v := set("search", "searxng_breaker"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			out.SearxngBreaker = n
+		}
+	}
+	if v := set("search", "tavily_key"); v != "" {
+		out.TavilyAPIKey = v
+	}
+	if v := set("search", "tavily_url"); v != "" {
+		out.TavilyAPIURL = v
+	}
 	out = WithCallbackDefaults(out)
 	if doc, ok := docs["register"]; ok {
 		if v, exists := doc.Plain["verify"]; exists {
@@ -435,6 +459,16 @@ func EnvValue(base config.Settings, section, key string) string {
 		return base.ResearchSearchKey
 	case "search.provider":
 		return base.ResearchSearchProvider
+	case "search.searxng_url":
+		return base.SearxngURL
+	case "search.searxng_daily_cap":
+		return strconv.Itoa(base.SearxngDailyCap)
+	case "search.searxng_breaker":
+		return strconv.Itoa(base.SearxngBreaker)
+	case "search.tavily_key":
+		return base.TavilyAPIKey
+	case "search.tavily_url":
+		return base.TavilyAPIURL
 	default:
 		return ""
 	}
@@ -522,6 +556,21 @@ func validate(section, key, value string) error {
 		case "bocha", "tavily", "bing":
 		default:
 			return fmt.Errorf("检索接口只能是 bocha、tavily 或 bing")
+		}
+	case "search.searxng_url", "search.tavily_url":
+		parsed, err := url.Parse(value)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("地址需要是 http 或 https")
+		}
+	case "search.searxng_daily_cap":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || n > 100000 {
+			return fmt.Errorf("请填写 0 到 100000 的整数")
+		}
+	case "search.searxng_breaker":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 100 {
+			return fmt.Errorf("熔断次数请填写 1 到 100")
 		}
 	case "wechat_component.aes_key":
 		if len(value) != 43 {
@@ -614,7 +663,7 @@ func Ready(section string, cfg config.Settings) bool {
 		return strings.TrimSpace(cfg.PublicBaseURL) != ""
 	case "search":
 		keyed := strings.TrimSpace(cfg.ResearchSearchKey) != "" && (strings.TrimSpace(cfg.ResearchSearchAPI) != "" || strings.TrimSpace(cfg.ResearchSearchProvider) != "")
-		return strings.TrimSpace(cfg.ResearchBackupSearch) != "" || keyed
+		return strings.TrimSpace(cfg.ResearchBackupSearch) != "" || keyed || strings.TrimSpace(cfg.SearxngURL) != "" || strings.TrimSpace(cfg.TavilyAPIKey) != ""
 	default:
 		return false
 	}

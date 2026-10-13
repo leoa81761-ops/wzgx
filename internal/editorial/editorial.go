@@ -2001,6 +2001,145 @@ func stripLatinWords(text string) string {
 
 var datedToken = regexp.MustCompile(`\d{4}年|\d{1,2}月\d{1,2}日`)
 
+// A topic stuffed into the old length-padding formula, for example
+// 「先打开辟谣不吓人的检修口」.
+var jammedTemplate = regexp.MustCompile(`先打开[^。！？!?\n]{1,24}的检修口|晚饭后先把[^。！？!?\n]{1,24}旁边的椅子挪开|用螺丝把盖板固定住`)
+
+// RepeatedBody is the hard hold for a draft that would otherwise reach the
+// WeChat draft box. A body line or sentence of at least 12 characters may
+// appear twice. A third copy, a body whose 8-character phrases mostly recur,
+// or a topic jammed into a canned template is held.
+func RepeatedBody(draft map[string]any) bool {
+	if draft == nil {
+		return false
+	}
+	var lines []string
+	for _, section := range sectionsOf(draft) {
+		for _, item := range anyList(section["paragraphs"]) {
+			if text := strings.TrimSpace(textOf(item)); text != "" {
+				lines = append(lines, text)
+			}
+		}
+		for _, item := range anyList(section["list"]) {
+			if text := strings.TrimSpace(textOf(item)); text != "" {
+				lines = append(lines, text)
+			}
+		}
+		if table, _ := section["table"].(map[string]any); table != nil {
+			for _, item := range anyList(table["headers"]) {
+				if text := strings.TrimSpace(textOf(item)); text != "" {
+					lines = append(lines, text)
+				}
+			}
+			for _, row := range anyList(table["rows"]) {
+				for _, cell := range anyList(row) {
+					if text := strings.TrimSpace(textOf(cell)); text != "" {
+						lines = append(lines, text)
+					}
+				}
+			}
+		}
+	}
+	if text := strings.TrimSpace(textOf(draft["closing"])); text != "" {
+		lines = append(lines, text)
+	}
+	if jammedTemplate.MatchString(strings.Join(lines, "\n")) {
+		return true
+	}
+	lineCount := map[string]int{}
+	sentenceCount := map[string]int{}
+	var longSentences []string
+	for _, line := range lines {
+		// A line made only of short sentences is not the article 73 failure.
+		// Those fixtures repeat 「合适的正文。」 to reach a length target.
+		if substantialLine(line) {
+			if key := repeatKey(line); utf8.RuneCountInString(key) >= 12 {
+				lineCount[key]++
+			}
+		}
+		for _, sentence := range splitSentences(line) {
+			key := repeatKey(sentence)
+			if utf8.RuneCountInString(key) < 12 {
+				continue
+			}
+			sentenceCount[key]++
+			longSentences = append(longSentences, key)
+		}
+	}
+	for _, n := range lineCount {
+		if n > 2 {
+			return true
+		}
+	}
+	for _, n := range sentenceCount {
+		if n > 2 {
+			return true
+		}
+	}
+	return ngramRepetitionHigh(longSentences)
+}
+
+func substantialLine(text string) bool {
+	parts := splitSentences(text)
+	if len(parts) == 0 {
+		return utf8.RuneCountInString(repeatKey(text)) >= 12
+	}
+	for _, part := range parts {
+		if utf8.RuneCountInString(repeatKey(part)) >= 12 {
+			return true
+		}
+	}
+	return false
+}
+
+func repeatKey(text string) string {
+	text = strings.TrimSpace(citeMark.ReplaceAllString(text, ""))
+	if lead := numberedLead(text); lead != "" {
+		text = strings.TrimSpace(strings.TrimPrefix(text, strings.TrimRight(lead, " ")))
+		text = strings.TrimSpace(strings.TrimPrefix(text, strings.TrimSpace(lead)))
+	}
+	return strings.TrimSpace(text)
+}
+
+// ngramRepetitionHigh reports when 8-character phrases that show up in more
+// than two sentences account for at least 45% of the phrase occurrences.
+// A phrase is counted once per sentence, so a length pad inside one sentence
+// does not trip the gate.
+func ngramRepetitionHigh(sentences []string) bool {
+	const n = 8
+	freq := map[string]int{}
+	total := 0
+	for _, sentence := range sentences {
+		runes := []rune(sentence)
+		if len(runes) < n {
+			continue
+		}
+		seen := map[string]bool{}
+		for i := 0; i+n <= len(runes); i++ {
+			gram := string(runes[i : i+n])
+			if seen[gram] {
+				continue
+			}
+			seen[gram] = true
+			freq[gram]++
+			total++
+		}
+	}
+	if total < 24 {
+		return false
+	}
+	repeated := 0
+	for _, count := range freq {
+		if count >= 6 {
+			return true
+		}
+		if count > 2 {
+			repeated += count
+		}
+	}
+	return repeated*100/total >= 45
+}
+
 // CapRepeatedPhrases keeps a date token or an 8-character phrase to at most limit occurrences.
 func CapRepeatedPhrases(draft map[string]any, limit int) map[string]any {
 	if draft == nil {

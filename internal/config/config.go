@@ -66,6 +66,11 @@ type Settings struct {
 	ResearchSearchAPI         string
 	ResearchSearchKey         string
 	ResearchSearchProvider    string
+	SearxngURL                string
+	SearxngDailyCap           int
+	SearxngBreaker            int
+	TavilyAPIKey              string
+	TavilyAPIURL              string
 	SMSProvider               string
 	SMSAccessKey              string
 	SMSAccessSecret           string
@@ -174,6 +179,11 @@ func Load() Settings {
 		ResearchSearchAPI:         strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_API")),
 		ResearchSearchKey:         os.Getenv("RESEARCH_SEARCH_KEY"),
 		ResearchSearchProvider:    strings.ToLower(strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_PROVIDER"))),
+		SearxngURL:                getenv("SEARXNG_URL", "http://searxng:8080"),
+		SearxngDailyCap:           nonNeg("SEARXNG_DAILY_CAP", 40),
+		SearxngBreaker:            positiveOr("SEARXNG_BREAKER", 5),
+		TavilyAPIKey:              os.Getenv("TAVILY_API_KEY"),
+		TavilyAPIURL:              strings.TrimSpace(os.Getenv("TAVILY_API_URL")),
 		SMSProvider:               strings.ToLower(strings.TrimSpace(os.Getenv("SMS_PROVIDER"))),
 		SMSAccessKey:              strings.TrimSpace(os.Getenv("SMS_ACCESS_KEY")),
 		SMSAccessSecret:           os.Getenv("SMS_ACCESS_SECRET"),
@@ -240,6 +250,18 @@ func publishCap() int {
 	}
 	if n > 100 {
 		n = 100
+	}
+	return n
+}
+
+func nonNeg(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return fallback
 	}
 	return n
 }
