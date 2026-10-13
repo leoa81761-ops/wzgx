@@ -109,7 +109,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 3 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 5 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }
@@ -173,6 +173,8 @@ func TestCleanupBelowTargetIsHeld(t *testing.T) {
 			writeChoice(w, map[string]any{"title": "短稿", "angle": "今天就能做"})
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{map[string]any{"heading": "甲", "intent": "说明"}, map[string]any{"heading": "乙", "intent": "说明"}}, "closing": "结束"})
+		case "扩写":
+			writeChoice(w, map[string]any{"title": "短稿", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{strings.Repeat("合适的正文。", 40)}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
 		default:
 			writeChoice(w, body)
 		}
@@ -274,6 +276,188 @@ func TestActiveColumnReplacesPackSubtopics(t *testing.T) {
 	}}, "", nil, "弱电智能化", "验收", []topics.Coverage{{Subtopic: "星形与环形", Angle: "损耗核算"}}, nil, []string{"星形和环形哪种损耗更低", "爷爷奶奶捧着温茶转圈"}, []string{"损耗核算"})
 	if !ok || strings.Contains(repeated.Subtopic, "星形") || strings.Contains(repeated.Angle, "损耗") {
 		t.Fatal(repeated, ok)
+	}
+}
+
+func TestFinalTopUpAimsAt110(t *testing.T) {
+	var calls int
+	var sawGoal bool
+	short := map[string]any{
+		"title": "短稿", "summary": "摘要",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
+		"closing":  "结束", "sources": []any{map[string]any{"url": "https://www.gov.cn/a", "title": "来源"}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		if stageOf(req) != "扩写" {
+			t.Errorf("stage %s", stageOf(req))
+		}
+		calls++
+		msgs, _ := req["messages"].([]any)
+		blob, _ := json.Marshal(msgs)
+		if strings.Contains(string(blob), "880") {
+			sawGoal = true
+		}
+		writeChoice(w, short)
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	out, _, _ := topUpLength(t.Context(), gw, map[string][]llm.Provider{"draft": {{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}}, short, map[string]any{"word_target": 800}, 800, "")
+	if calls != 2 || !sawGoal || content.BodyRunes(out) >= 800*110/100 {
+		t.Fatalf("calls %d goal %v runes %d", calls, sawGoal, content.BodyRunes(out))
+	}
+	grown := strings.Repeat("合适的正文。", 147)
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChoice(w, map[string]any{"title": "短稿", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{grown}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+	}))
+	defer srv2.Close()
+	gw2 := llm.NewGateway(false, srv2.Client())
+	out, _, _ = topUpLength(t.Context(), gw2, map[string][]llm.Provider{"draft": {{
+		Name: "写作", Protocol: "openai", BaseURL: srv2.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}}, short, map[string]any{"word_target": 800}, 800, "")
+	if content.BodyRunes(out) < 800*110/100 || str(asList(out["sources"])[0].(map[string]any)["url"]) != "https://www.gov.cn/a" {
+		t.Fatal(content.BodyRunes(out), out["sources"])
+	}
+}
+
+func TestCopiedSpanIsRewrittenNotFailed(t *testing.T) {
+	span := strings.Repeat("回路编号要先抄下来再逐点核对是否一致", 3)
+	draft := map[string]any{
+		"title":    "验收记录",
+		"sections": []any{map[string]any{"paragraphs": []any{span + "[1]"}, "list": []any{}}},
+		"closing":  "结束。",
+		"sources":  []any{map[string]any{"summary": span, "url": "https://www.gov.cn/a"}},
+	}
+	if !content.CopiedSpan(content.DraftText(draft), content.SourceTexts(draft)) {
+		t.Fatal("fixture should copy")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		msgs, _ := req["messages"].([]any)
+		blob, _ := json.Marshal(msgs)
+		if stageOf(req) != "表述改写" || !strings.Contains(string(blob), "[n]") {
+			t.Errorf("stage %s", stageOf(req))
+		}
+		writeChoice(w, map[string]any{
+			"title": "验收记录", "summary": "摘要",
+			"sections": []any{map[string]any{"paragraphs": []any{"现场先把编号抄进表格，再逐点看一遍，缺的那一项单独标出来。[1]"}, "list": []any{}}},
+			"closing":  "结束。", "sources": []any{},
+		})
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	out, _, trace := rewriteCopiedSpans(t.Context(), gw, map[string][]llm.Provider{"draft": {{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}}, draft, map[string]any{}, "")
+	if content.CopiedSpan(content.DraftText(out), content.SourceTexts(draft)) || !strings.Contains(bodyPlain(out), "[1]") {
+		t.Fatal(bodyPlain(out), trace)
+	}
+	if str(asList(out["sources"])[0].(map[string]any)["url"]) != "https://www.gov.cn/a" {
+		t.Fatal(out["sources"])
+	}
+}
+
+func TestCitationsAreRestoredAfterStructureRewrite(t *testing.T) {
+	body := strings.Repeat("合适的正文。", 40) + "[1]"
+	numbered := "1. " + strings.Repeat("合适的正文。", 40)
+	cited := "1. " + strings.Repeat("合适的正文。", 40) + "[1]"
+	var sawMarker bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		msgs, _ := req["messages"].([]any)
+		blob, _ := json.Marshal(msgs)
+		if strings.Contains(string(blob), "[n]") {
+			sawMarker = true
+		}
+		switch stageOf(req) {
+		case "栏目结构":
+			writeChoice(w, map[string]any{"title": "拆解", "sections": []any{map[string]any{"paragraphs": []any{numbered, "2. 再核对编号。"}}}, "closing": "结束", "sources": []any{}})
+		case "补引用":
+			writeChoice(w, map[string]any{"title": "拆解", "sections": []any{map[string]any{"paragraphs": []any{cited, "2. 再核对编号。[1]"}}}, "closing": "结束", "sources": []any{}})
+		default:
+			t.Errorf("stage %s", stageOf(req))
+		}
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	providers := map[string][]llm.Provider{"draft": {{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}}
+	draft := map[string]any{
+		"title":    "拆解",
+		"sections": []any{map[string]any{"paragraphs": []any{body}}},
+		"closing":  "结束",
+		"sources":  []any{map[string]any{"title": "综合布线验收说明", "snippet": "合适的正文", "url": "https://www.gov.cn/a"}},
+	}
+	rewritten, _, _, held := rewriteColumnStructure(t.Context(), gw, providers, draft, map[string]any{}, "steps", "")
+	if held || citationMarks.MatchString(bodyPlain(rewritten)) {
+		t.Fatal(held, bodyPlain(rewritten))
+	}
+	added, _, _ := addCitations(t.Context(), gw, providers, rewritten, map[string]any{})
+	if !citationMarks.MatchString(bodyPlain(added)) || !sawMarker {
+		t.Fatal(bodyPlain(added), sawMarker)
+	}
+}
+
+func TestClicheRewriteDropsThePhrase(t *testing.T) {
+	draft := map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"综上所述，现场先核对回路。[1]"}}},
+		"sources":  []any{map[string]any{"url": "https://www.gov.cn/a"}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChoice(w, map[string]any{"title": "核对", "sections": []any{map[string]any{"paragraphs": []any{"现场先核对回路。[1]"}}}, "sources": []any{}})
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	out, _, _ := rewriteCliches(t.Context(), gw, map[string][]llm.Provider{"draft": {{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}}, draft, map[string]any{}, "")
+	if strings.Contains(bodyPlain(out), "综上所述") || !strings.Contains(bodyPlain(out), "[1]") {
+		t.Fatal(bodyPlain(out))
+	}
+}
+
+func TestBodyMotifUsesTheTitleDedupe(t *testing.T) {
+	motifs := topics.RepeatedMotifs([]string{"爷爷奶奶捧着温茶转圈"})
+	draft := map[string]any{
+		"title":    "下午的记录",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"爷爷奶奶捧着温茶转圈，下午继续核对。"}}},
+		"closing":  "结束",
+		"sources":  []any{map[string]any{"url": "https://www.gov.cn/a"}},
+	}
+	if !bodyHasAny(draft, motifs) {
+		t.Fatal(motifs)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		msgs, _ := req["messages"].([]any)
+		blob, _ := json.Marshal(msgs)
+		if stageOf(req) != "意象改写" || !strings.Contains(string(blob), "温茶转圈") {
+			t.Errorf("stage %s", stageOf(req))
+		}
+		writeChoice(w, map[string]any{
+			"title": "下午的记录", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"下午继续核对现场记录。"}}},
+			"closing": "结束", "sources": []any{},
+		})
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	base := map[string]any{"avoid_motifs": motifs}
+	out, _, _ := rewriteMotif(t.Context(), gw, map[string][]llm.Provider{"draft": {{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}}, draft, base)
+	if strings.Contains(bodyPlain(out), "温茶转圈") || str(asList(out["sources"])[0].(map[string]any)["url"]) != "https://www.gov.cn/a" {
+		t.Fatal(bodyPlain(out), out["sources"])
 	}
 }
 

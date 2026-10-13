@@ -17,6 +17,8 @@ const namedSourceRule = "不要写出 research_sources 或 sources 里没有出�
 
 const citationRule = "用到 research_sources 里的事实时，在句末用 [1]、[2] 这种序号标出对应来源，序号从 1 开始，对应 sources 的顺序。没有用到的来源不要写进 sources。没有来源时不要编造 [n]。"
 
+const markerRule = "保留正文里已有的 [n] 引用标记，不要删掉，也不要改动序号。"
+
 const anecdoteRule = "事例只能来自已经给出的来源，或者明确写成假设，例如「比如……假设」。不要编造读者的生活，不要编造别人的原话。"
 
 const readerRule = "reader_profile 是给编辑看的读者画像，不要用这串文字称呼读者，也不要把它写进标题、摘要或正文。"
@@ -104,16 +106,16 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "扩写":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写。" +
-			"目标大约是 word_target 的 105%（输入里的 expand_goal）。写到 100% 到 110% 就停，不要为了凑到 130% 而注水。" +
+			"目标大约是 word_target 的 105%，收尾补写时按 expand_goal，大约是 word_target 的 110%。写到这个目标就停，不要为了凑到 130% 而注水。" +
 			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
-			sourcedFacts + namedSourceRule + anecdoteRule +
+			sourcedFacts + namedSourceRule + anecdoteRule + markerRule +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。当前正文偏长。请压缩到不少于 word_target、不超过 word_target 的 130%，删掉重复和空话，保留事实、步骤和 sources，不要新增材料或网址。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。不要短于 word_target。" +
-			sourcedFacts + readerRule +
+			sourcedFacts + readerRule + markerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "标题":
 		system = "你是公众号标题编辑。请用输入里的语气，写 10 到 12 个彼此不同的标题。" +
@@ -127,7 +129,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "结构润色":
 		system = "你是公众号编辑。只改写输入里标记为需要改的部分：rewrite_hook、rewrite_headings、rewrite_closing 为 true 的才写。" +
 			"没有要求改的部分返回空字符串或空数组。" +
-			"不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" +
+			"不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" + markerRule +
 			"开头如果要改，只写不超过 40 个字的一句，用来替换原来的第一段，不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
 			"小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
 			anecdoteRule + voiceRule(payload) + readerRule + sceneRule + tabooRule(payload) + columnRule(payload) +
@@ -136,7 +138,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。正文漏了引用序号。请对照 research_sources，在用到这些事实的句末补上 [1]、[2]，序号从 1 开始，对应来源顺序。" +
 			"不要编造来源里没有的事实，不要新增网址，不要改已经写对的数字。没有用到的来源不要写进 sources。" +
-			readerRule +
+			markerRule + readerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "开头比较":
 		system = "你是公众号编辑。比较原来的第一段和改写后的开头，留下更具体、更不像叙述句的那一个。" +
@@ -148,7 +150,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "意象改写":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。正文里同一句式或意象反复出现。请改写重复的说法，保留事实、数字和 [n] 引用，不要新增材料或网址。" +
-			readerRule +
+			motifRule(payload) + markerRule + readerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "栏目结构":
 		schema = StageSchema("正文")
@@ -157,14 +159,31 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"qa 或问答：每个「答」紧跟一个以问号结尾的问题，答案里不要再出现问号。" +
 			"steps 或拆解：每段都要有序号。" +
 			"不要在句首机械地加「近日」，不要补空泛的「答：」，不要给没有来源的句子加 [1]。" +
-			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule +
+			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule + markerRule +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "禁忌改写":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。taboos 里是不能写的承诺说法，例如包过验收、保证中标。请改写含有这些原话的段落。" +
+			"不要因为单独出现验收或中标就改。不要插入「这一步按现场记录来写」这类占位句；改写不了就删掉那一句。" +
+			namedSourceRule + markerRule +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "套话改写":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。正文里有套话。请改写含有这些说法的句子，不要只删掉几个字留下破句。" +
+			"常见套话包括：综上所述、在当今社会、不言而喻、值得一提的是、结论是、更稳妥的做法是、一件小事一份真心、安心不是一下子。" +
+			markerRule +
+			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+	case "表述改写":
+		schema = StageSchema("正文")
+		system = "你是公众号编辑。正文有一段和来源逐字相同。请改写 copied_spans 里的原句，保留事实、数字和来源，不要整段照抄。" +
+			markerRule +
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "事实核对":
 		schema = StageSchema("正文")
 		system = "你是事实核对编辑。请对照 research_notes、research_sources 和可靠的领域常识，检查正文里的核心定义、阈值、标准编号和数字。" +
 			"与来源或领域常识冲突的说法要直接改对。来源没有支撑、又不是稳定常识的数字、电压阈值和标准编号，删掉或改成不带具体数字的说法。" +
 			"不要编造网址，也不要编造标准编号（包括 GB、GB/T）。research_sources 里没有的链接和标准号必须删掉，不能补一条看起来像真的网址或标准号。" +
-			sourcedFacts + namedSourceRule +
+			sourcedFacts + namedSourceRule + markerRule +
 			"保留原有结构、标题和 sources，不要新造网址。核对时不要把正文撑过 word_target 的 130%。" + lengthRule
 		if elvContext(payload) {
 			system += "行业术语不要套用相邻概念。建筑智能化里的「弱电」指电子信息系统，包括通信、安防、楼宇自控、火灾报警和音视频，工作电压通常在安全特低电压（常见 36V 及以下）和信号电平，不是供配电里交流 1000V 或直流 1500V 以下的低压电力。不要把 1000V 写成弱电的定义。"
@@ -178,7 +197,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "正文" || stageLabel == "审核" {
-			system += lengthRule + citationRule + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
+			system += lengthRule + citationRule + markerRule + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
 		}
 		system += readerRule + motifRule(payload)
 		if stageLabel == "审核" {
@@ -303,8 +322,10 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		return map[string]any{"choice": "original"}
 	case "标题比较":
 		return mockTitleChoice(payload)
-	case "意象改写":
+	case "意象改写", "禁忌改写", "套话改写":
 		return mockDraftCopy(payload)
+	case "表述改写":
+		return mockUncopy(payload)
 	case "栏目结构":
 		return mockStructured(payload)
 	default:
@@ -353,6 +374,30 @@ func mockAddCitations(payload map[string]any) map[string]any {
 	sections[0] = section
 	cloned["sections"] = sections
 	return cloned
+}
+
+func mockUncopy(payload map[string]any) map[string]any {
+	cloned := mockDraftCopy(payload)
+	if cloned == nil {
+		return nil
+	}
+	raw, err := json.Marshal(cloned)
+	if err != nil {
+		return cloned
+	}
+	text := string(raw)
+	for _, item := range anySlice(payload["copied_spans"]) {
+		span := asString(item)
+		if span == "" {
+			continue
+		}
+		text = strings.ReplaceAll(text, span, "改成自己的说法。")
+	}
+	var out map[string]any
+	if json.Unmarshal([]byte(text), &out) != nil || out == nil {
+		return cloned
+	}
+	return out
 }
 
 func mockDraftCopy(payload map[string]any) map[string]any {

@@ -74,6 +74,12 @@ func TestSourcePolicy(t *testing.T) {
 	if !policy.AllowsURL("https://www.gov.cn/zhengce") || !policy.AllowsURL("") {
 		t.Fatal("official and empty urls should stay")
 	}
+	if policy.AllowsURL("https://www.json.cn/ci") || policy.AllowsURL("https://dict.cn/a") || !DictionaryHost("https://hanyu.baidu.com/s") {
+		t.Fatal("dictionary")
+	}
+	if _, dropped := policy.Split([]map[string]any{{"url": "https://www.json.cn/ci", "title": "弱电"}}); len(dropped) != 1 || dropped[0]["reason"] != "词典站点" {
+		t.Fatal(dropped)
+	}
 	allow := SourcePolicy{Allow: []string{"https://www.gov.cn/path"}}
 	if allow.AllowsURL("https://news.example.com/a") || !allow.AllowsURL("https://www.gov.cn/a") {
 		t.Fatal("allowlist")

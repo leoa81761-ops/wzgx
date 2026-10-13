@@ -17,6 +17,26 @@ func TestCopiedSpanAndStyleFeatures(t *testing.T) {
 	if CopiedSpan("完全不同的一段话", []string{source}) {
 		t.Fatal("short difference should pass")
 	}
+	page := strings.Repeat("网页标题里的一整段说明文字", 4)
+	draft := map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"正文只写现场怎么核对。"}}},
+		"sources":  []any{map[string]any{"title": page, "fetched_title": page, "summary": page, "fetched_meta": page}},
+	}
+	if CopiedSpan(DraftText(draft), SourceTexts(draft)) {
+		t.Fatal("fetched meta should not count as a copy")
+	}
+	summary := strings.Repeat("回路编号要先抄下来再逐点核对是否一致", 3)
+	own := map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"正文没有照抄。"}}},
+		"sources":  []any{map[string]any{"summary": summary}},
+	}
+	if CopiedSpan(DraftText(own), SourceTexts(own)) {
+		t.Fatal("a long source that stays in the source list is not a copied span")
+	}
+	own["sections"] = []any{map[string]any{"paragraphs": []any{summary}}}
+	if !CopiedSpan(DraftText(own), SourceTexts(own)) {
+		t.Fatal("body that repeats the source should match")
+	}
 	sample := strings.Repeat("这是一句完整的话。", 12)
 	features, err := StyleFeatures([]string{sample, sample, sample})
 	if err != nil || features["samples"] != 3 {

@@ -27,7 +27,7 @@ var (
 
 // PublicClient fetches public web pages. It refuses loopback, private, link-local,
 // CGNAT, unspecified, and multicast addresses at connect time, so a DNS rebinding
-// response cannot reach them. Redirects are limited to three http(s) hops on ports 80 and 443.
+// response cannot reach them. The chain stops after three http(s) hops on ports 80 and 443.
 func PublicClient() *http.Client {
 	publicOnce.Do(func() {
 		dialer := &net.Dialer{Timeout: 4 * time.Second, Control: dialControl}
@@ -67,8 +67,8 @@ func dialControl(network, address string, _ syscall.RawConn) error {
 }
 
 func guardRedirect(req *http.Request, via []*http.Request) error {
-	// via holds requests already sent, so length 3 is the third redirect.
-	if len(via) > maxPublicRedirects {
+	// via holds requests already sent. Length 3 would be a fourth hop, which is refused.
+	if len(via) >= maxPublicRedirects {
 		return errTooManyHops
 	}
 	for _, hop := range via {

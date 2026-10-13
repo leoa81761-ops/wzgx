@@ -313,6 +313,24 @@ func TestTabooSentenceIsRewritten(t *testing.T) {
 	if !strings.Contains(string(raw), "现场要逐项核对") || !strings.Contains(string(raw), "下一步看编号") {
 		t.Fatal(string(raw))
 	}
+	if strings.Contains(string(raw), "这一步按现场记录来写") || out["closing"] != "" {
+		t.Fatal(string(raw))
+	}
+}
+
+func TestBareAcceptanceIsNotATaboo(t *testing.T) {
+	draft := map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"现场验收要核对中标之后的回路。不要写保证中标。",
+			"包过验收。",
+		}}},
+	}
+	out := RewriteTaboos(draft, "中标,验收,保证中标,包过验收")
+	raw, _ := json.Marshal(out)
+	text := string(raw)
+	if !strings.Contains(text, "现场验收要核对中标之后的回路") || strings.Contains(text, "保证中标") || strings.Contains(text, "包过验收") || strings.Contains(text, "这一步按现场记录来写") {
+		t.Fatal(text)
+	}
 }
 
 func TestForeignTitleSceneIsRemoved(t *testing.T) {

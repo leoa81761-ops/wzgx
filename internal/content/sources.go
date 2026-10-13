@@ -76,6 +76,9 @@ func (p SourcePolicy) AllowsURL(raw string) bool {
 	if host == "" {
 		return true
 	}
+	if DictionaryHost(host) {
+		return false
+	}
 	if len(p.Allow) > 0 && !domainMatch(host, p.Allow) {
 		return false
 	}
@@ -197,6 +200,9 @@ func (p SourcePolicy) dropReason(raw string) string {
 	if domainMatch(host, p.Block) {
 		return "屏蔽域名"
 	}
+	if DictionaryHost(host) {
+		return "词典站点"
+	}
 	if junkPage(raw) {
 		return "网店或登录页"
 	}
@@ -284,6 +290,30 @@ func standardsHost(host string) bool {
 
 func majorMedia(host string) bool {
 	for _, domain := range []string{"people.com.cn", "xinhuanet.com", "news.cn", "thepaper.cn", "caixin.com", "gmw.cn", "ce.cn", "stdaily.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
+// DictionaryHost is a lexicon or dictionary site, such as json.cn. raw may be a host or a URL.
+func DictionaryHost(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	host := raw
+	if strings.Contains(raw, "://") {
+		if parsed, err := url.Parse(raw); err == nil {
+			host = parsed.Hostname()
+		}
+	}
+	host = strings.TrimPrefix(strings.ToLower(host), "www.")
+	if host == "" {
+		return false
+	}
+	for _, domain := range []string{
+		"json.cn", "dict.cn", "zdic.net", "zdic.com", "iciba.com", "youdao.com",
+		"hanyu.baidu.com", "cidianwang.com", "911cha.com",
+	} {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}

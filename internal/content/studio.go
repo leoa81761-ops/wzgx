@@ -11,10 +11,17 @@ import (
 
 // CopiedSpan reports whether the draft repeats 40 or more runes from a source text.
 func CopiedSpan(draft string, sources []string) bool {
+	return len(CopiedWindows(draft, sources)) > 0
+}
+
+// CopiedWindows lists 40-rune stretches of source text that also appear in the draft.
+func CopiedWindows(draft string, sources []string) []string {
 	body := strings.TrimSpace(draft)
 	if utf8.RuneCountInString(body) < 40 {
-		return false
+		return nil
 	}
+	var out []string
+	seen := map[string]bool{}
 	for _, source := range sources {
 		runes := []rune(strings.TrimSpace(source))
 		if len(runes) < 40 {
@@ -22,18 +29,34 @@ func CopiedSpan(draft string, sources []string) bool {
 		}
 		for i := 0; i+40 <= len(runes); i += 20 {
 			window := string(runes[i : i+40])
-			if strings.Contains(body, window) {
-				return true
+			if seen[window] || !strings.Contains(body, window) {
+				continue
 			}
+			seen[window] = true
+			out = append(out, window)
 		}
 	}
-	return false
+	return out
 }
 
+// DraftText is the article the reader sees. Source fields are left out so a long title is not treated as a copy of itself.
 func DraftText(draft map[string]any) string {
-	return flatten(draft)
+	if draft == nil {
+		return ""
+	}
+	body := map[string]any{}
+	for key, value := range draft {
+		switch key {
+		case "sources", "footnotes", "fetched_title", "fetched_meta":
+			continue
+		default:
+			body[key] = value
+		}
+	}
+	return flatten(body)
 }
 
+// SourceTexts is the model-provided source wording. Page titles and meta descriptions fetched for relevance are not included.
 func SourceTexts(draft map[string]any) []string {
 	var out []string
 	for _, raw := range asList(draft["sources"]) {
@@ -41,7 +64,16 @@ func SourceTexts(draft map[string]any) []string {
 		if source == nil {
 			continue
 		}
-		out = append(out, asString(source["title"])+" "+asString(source["summary"])+" "+asString(source["excerpt"]))
+		text := strings.TrimSpace(asString(source["title"]) + " " + asString(source["summary"]) + " " + asString(source["excerpt"]))
+		for _, key := range []string{"fetched_title", "fetched_meta"} {
+			if fetched := strings.TrimSpace(asString(source[key])); fetched != "" {
+				text = strings.ReplaceAll(text, fetched, " ")
+			}
+		}
+		text = strings.TrimSpace(text)
+		if text != "" {
+			out = append(out, text)
+		}
 	}
 	return out
 }
