@@ -1779,6 +1779,8 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("outline", completion)...)
+	outline = assignOutlineBudgets(outline, w.WordTarget)
+	base["outline"] = outline
 	noteProgress(ctx, "draft", nil, topic, trace, tokens)
 	draftPayload := cloneMap(outlinePayload)
 	draftPayload["outline"] = outline
@@ -1889,7 +1891,10 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		trace = append(trace, structTrace...)
 		offStructure = held
 	}
+	beforeTop := content.BodyRunes(draft)
 	topped, topTokens, topTrace := topUpLength(ctx, gateway, providers, draft, base, w.WordTarget, w.CostNote)
+	topAttempted := w.WordTarget > 0 && beforeTop < w.WordTarget*110/100
+	topFailed := topAttempted && content.BodyRunes(topped) <= beforeTop
 	draft = polishDraft(topped, w)
 	tokens += topTokens
 	trace = append(trace, topTrace...)
@@ -1934,7 +1939,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	delete(draft, "_quality")
 	cited := citationMarks.MatchString(bodyPlain(draft))
-	if w.WordTarget > 0 && content.BodyRunes(draft) < w.WordTarget {
+	if w.WordTarget > 0 && content.BodyRunes(draft) < w.WordTarget && !topFailed {
 		topped, topTokens, topTrace = topUpLength(ctx, gateway, providers, draft, base, w.WordTarget, w.CostNote)
 		draft = topped
 		tokens += topTokens
@@ -2013,6 +2018,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.RepairStructure(draft)
 	if experience && !sourcedPiece {
 		draft = editorial.StripWarmFiller(draft)
+		draft = editorial.DropStrayTips(draft)
 		draft = editorial.EnsureConcreteTips(draft)
 	}
 	if sourcedPiece && !citationMarks.MatchString(bodyPlain(draft)) {
@@ -2048,6 +2054,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	repeated := editorial.RepeatedBody(draft)
 	draft = editorial.DedupeHashedBlocks(draft)
+	draft = editorial.MaterializeMarkup(draft, outlineHeadings(base))
 	draft = editorial.RepairStructure(draft)
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
@@ -3139,10 +3146,15 @@ func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string, a
 }
 
 func backupQueries(payload map[string]any) []string {
+	title := specificQueryTitle(payload)
 	var out []string
 	add := func(query string) {
 		query = strings.TrimSpace(query)
-		if query == "" || len(out) >= 3 {
+		if utf8.RuneCountInString(query) > 32 {
+			query = string([]rune(query)[:32])
+		}
+		query = strings.TrimSpace(query)
+		if query == "" || vagueSearch(query) || len(out) >= 4 {
 			return
 		}
 		for _, prev := range out {
@@ -3152,30 +3164,104 @@ func backupQueries(payload map[string]any) []string {
 		}
 		out = append(out, query)
 	}
-	add(shortSearchQuery(payload))
-	add(focusedQuery(payload))
-	title := stripComparison(strings.TrimSpace(str(payload["topic_title"])))
-	if title == "" {
-		title = stripComparison(strings.TrimSpace(str(payload["subtopic"])))
+	add(title)
+	for _, extra := range queryVariants(payload, title) {
+		add(extra)
+		if len(out) >= 4 {
+			break
+		}
 	}
-	if utf8.RuneCountInString(title) > 12 {
-		title = string([]rune(title)[:12])
+	if len(out) < 2 && title != "" && !strings.Contains(title, "原因") {
+		add(title + "原因")
 	}
-	extra := strings.TrimSpace(str(payload["keywords"]))
-	if extra == "" {
-		extra = strings.TrimSpace(str(payload["direction"]))
-	}
-	if utf8.RuneCountInString(extra) > 8 {
-		extra = string([]rune(extra)[:8])
-	}
-	add(strings.TrimSpace(title + " " + extra))
 	if len(out) < 2 {
-		base := shortSearchQuery(payload)
-		if utf8.RuneCountInString(base) > 8 {
-			add(string([]rune(base)[:8]))
+		add(shortSearchQuery(payload))
+		add(focusedQuery(payload))
+	}
+	return out
+}
+
+func specificQueryTitle(payload map[string]any) string {
+	var best string
+	for _, key := range []string{"subtopic", "topic_title", "keywords"} {
+		text := stripComparison(strings.TrimSpace(str(payload[key])))
+		text = strings.Trim(text, "：: ")
+		if vagueSearch(text) {
+			continue
+		}
+		if utf8.RuneCountInString(text) > utf8.RuneCountInString(best) {
+			best = text
+		}
+	}
+	if best == "" {
+		best = stripComparison(strings.TrimSpace(topicText(payload)))
+	}
+	if utf8.RuneCountInString(best) > 32 {
+		best = string([]rune(best)[:32])
+	}
+	return strings.TrimSpace(best)
+}
+
+func queryVariants(payload map[string]any, title string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range queryEntities(payload) {
+		if part == "" || strings.Contains(title, part) || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, strings.TrimSpace(title+" "+part))
+		if len(out) == 3 {
+			break
 		}
 	}
 	return out
+}
+
+func queryEntities(payload map[string]any) []string {
+	raw := stripComparison(strings.Join([]string{
+		str(payload["subtopic"]),
+		str(payload["topic_title"]),
+		str(payload["keywords"]),
+		str(payload["direction"]),
+	}, " "))
+	var parts []string
+	seen := map[string]bool{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ' ', '，', '。', '？', '?', '！', '、', '：', ':', '；', ';', '\n', ',':
+			return true
+		default:
+			return false
+		}
+	}) {
+		part = strings.TrimSpace(part)
+		n := utf8.RuneCountInString(part)
+		if n < 2 || n > 16 || seen[part] || searchStop(part) || vagueSearch(part) {
+			continue
+		}
+		seen[part] = true
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+func vagueSearch(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || topics.ComparisonFrame(text) {
+		return true
+	}
+	for _, phrase := range []string{"更稳妥的做法", "施工坑点", "一个小做法", "今天就能做", "先把能做的一步"} {
+		if !strings.Contains(text, phrase) {
+			continue
+		}
+		cleaned := strings.ReplaceAll(text, phrase, "")
+		cleaned = strings.Trim(cleaned, "：:，, 、 ")
+		if utf8.RuneCountInString(cleaned) < 4 {
+			return true
+		}
+	}
+	return false
 }
 
 func focusedQuery(payload map[string]any) string {
@@ -3515,17 +3601,86 @@ func sourceRelevant(source map[string]any, topic string) bool {
 	if content.SharesStandardNumber(topic, blob) {
 		return true
 	}
-	for _, phrase := range topicPhrases(topic) {
-		if strings.Contains(blob, phrase) {
-			return true
-		}
+	// Bing mixes in pages that only share a generic word such as 综合 or 测试失败.
+	// A kept page has to share a distinctive topic entity, such as 布线 or 六类线.
+	entities := topicEntities(topic)
+	if len(entities) == 0 {
+		entities = append(topicPhrases(topic), topicTerms(topic)...)
 	}
-	for _, term := range topicTerms(topic) {
-		if strings.Contains(blob, term) {
+	for _, entity := range entities {
+		if strings.Contains(blob, entity) {
 			return true
 		}
 	}
 	return false
+}
+
+// topicEntities are the topic pieces that are not generic words.
+// Generic stretches such as 测试失败 are peeled off first, so a page that only
+// shares those words does not count. 布线 and 六类线 stay.
+func topicEntities(topic string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(text string) {
+		if text == "" || seen[text] || genericEntity(text) {
+			return
+		}
+		seen[text] = true
+		out = append(out, text)
+	}
+	for _, run := range hanRuns(topic) {
+		mask := entityMask(run)
+		for n := 2; n <= 4; n++ {
+			for i := 0; i+n <= len(run); i++ {
+				if !spanCore(mask, i, i+n) {
+					continue
+				}
+				add(string(run[i : i+n]))
+			}
+		}
+	}
+	return out
+}
+
+func entityMask(run []rune) []bool {
+	mask := make([]bool, len(run))
+	for i := range mask {
+		mask[i] = true
+	}
+	for _, n := range []int{4, 3, 2} {
+		for i := 0; i+n <= len(run); i++ {
+			if !spanCore(mask, i, i+n) {
+				continue
+			}
+			if genericEntity(string(run[i : i+n])) {
+				for j := i; j < i+n; j++ {
+					mask[j] = false
+				}
+			}
+		}
+	}
+	return mask
+}
+
+func spanCore(mask []bool, start, end int) bool {
+	for i := start; i < end; i++ {
+		if !mask[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func genericEntity(text string) bool {
+	if genericPhrase(text) || genericTitleTerm(text) {
+		return true
+	}
+	switch text {
+	case "综合", "智能", "验收", "测试", "失败", "原因", "常见", "方法", "问题", "技术", "方案", "工作", "服务", "信息", "数据", "网络", "安全", "质量", "公司", "中国", "新闻", "相关", "内容", "介绍", "分析", "操作", "步骤", "注意", "事项", "处理", "解决", "说明", "指南", "详细", "主要", "一般", "基本", "使用", "需要", "进行", "检查", "测试失败", "常见原因", "失败原因", "注意事项", "常见问题", "解决方法", "处理方法", "相关内容", "详细介绍", "失败常见", "测试方法":
+		return true
+	default:
+		return false
+	}
 }
 
 func stripRankScores(sources []map[string]any) {
@@ -4792,6 +4947,7 @@ func rewriteColumnStructure(ctx context.Context, gateway *llm.Gateway, providers
 	if draft == nil || (kind != "news" && kind != "qa" && kind != "steps") {
 		return draft, 0, nil, false
 	}
+	draft = editorial.MaterializeMarkup(draft, outlineHeadings(base))
 	if quality.StructureOK(kind, draftParagraphs(draft)) {
 		return draft, 0, nil, false
 	}
@@ -4808,6 +4964,7 @@ func rewriteColumnStructure(ctx context.Context, gateway *llm.Gateway, providers
 	trace := appendStage(nil, "structure", completion, err)
 	if err != nil || model == nil || !quality.StructureOK(kind, draftParagraphs(model)) {
 		shaped := quality.AlignStructure(kind, draft)
+		shaped = editorial.MaterializeMarkup(shaped, outlineHeadings(base))
 		if quality.StructureOK(kind, draftParagraphs(shaped)) {
 			return shaped, tokensOf(completion), trace, false
 		}
@@ -4816,8 +4973,11 @@ func rewriteColumnStructure(ctx context.Context, gateway *llm.Gateway, providers
 	if !structureRewriteOK(draft, model) {
 		return draft, tokensOf(completion), trace, false
 	}
-	copySources(model, draft)
-	return editorial.StripFactNumbers(model), tokensOf(completion), trace, false
+	// The structure call may edit sentences. It may not flatten a table or renumber a list.
+	kept := editorial.KeepMarkup(draft, editorial.StripFactNumbers(model))
+	kept = editorial.MaterializeMarkup(kept, outlineHeadings(base))
+	copySources(kept, draft)
+	return kept, tokensOf(completion), trace, false
 }
 
 // structureRewriteOK rejects a rewrite that drops more than 10% of the characters
@@ -5229,7 +5389,7 @@ func fitBody(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider
 	tokens := 0
 	stillShort := false
 	if content.BodyRunes(draft) < floor {
-		passes := 3
+		passes := 2
 		if budgetFrom(ctx) != nil && budgetLeft(ctx) < 5*time.Second {
 			passes = 0
 		} else if budgetTight(ctx) {
@@ -5393,6 +5553,7 @@ func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []
 		share = 1
 	}
 	extra := target - share*len(sections)
+	useBudgets := budgetsMatchTarget(sections, target)
 	var assembled map[string]any
 	var completion llm.Completion
 	for i, point := range sections {
@@ -5402,6 +5563,11 @@ func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []
 		goal := share
 		if i == len(sections)-1 {
 			goal += extra
+		}
+		if useBudgets {
+			if n := intOf(point["word_budget"]); n > 0 {
+				goal = n
+			}
 		}
 		req := cloneMap(payload)
 		req["section_index"] = i + 1
@@ -5438,6 +5604,89 @@ func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []
 	return assembled, tokens, trace, completion, nil
 }
 
+func assignOutlineBudgets(outline map[string]any, target int) map[string]any {
+	if outline == nil {
+		return outline
+	}
+	points := asList(outline["points"])
+	if len(points) == 0 {
+		return outline
+	}
+	if target < 1 {
+		target = 800
+	}
+	sum := 0
+	given := make([]int, len(points))
+	for i, raw := range points {
+		point, _ := raw.(map[string]any)
+		if point == nil {
+			continue
+		}
+		given[i] = intOf(point["word_budget"])
+		sum += given[i]
+	}
+	if sum == target {
+		return outline
+	}
+	used := 0
+	for i, raw := range points {
+		point, _ := raw.(map[string]any)
+		if point == nil {
+			continue
+		}
+		var budget int
+		if sum < 1 {
+			budget = target / len(points)
+			if i == len(points)-1 {
+				budget = target - used
+			}
+		} else if i == len(points)-1 {
+			budget = target - used
+		} else {
+			budget = given[i] * target / sum
+		}
+		if budget < 1 {
+			budget = 1
+		}
+		point["word_budget"] = budget
+		used += budget
+	}
+	return outline
+}
+
+func budgetsMatchTarget(sections []map[string]any, target int) bool {
+	if target < 1 || len(sections) == 0 {
+		return false
+	}
+	sum := 0
+	for _, point := range sections {
+		n := intOf(point["word_budget"])
+		if n < 1 {
+			return false
+		}
+		sum += n
+	}
+	return sum == target
+}
+
+func outlineHeadings(payload map[string]any) []string {
+	if payload == nil {
+		return nil
+	}
+	outline, _ := payload["outline"].(map[string]any)
+	var out []string
+	for _, raw := range asList(outline["points"]) {
+		point, _ := raw.(map[string]any)
+		if point == nil {
+			continue
+		}
+		if heading := strings.TrimSpace(str(point["heading"])); heading != "" {
+			out = append(out, heading)
+		}
+	}
+	return out
+}
+
 func outlineSections(payload map[string]any) []map[string]any {
 	outline, _ := payload["outline"].(map[string]any)
 	var out []map[string]any
@@ -5450,7 +5699,11 @@ func outlineSections(payload map[string]any) []map[string]any {
 		if heading == "" {
 			heading = "小节"
 		}
-		out = append(out, map[string]any{"heading": heading, "intent": str(point["intent"])})
+		row := map[string]any{"heading": heading, "intent": str(point["intent"])}
+		if n := intOf(point["word_budget"]); n > 0 {
+			row["word_budget"] = n
+		}
+		out = append(out, row)
 	}
 	if len(out) == 0 {
 		out = []map[string]any{
@@ -5822,6 +6075,9 @@ func validateOutline(data map[string]any) (map[string]any, error) {
 		pointOut := map[string]any{"heading": clip(heading, 40), "intent": clip(str(point["intent"]), 120)}
 		if need, ok := point["need_table"].(bool); ok && need {
 			pointOut["need_table"] = true
+		}
+		if n := intOf(point["word_budget"]); n > 0 {
+			pointOut["word_budget"] = n
 		}
 		cleaned = append(cleaned, pointOut)
 	}

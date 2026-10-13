@@ -21,7 +21,8 @@ const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据�
 
 const healthRule = "治疗、疗效、降血压、血糖、癌症、偏方、剂量、诊断、服用、治愈、处方、药品、炎症这类说法，句末必须有 [n]；没有来源就改成不涉及诊断或用药的生活习惯提醒。"
 
-const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。不要编造外部机构、标准和新闻，不要使用 [n]。至少写出 5 条能照做的具体做法，带上动作和数量或工具，不要用温馨、默契这类空话。文末来源会标成经验分享。" +
+const experienceRule = "writing_mode 是 experience 且没有可引用的来源：这是经验分享。不要编造外部机构、标准和新闻，不要使用 [n]。" +
+	"仍然要写具体：句子里要有数字、工具和场景，并用这个账号的口吻，技术号写现场，家庭号写家里的事。不要温馨、默契、从容这类暖场空话，也不要单独甩一句没有数字和工具的提示。文末来源会标成经验分享。" +
 	"如果已经有来源网址，不要标成经验分享，在用到该来源的句子后写 [n]。" +
 	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少三对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
 	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。不要写诊断、剂量、疗效或用药。"
@@ -31,7 +32,7 @@ func lengthInstruction(stageLabel string, payload map[string]any) string {
 		return "这一次只写一个小节，不要写其他小节。" +
 			"section_heading 是这一节的小标题，sections 里只放这一节，heading 必须用 section_heading。" +
 			"section_intent 是这一节要写完的事。section_index 和 section_count 表示第几节、一共几节。" +
-			"这一节最多四段，把篇幅写进这些段落、列表和表格。字数统计小标题、段落、列表和表格单元格，要写到 section_target。整篇 word_target 由各节加起来达到，所以这一节请直接写满。" +
+			"这一节最多四段，把篇幅写进这些段落、列表和表格。字数统计小标题、段落、列表和表格单元格，要一次写满 section_target，不要只写一两句。整篇 word_target 由各节预算加起来达到。" +
 			"用具体做法把字数写够。不要重复同一句，也不要把选题、栏目或题目嵌进「先打开……的检修口」这类套话。" +
 			"问答栏目这一节只写一对：问句以问号结尾，答案用「答：」接上。步骤栏目这一节只写这一步，序号用 section_index，例如「1. 」。" +
 			"title 用 topic_title。只有最后一节写 closing，前面几节 closing 用空字符串。sources 保留已有来源，不要新造网址。"
@@ -160,8 +161,8 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "扩写":
 		schema = StageSchema("正文")
 		system = "你是公众号编辑。当前正文偏短。请在不编造政策、数据、人名和网址的前提下补写。" +
-			"在原文后面追加新的小节，保留原来的段落、列表和表格，不要整篇重写替换。" +
-			"事实不够时按栏目补上案例、步骤、易错和问答，不要把同一段反复重写。" +
+			"不要把原来的段落拉长注水，也不要整篇重写替换。只在原文后面追加新小节，保留原来的段落、列表和表格。" +
+			"新小节只能是这四类：现场案例、容易踩的坑、常见问题、收工前核对。每节写出具体数字、工具和场景，不要用同一句重复充字数。" +
 			"目标大约是 word_target 的 105%，收尾补写时按 expand_goal，大约是 word_target 的 110%。写到这个目标就停，不要为了凑到 130% 而注水。" +
 			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。列表和表格里的字都要算进去。" +
@@ -185,7 +186,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "结构润色":
 		system = "你是公众号编辑。只改写输入里标记为需要改的部分：rewrite_hook、rewrite_headings、rewrite_closing 为 true 的才写。" +
 			"没有要求改的部分返回空字符串或空数组。" +
-			"不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" + markerRule +
+			"不要改表格、列表、序号和小标题层级，只改每个区块里的句子。不要删除已有段落，不要改标点和引用标记，不要新造数字或来源。" + markerRule +
 			"开头如果要改，只写不超过 40 个字的一句，用来替换原来的第一段，不要把两段开头叠在一起。和原开头重叠超过一半就返回空字符串。" +
 			"小标题要能扫读，结尾留下一句收获并邀请读者留言。" +
 			anecdoteRule + voiceRule(payload) + readerRule + sceneRule + tabooRule(payload) + columnRule(payload) +
@@ -212,7 +213,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		schema = StageSchema("正文")
 		if asString(payload["writing_mode"]) == "experience" {
 			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按 column_structure 和 structure 里的栏目结构模板重写成一篇完整稿。" +
-				"不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。" +
+				"不要写外部机构、标准或新闻，不要使用 [n]。现场的数量、工具和场景要写具体，不要用温馨、默契这类空话，也不要单独甩一句没有数字和工具的提示。" +
 				"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
 				"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 				"news 或快报：没有可核对的新闻时不要编造日期和 [n]，按栏目定位写成经验分享。" +
@@ -222,7 +223,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			break
 		}
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
-			"不要删掉已有段落、列表和表格，不要把表格压成一段话，序号必须从 1 连续编到最后，不要把资料清单的编号抄进正文。" +
+			"不要删掉已有段落、列表和表格，不要把表格压成一段话，不要增加大纲里没有的步骤。序号必须从 1 连续编到最后，不要把资料清单的编号抄进正文。只改每个区块里的句子，表格和列表的结构保持原样。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
 			"qa 或问答：至少三对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
 			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
@@ -266,7 +267,10 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "选题" {
 			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。" +
-				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。"
+				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。题目要具体到对象和问题，例如「综合布线六类线测试失败常见原因」，不要写成「施工坑点：更稳妥的做法」这种栏目名加空角度。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。"
+		}
+		if stageLabel == "大纲" {
+			system += "points 里每一节给出 word_budget，各节 word_budget 相加必须等于 word_target。正文会按这个预算一节一节写满。小节标题要写成具体的事，不要写成「更稳妥的做法」。"
 		}
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthInstruction(stageLabel, payload) + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
@@ -754,7 +758,7 @@ func draftFromPayload(payload map[string]any) map[string]any {
 				lead,
 				follows[slot%len(follows)],
 			},
-			"list": []any{"先做一个最小步骤", heading + "做完后用一句话记下结果", "不追求一次到位", "语气是" + style},
+			"list": []any{"先做一个最小步骤，用测试仪测3遍" + heading, heading + "做完后用一句话记下结果", "不追求一次到位", "语气是" + style},
 		}
 		if point != nil && point["need_table"] == true {
 			section["table"] = map[string]any{

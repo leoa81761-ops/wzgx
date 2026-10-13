@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strconv"
 	"strings"
 )
 
@@ -55,9 +56,10 @@ func sectionMarkdown(section map[string]any) string {
 		}
 	}
 	if len(items) > 0 {
-		for _, item := range items {
-			b.WriteString("- ")
-			b.WriteString(item)
+		for i, item := range items {
+			b.WriteString(strconv.Itoa(i + 1))
+			b.WriteString(". ")
+			b.WriteString(stripLeadNumber(item))
 			b.WriteByte('\n')
 		}
 		b.WriteByte('\n')
@@ -121,4 +123,23 @@ func markdownTable(table map[string]any) string {
 		b.WriteString(" |\n")
 	}
 	return b.String()
+}
+
+// stripLeadNumber leaves the sentence and lets the renderer own the 1..n index.
+func stripLeadNumber(text string) string {
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	i := 0
+	for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(runes) {
+		return text
+	}
+	switch runes[i] {
+	case '.', '、', '．':
+		return strings.TrimSpace(string(runes[i+1:]))
+	default:
+		return text
+	}
 }

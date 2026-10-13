@@ -309,13 +309,13 @@ func TestLongStageDefaultsEffortLow(t *testing.T) {
 		t.Fatalf("paths %#v", paths)
 	}
 	if seen[FallbackModel]["model"] != FallbackModel {
-		t.Fatalf("draft should start on the non-reasoning model: %#v", seen[FallbackModel])
+		t.Fatalf("outline and draft should start on the non-reasoning model: %#v", seen[FallbackModel])
 	}
 	if _, ok := seen[FallbackModel]["reasoning_effort"]; ok {
-		t.Fatalf("draft model should not receive reasoning_effort: %#v", seen[FallbackModel]["reasoning_effort"])
+		t.Fatalf("non-reasoning model should not receive reasoning_effort: %#v", seen[FallbackModel]["reasoning_effort"])
 	}
-	if seen["grok-4.7"]["reasoning_effort"] != "low" || seen["grok-4.7"]["stream"] != true {
-		t.Fatalf("%#v", seen["grok-4.7"])
+	if _, ok := seen["grok-4.7"]; ok {
+		t.Fatalf("outline should not call grok-4.7: %#v", seen["grok-4.7"])
 	}
 	if _, ok := seen["grok-chat-fast"]["reasoning_effort"]; ok {
 		t.Fatalf("chat-fast should not receive reasoning_effort: %#v", seen["grok-chat-fast"]["reasoning_effort"])
@@ -357,7 +357,7 @@ func TestIdleCutFallsBackToFastModel(t *testing.T) {
 	}))
 	defer srv.Close()
 	gw := &Gateway{Client: srv.Client(), Mock: false, MaxAttempts: 1, Backoff: time.Second}
-	messages := StageMessages("大纲", map[string]any{"word_target": 1500})
+	messages := StageMessages("选题", map[string]any{"word_target": 1500})
 	started := time.Now()
 	_, completion, err := gw.CompleteJSON(context.Background(), []Provider{{
 		ID: 7, Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
@@ -464,7 +464,7 @@ func TestGrokInternalErrorFallsBackFaster(t *testing.T) {
 	_, _, err := gw.CompleteJSON(context.Background(), []Provider{{
 		Name: "推理", Protocol: "openai", BaseURL: srv.URL + "/v1", APIKey: "k", Model: "grok-4.7",
 		ExtraParams: map[string]any{"reasoning_effort": "high"}, Timeout: 90 * time.Second,
-	}}, StageMessages("大纲", map[string]any{"word_target": 800}), nil, func(item map[string]any) (map[string]any, error) {
+	}}, StageMessages("选题", map[string]any{"word_target": 800}), nil, func(item map[string]any) (map[string]any, error) {
 		return item, nil
 	})
 	if err != nil || calls != 2 {
@@ -707,11 +707,11 @@ func TestOutlineFirstTokenFallsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	if elapsed > time.Second {
-		t.Fatalf("first token waited %s", elapsed)
+		t.Fatalf("outline waited on grok-4.7 %s", elapsed)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(models) != 2 || models[0] != "grok-4.7" || models[1] != FallbackModel || result.Content != "ok" {
+	if len(models) != 1 || models[0] != FallbackModel || result.Content != "ok" {
 		t.Fatalf("models %#v content %q", models, result.Content)
 	}
 }
@@ -736,7 +736,7 @@ func TestOutlineFirstByteIsNotCut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || model != "grok-4.7" || result.Content != "ok" {
+	if calls != 1 || model != FallbackModel || result.Content != "ok" {
 		t.Fatalf("calls %d model %s content %q", calls, model, result.Content)
 	}
 }
@@ -787,7 +787,7 @@ func TestFirstTokenClosesAbandonedBody(t *testing.T) {
 	result, err := gw.Complete(context.Background(), Provider{
 		Name: "推理", Protocol: "openai", BaseURL: "https://example.test/v1", APIKey: "k", Model: "grok-4.7",
 		Timeout: 5 * time.Second, FirstToken: 30 * time.Millisecond,
-	}, StageMessages("大纲", map[string]any{}))
+	}, StageMessages("选题", map[string]any{}))
 	if err != nil {
 		t.Fatal(err)
 	}

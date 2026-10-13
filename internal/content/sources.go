@@ -355,7 +355,7 @@ func SearchResultURL(raw string) bool {
 	if strings.Contains(path, "dcpsptools") || strings.Contains(path, "/download") && query.Get("path") != "" {
 		return true
 	}
-	if (host == "std.samr.gov.cn" || strings.HasSuffix(host, ".std.samr.gov.cn")) && strings.Contains(path, "download") {
+	if strings.Contains(path, "download") && (strings.Contains(host, "std.") || strings.Contains(host, "samr") || strings.Contains(host, "biaozhun") || strings.Contains(host, "openstd") || strings.Contains(host, "gb688")) {
 		return true
 	}
 	if strings.Contains(path, "/search") || strings.Contains(path, "search/org") {
@@ -578,6 +578,12 @@ func OffTopicPage(raw, title string) string {
 	if shopPage(host) {
 		return "网店"
 	}
+	if tenderNotice(title, raw) {
+		return "招标公告"
+	}
+	if ebookShop(host, title+" "+raw) {
+		return "电子书"
+	}
 	return ""
 }
 
@@ -616,6 +622,32 @@ func videoOrDrama(host, blob string) bool {
 func shopPage(host string) bool {
 	for _, domain := range []string{"taobao.com", "tmall.com", "tb.cn"} {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func tenderNotice(title, raw string) bool {
+	blob := title + " " + raw
+	for _, word := range []string{"招标公告", "中标公告", "成交公告", "采购公告", "招标公示", "中标公示", "竞争性磋商"} {
+		if strings.Contains(blob, word) {
+			return true
+		}
+	}
+	lower := strings.ToLower(raw)
+	return strings.Contains(lower, "/zbgg") || strings.Contains(lower, "/tender")
+}
+
+func ebookShop(host, blob string) bool {
+	for _, domain := range []string{"dangdang.com", "weread.qq.com", "yuedu.baidu.com", "duokan.com", "zhangyue.com", "read.jd.com", "amazon.cn", "qidian.com"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	lower := strings.ToLower(blob)
+	for _, word := range []string{"电子书", "ebook", "在线阅读全文"} {
+		if strings.Contains(lower, word) {
 			return true
 		}
 	}
