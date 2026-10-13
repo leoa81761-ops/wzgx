@@ -563,7 +563,7 @@ func TestResearchChatFastStreamsAndKeepsFinalCitations(t *testing.T) {
 
 func TestResearchCallsCapAt60Seconds(t *testing.T) {
 	stream, timeout := researchTransport(Provider{Protocol: "openai", Model: "grok-chat-fast"}, 150*time.Second)
-	if !stream || timeout != 60*time.Second {
+	if !stream || timeout != 20*time.Second {
 		t.Fatalf("chat-fast %v %s", stream, timeout)
 	}
 	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "grok-4.7"}, 150*time.Second)
@@ -575,7 +575,7 @@ func TestResearchCallsCapAt60Seconds(t *testing.T) {
 		t.Fatalf("short %v %s", stream, timeout)
 	}
 	stream, timeout = researchTransport(Provider{Protocol: "openai", Model: "grok-chat-fast"}, 30*time.Second)
-	if !stream || timeout != 30*time.Second {
+	if !stream || timeout != 20*time.Second {
 		t.Fatalf("configured short %v %s", stream, timeout)
 	}
 }

@@ -319,13 +319,25 @@ func TestDraftExpandsOnceWhenShort(t *testing.T) {
 	}
 	user, account, plan := seedPlan(t, st, "short@example.com")
 	plan.WordTarget = 800
-	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 2 {
-		t.Fatalf("expand calls %d", expandCalls)
+	now := time.Now().UTC()
+	var taskID int64
+	if err := st.DB.WithTx(ctx, func(tx *db.Tx) error {
+		task, err := jobs.Create(ctx, st, tx, user, plan, account, "manual", now, nil)
+		if err != nil {
+			return err
+		}
+		taskID = task.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
-	if err != nil || len(articles) == 0 || !strings.Contains(articles[0].BodyHTML, "步骤写清楚。") {
-		t.Fatal(articles, err)
+	Execute(ctx, deps, taskID, false, now)
+	article, err := st.GetArticleByTask(ctx, nil, taskID)
+	if err != nil || article == nil {
+		t.Fatal(err)
+	}
+	if expandCalls != 0 || article.Status != "held" || !strings.Contains(article.BodyHTML, "只有一句。") || strings.Contains(article.BodyHTML, "步骤写清楚。") {
+		t.Fatalf("expands %d status %s html %s", expandCalls, article.Status, article.BodyHTML)
 	}
 }
 
@@ -786,8 +798,8 @@ func TestFactCheckExpansionIsTrimmed(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "refit@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if !sawFact {
-		t.Fatal("fact check was not called")
+	if sawFact {
+		t.Fatal("fact check must not replace the drafted sections")
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
 	if err != nil || len(articles) == 0 {
@@ -837,7 +849,7 @@ func TestDraftCondensesWhenLong(t *testing.T) {
 	user, account, plan := seedPlan(t, st, "long@example.com")
 	plan.WordTarget = 800
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if expandCalls != 1 || condenseCalls < 1 {
+	if expandCalls != 0 || condenseCalls < 1 {
 		t.Fatalf("expand %d condense %d", expandCalls, condenseCalls)
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
@@ -911,11 +923,8 @@ func TestSensitiveWordFromFinishPieceFailsTheDraft(t *testing.T) {
 			writeChoice(w, map[string]any{"hook": "为什么这里出现稳赚不赔？", "headings": []any{"先看问题", "一个做法"}, "closing": "可以先记住。欢迎留言。稳赚不赔。"})
 		case "审核":
 			reviews++
-			if reviews >= 2 {
-				writeChoice(w, map[string]any{"title": "长度刚好", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"这里留下了稳赚不赔。"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
-				return
-			}
-			writeChoice(w, clean)
+			writeChoice(w, map[string]any{"title": "长度刚好", "summary": "摘要", "sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"这里留下了稳赚不赔。"}, "list": []any{}}}, "closing": "结束", "sources": []any{}})
+			return
 		default:
 			writeChoice(w, clean)
 		}
@@ -930,7 +939,7 @@ func TestSensitiveWordFromFinishPieceFailsTheDraft(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "审核未通过") || !strings.Contains(err.Error(), "稳赚不赔") {
 		t.Fatalf("reviews %d err %v", reviews, err)
 	}
-	if reviews < 2 {
+	if reviews != 1 {
 		t.Fatalf("reviews %d", reviews)
 	}
 }
@@ -1134,18 +1143,18 @@ func TestFactCheckRewritesWrongDefinition(t *testing.T) {
 	}
 	user, account, plan := seedPlan(t, st, "facts@example.com")
 	runTask(t, st, deps, user, account, plan, time.Now().UTC())
-	if !sawFact {
-		t.Fatal("fact check was not called")
+	if sawFact {
+		t.Fatal("fact check must not rewrite a finished section")
 	}
 	articles, err := st.ListArticlesByUser(ctx, user.ID, 5)
 	if err != nil || len(articles) == 0 {
 		t.Fatal(err)
 	}
-	if strings.Contains(articles[0].BodyHTML, "1000") || !strings.Contains(articles[0].BodyHTML, "通信") {
+	if !strings.Contains(articles[0].BodyHTML, "1000V") || strings.Contains(articles[0].BodyHTML, "楼宇自控") {
 		t.Fatal(articles[0].BodyHTML)
 	}
 	task, err := st.GetTask(ctx, nil, articles[0].TaskID)
-	if err != nil || task == nil || traceStage(task.ModelTrace, "factcheck")["ok"] != true {
+	if err != nil || task == nil || traceStage(task.ModelTrace, "factcheck")["stage"] == "factcheck" {
 		t.Fatalf("%#v %v", task, err)
 	}
 }

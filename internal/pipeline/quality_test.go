@@ -109,7 +109,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 2 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 0 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }
@@ -159,7 +159,7 @@ func TestUncitedSourcesStayOutOfTheArticle(t *testing.T) {
 	}
 }
 
-func TestCleanupBelowTargetIsHeld(t *testing.T) {
+func TestCleanupKeepsTheBodyWithTheSections(t *testing.T) {
 	para := strings.Repeat("合适的正文。", 84)
 	body := map[string]any{
 		"title": "短稿", "summary": "摘要",
@@ -210,8 +210,9 @@ func TestCleanupBelowTargetIsHeld(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if before < 800*85/100 || content.BodyRunes(article.BodyJSON) >= 800*85/100 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
-		t.Fatalf("before %d after %d status %s note %s", before, content.BodyRunes(article.BodyJSON), article.Status, article.DeliveryNote)
+	after := content.BodyRunes(article.BodyJSON)
+	if before < 800*85/100 || after*10 < before*9 || article.Status != "in_draft" || article.DraftMediaID == "" || strings.Contains(article.DeliveryNote, "85%") {
+		t.Fatalf("before %d after %d status %s note %s", before, after, article.Status, article.DeliveryNote)
 	}
 }
 

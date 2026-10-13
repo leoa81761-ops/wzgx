@@ -165,6 +165,44 @@ func TestArticle76QueriesAreNarrowAndJunkIsDropped(t *testing.T) {
 	}
 }
 
+func TestArticle78And79QueriesStaySpecific(t *testing.T) {
+	cases := []map[string]any{
+		{
+			"topic_title": "工程",
+			"subtopic":    "工程",
+			"keywords":    "工程",
+			"direction":   "弱电智能化综合布线六类线测试失败",
+		},
+		{
+			"topic_title": "家庭",
+			"subtopic":    "家庭",
+			"keywords":    "家庭",
+			"direction":   "厨房油烟机每月清洗步骤",
+		},
+	}
+	for _, payload := range cases {
+		queries := backupQueries(payload)
+		if len(queries) < 2 || len(queries) > 4 {
+			t.Fatal(payload["direction"], queries)
+		}
+		full := str(payload["direction"])
+		if utf8.RuneCountInString(full) > 32 {
+			full = string([]rune(full)[:32])
+		}
+		if queries[0] != full {
+			t.Fatal(queries)
+		}
+		for _, query := range queries {
+			if query == "工程" || query == "家庭" || singleWordQuery(query) {
+				t.Fatal(query, queries)
+			}
+			if !strings.Contains(full, query) && !strings.Contains(query, full) && !strings.HasPrefix(query, string([]rune(full)[:4])) {
+				t.Fatal(query)
+			}
+		}
+	}
+}
+
 func TestBingNoiseNeedsEntityOverlap(t *testing.T) {
 	_, kept, dropped, _ := takeSources(t.Context(), nil, "笔记", []map[string]any{
 		{"title": "六类线测试失败现场记录", "snippet": "综合布线里六类线测不通", "url": "https://www.example.com/cat6"},

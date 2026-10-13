@@ -991,6 +991,8 @@ func rewriteWeak(ctx context.Context, gateway *llm.Gateway, providers map[string
 	}
 	need := editorial.NeedsRewrite(draft)
 	need.Hook = true
+	// Headings stay on the outline. This pass may change the opening and the closing sentences only.
+	need.Headings = false
 	payload := cloneMap(base)
 	payload["draft"] = draft
 	payload["rewrite_hook"] = true
@@ -1780,6 +1782,11 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	tokens += completion.PromptTokens + completion.CompletionTokens
 	trace = append(trace, traceRows("outline", completion)...)
 	outline = assignOutlineBudgets(outline, w.WordTarget)
+	subject := strings.TrimSpace(topic.Subtopic)
+	if singleWordQuery(subject) || utf8.RuneCountInString(subject) < 4 {
+		subject = topicTitle
+	}
+	outline = anchorHeadings(outline, subject)
 	base["outline"] = outline
 	noteProgress(ctx, "draft", nil, topic, trace, tokens)
 	draftPayload := cloneMap(outlinePayload)
@@ -1789,67 +1796,21 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		return fail(trace, "draft", completion, err)
 	}
 	noteProgress(ctx, "draft", draft, topic, trace, tokens)
-	fitted, fitTokens, fitTrace, lengthShort := fitBody(ctx, gateway, providers["draft"], draftPayload, draft, w.WordTarget)
-	draft = fitted
-	tokens += fitTokens
-	trace = append(trace, fitTrace...)
+	rewrittenSections, rewriteTokens, rewriteTrace := rewriteShortSections(ctx, gateway, providers["draft"], draftPayload, draft)
+	draft = rewrittenSections
+	tokens += rewriteTokens
+	trace = append(trace, rewriteTrace...)
 	noteProgress(ctx, "draft", draft, topic, trace, tokens)
+	assembled := cloneDraft(draft)
 	reviewPayload := cloneMap(draftPayload)
-	if next, skip := skipOptional(ctx, "factcheck", trace); skip {
-		trace = next
-	} else {
-		checkCtx, checkCancel := stageContext(ctx, budgetCall)
-		checked, checkTokens, checkTrace := factCheck(checkCtx, gateway, providers["review"], reviewPayload, draft)
-		checkCancel()
-		draft = checked
-		tokens += checkTokens
-		trace = append(trace, checkTrace...)
+	// Sensitive words are a gate: one rewrite, then the task fails. The body is not replaced by a fact-check or a second review.
+	audited, auditTokens, auditTrace, err := reviewSensitive(ctx, gateway, providers["review"], draft, reviewPayload, sensitive)
+	trace = append(trace, auditTrace...)
+	tokens += auditTokens
+	if err != nil {
+		return Built{Trace: trace, Topic: topic}, err
 	}
-	if next, skip := skipOptional(ctx, "review", trace); skip {
-		trace = next
-	} else {
-		reviewPayload["draft"] = draft
-		reviewPayload["issues"] = content.FindSensitive(draft, sensitive)
-		reviewCtx, reviewCancel := stageContext(ctx, budgetCall)
-		reviewed, completion, err := gateway.CompleteJSON(reviewCtx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
-		reviewCancel()
-		if err != nil {
-			if reviewCtx.Err() == nil && !budgetTight(ctx) {
-				return fail(trace, "review", completion, err)
-			}
-			trace = append(trace, map[string]any{"stage": "review", "ok": true, "skipped": "时间不够，这一步先不做"})
-		} else {
-			tokens += completion.PromptTokens + completion.CompletionTokens
-			trace = append(trace, traceRows("review", completion)...)
-			cleaned, _ := content.StripCliches(reviewed).(map[string]any)
-			draft = cleaned
-			hits := content.FindSensitive(draft, sensitive)
-			if len(hits) > 0 {
-				reviewPayload["draft"] = draft
-				reviewPayload["issues"] = hits
-				secondCtx, secondCancel := stageContext(ctx, budgetCall)
-				reviewed, completion, err = gateway.CompleteJSON(secondCtx, providers["review"], llm.StageMessages("审核", reviewPayload), llm.StageSchema("审核"), validateReview)
-				secondCancel()
-				if err != nil {
-					if secondCtx.Err() == nil && !budgetTight(ctx) {
-						return fail(trace, "review", completion, err)
-					}
-					trace = append(trace, map[string]any{"stage": "review", "ok": true, "skipped": "时间不够，这一步先不做"})
-				} else {
-					tokens += completion.PromptTokens + completion.CompletionTokens
-					trace = append(trace, traceRows("review", completion)...)
-					cleaned, _ = content.StripCliches(reviewed).(map[string]any)
-					draft = cleaned
-					hits = content.FindSensitive(draft, sensitive)
-					if len(hits) > 0 {
-						message := "审核未通过，命中敏感词：" + strings.Join(hits, "、")
-						trace = append(trace, map[string]any{"stage": "audit", "ok": false, "error": clip(message, 300)})
-						return Built{Trace: trace, Topic: topic}, &llm.Error{Message: message}
-					}
-				}
-			}
-		}
-	}
+	draft = audited
 	noteProgress(ctx, "draft", draft, topic, trace, tokens)
 	if w.Tier != "free" {
 		merged := asList(draft["sources"])
@@ -1871,53 +1832,24 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = finished
 	tokens += pieceTokens
 	trace = append(trace, pieceTrace...)
-	audited, auditTokens, auditTrace, err := reviewSensitive(ctx, gateway, providers["review"], draft, reviewPayload, sensitive)
+	// Polish and the one condense may shorten a too-long draft on purpose.
+	// Later cleanup must not throw away that text, so the snapshot moves forward when the body is still there.
+	if content.BodyRunes(draft) > 0 {
+		assembled = cloneDraft(draft)
+	}
+	audited, auditTokens, auditTrace, err = reviewSensitive(ctx, gateway, providers["review"], draft, reviewPayload, sensitive)
 	trace = append(trace, auditTrace...)
 	tokens += auditTokens
 	if err != nil {
 		return Built{Trace: trace, Topic: topic}, err
 	}
 	draft = audited
+	// One deterministic cleanup. Taboo, cliché, and copy fixes stay local; they do not ask for another article.
 	draft = polishDraft(draft, w)
-	softened, tabooTokens, tabooTrace := softenTaboos(ctx, gateway, providers, draft, base, w.Taboos, w.CostNote)
-	draft = softened
-	tokens += tabooTokens
-	trace = append(trace, tabooTrace...)
-	offStructure := false
-	if usingColumn && columns.NormalizeStructure(picked.Structure) != "custom" {
-		rewritten, structTokens, structTrace, held := rewriteColumnStructure(ctx, gateway, providers, draft, base, picked.Structure, w.CostNote)
-		draft = rewritten
-		tokens += structTokens
-		trace = append(trace, structTrace...)
-		offStructure = held
-	}
-	beforeTop := content.BodyRunes(draft)
-	topped, topTokens, topTrace := topUpLength(ctx, gateway, providers, draft, base, w.WordTarget, w.CostNote)
-	topAttempted := w.WordTarget > 0 && beforeTop < w.WordTarget*110/100
-	topFailed := topAttempted && content.BodyRunes(topped) <= beforeTop
-	draft = polishDraft(topped, w)
-	tokens += topTokens
-	trace = append(trace, topTrace...)
-	motifs := topics.RepeatedMotifs(w.RecentTitles)
-	motifs = append(motifs, topics.SubjectHits(bodyPlain(draft), topicMemoryLines)...)
-	if strings.TrimSpace(w.CostNote) == "" && bodyHasAny(draft, motifs) {
-		motifBase := cloneMap(base)
-		motifBase["avoid_motifs"] = motifs
-		rewritten, motifTokens, motifTrace := rewriteMotif(ctx, gateway, providers, draft, motifBase)
-		draft = rewritten
-		tokens += motifTokens
-		trace = append(trace, motifTrace...)
-	}
-	cleaned, clicheTokens, clicheTrace := rewriteCliches(ctx, gateway, providers, draft, base, w.CostNote)
-	draft = cleaned
-	tokens += clicheTokens
-	trace = append(trace, clicheTrace...)
-	rewrittenCopy, copyTokens, copyTrace := rewriteCopiedSpans(ctx, gateway, providers, draft, base, w.CostNote)
-	draft = editorial.RewriteTaboos(rewrittenCopy, w.Taboos)
+	draft = editorial.RewriteTaboos(draft, w.Taboos)
 	draft = editorial.StripForeignScenes(draft, w.ForeignTitles)
 	draft = editorial.StripUnsourcedNames(draft)
-	tokens += copyTokens
-	trace = append(trace, copyTrace...)
+	offStructure := false
 	if usingColumn {
 		draft = quality.AlignStructure(picked.Structure, draft)
 	}
@@ -1939,23 +1871,6 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	}
 	delete(draft, "_quality")
 	cited := citationMarks.MatchString(bodyPlain(draft))
-	if w.WordTarget > 0 && content.BodyRunes(draft) < w.WordTarget && !topFailed {
-		topped, topTokens, topTrace = topUpLength(ctx, gateway, providers, draft, base, w.WordTarget, w.CostNote)
-		draft = topped
-		tokens += topTokens
-		trace = append(trace, topTrace...)
-		if usingColumn {
-			draft = quality.AlignStructure(picked.Structure, draft)
-		}
-		if experience && !sourcedPiece {
-			draft = settleExperience(draft, columnStructure, w.WordTarget)
-		} else {
-			draft = editorial.SupportCitations(draft)
-			draft = editorial.CiteSupported(draft)
-			draft = editorial.RenumberCitations(draft)
-		}
-		cited = citationMarks.MatchString(bodyPlain(draft))
-	}
 	uncited := false
 	if experience && !sourcedPiece {
 		draft["source_heading"] = "经验分享"
@@ -2049,13 +1964,15 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			}
 		}
 	}
-	if w.WordTarget > 0 {
-		lengthShort = content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget)
-	}
-	repeated := editorial.RepeatedBody(draft)
 	draft = editorial.DedupeHashedBlocks(draft)
 	draft = editorial.MaterializeMarkup(draft, outlineHeadings(base))
 	draft = editorial.RepairStructure(draft)
+	draft = keepBody(draft, assembled)
+	repeated := editorial.RepeatedBody(draft)
+	var lengthShort bool
+	if w.WordTarget > 0 {
+		lengthShort = content.ShortOfTarget(content.BodyRunes(draft), w.WordTarget)
+	}
 	thin := thinExperience(draft, experience && !sourcedPiece, strings.TrimSpace(topic.Column+" "+w.ColumnName))
 	trace = append(trace, map[string]any{
 		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
@@ -2079,7 +1996,7 @@ func heldDelivery(built Built) (bool, string) {
 		note = joinNote(note, "快报没有带日期的来源，未写入公众号草稿。")
 	}
 	if built.LengthShort {
-		note = joinNote(note, "篇幅不到目标的 85%，已再扩写，仍偏短，未写入公众号草稿。")
+		note = joinNote(note, "篇幅不到目标的 85%，未写入公众号草稿。")
 	}
 	if built.Uncited {
 		note = joinNote(note, "正文没有引用，未写入公众号草稿。")
@@ -3146,7 +3063,7 @@ func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string, a
 }
 
 func backupQueries(payload map[string]any) []string {
-	title := specificQueryTitle(payload)
+	topic := specificQueryTitle(payload)
 	var out []string
 	add := func(query string) {
 		query = strings.TrimSpace(query)
@@ -3154,7 +3071,7 @@ func backupQueries(payload map[string]any) []string {
 			query = string([]rune(query)[:32])
 		}
 		query = strings.TrimSpace(query)
-		if query == "" || vagueSearch(query) || len(out) >= 4 {
+		if query == "" || singleWordQuery(query) || vagueSearch(query) || len(out) >= 4 {
 			return
 		}
 		for _, prev := range out {
@@ -3164,29 +3081,83 @@ func backupQueries(payload map[string]any) []string {
 		}
 		out = append(out, query)
 	}
-	add(title)
-	for _, extra := range queryVariants(payload, title) {
-		add(extra)
-		if len(out) >= 4 {
+	add(topic)
+	added := 0
+	for _, phrase := range queryEntityPhrases(topic) {
+		if strings.Contains(topic, phrase) && phrase != topic {
+			extra := strings.TrimSpace(topic + " " + phrase)
+			if utf8.RuneCountInString(topic) > 24 {
+				extra = phrase
+			}
+			add(extra)
+		} else {
+			add(phrase)
+		}
+		added++
+		if added >= 3 || len(out) >= 4 {
 			break
 		}
 	}
-	if len(out) < 2 && title != "" && !strings.Contains(title, "原因") {
-		add(title + "原因")
-	}
-	if len(out) < 2 {
+	if len(out) == 0 {
 		add(shortSearchQuery(payload))
 		add(focusedQuery(payload))
 	}
 	return out
 }
 
+// singleWordQuery rejects a search that is only a generic word such as 工程 or 家庭.
+func singleWordQuery(query string) bool {
+	query = strings.TrimSpace(query)
+	if query == "" || strings.ContainsAny(query, " \t") {
+		return false
+	}
+	if genericEntity(query) {
+		return true
+	}
+	return utf8.RuneCountInString(query) <= 2
+}
+
+func queryEntityPhrases(topic string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, entity := range topicEntities(topic) {
+		n := utf8.RuneCountInString(entity)
+		if n < 2 || entity == topic || seen[entity] || genericEntity(entity) {
+			continue
+		}
+		seen[entity] = true
+		out = append(out, entity)
+	}
+	// Longer phrases first, and skip a phrase that is only a piece of one already chosen.
+	sort.Slice(out, func(i, j int) bool {
+		return utf8.RuneCountInString(out[i]) > utf8.RuneCountInString(out[j])
+	})
+	var kept []string
+	for _, phrase := range out {
+		nested := false
+		for _, prev := range kept {
+			if strings.Contains(prev, phrase) {
+				nested = true
+				break
+			}
+		}
+		if nested {
+			continue
+		}
+		kept = append(kept, phrase)
+		if len(kept) == 3 {
+			break
+		}
+	}
+	return kept
+}
+
 func specificQueryTitle(payload map[string]any) string {
 	var best string
-	for _, key := range []string{"subtopic", "topic_title", "keywords"} {
+	for _, key := range []string{"topic_title", "subtopic", "keywords", "direction", "column_positioning"} {
 		text := stripComparison(strings.TrimSpace(str(payload[key])))
 		text = strings.Trim(text, "：: ")
-		if vagueSearch(text) {
+		if vagueSearch(text) || singleWordQuery(text) {
 			continue
 		}
 		if utf8.RuneCountInString(text) > utf8.RuneCountInString(best) {
@@ -3195,6 +3166,15 @@ func specificQueryTitle(payload map[string]any) string {
 	}
 	if best == "" {
 		best = stripComparison(strings.TrimSpace(topicText(payload)))
+	}
+	if singleWordQuery(best) {
+		best = ""
+		for _, phrase := range queryEntityPhrases(topicText(payload)) {
+			best += phrase
+			if utf8.RuneCountInString(best) >= 4 {
+				break
+			}
+		}
 	}
 	if utf8.RuneCountInString(best) > 32 {
 		best = string([]rune(best)[:32])
@@ -3676,7 +3656,7 @@ func genericEntity(text string) bool {
 		return true
 	}
 	switch text {
-	case "综合", "智能", "验收", "测试", "失败", "原因", "常见", "方法", "问题", "技术", "方案", "工作", "服务", "信息", "数据", "网络", "安全", "质量", "公司", "中国", "新闻", "相关", "内容", "介绍", "分析", "操作", "步骤", "注意", "事项", "处理", "解决", "说明", "指南", "详细", "主要", "一般", "基本", "使用", "需要", "进行", "检查", "测试失败", "常见原因", "失败原因", "注意事项", "常见问题", "解决方法", "处理方法", "相关内容", "详细介绍", "失败常见", "测试方法":
+	case "综合", "智能", "验收", "测试", "失败", "原因", "常见", "方法", "问题", "技术", "方案", "工作", "服务", "信息", "数据", "网络", "安全", "质量", "公司", "中国", "新闻", "相关", "内容", "介绍", "分析", "操作", "步骤", "注意", "事项", "处理", "解决", "说明", "指南", "详细", "主要", "一般", "基本", "使用", "需要", "进行", "检查", "家庭", "工程", "测试失败", "常见原因", "失败原因", "注意事项", "常见问题", "解决方法", "处理方法", "相关内容", "详细介绍", "失败常见", "测试方法":
 		return true
 	default:
 		return false
@@ -5538,6 +5518,197 @@ func sectionPlain(section map[string]any) string {
 	return b.String()
 }
 
+// anchorHeadings keeps every outline heading on the topic and drops a repeated heading.
+func anchorHeadings(outline map[string]any, topic string) map[string]any {
+	if outline == nil {
+		return outline
+	}
+	core := coreEntity(topic)
+	seen := map[string]bool{}
+	var points []any
+	for _, raw := range asList(outline["points"]) {
+		point, _ := raw.(map[string]any)
+		if point == nil {
+			continue
+		}
+		heading := strings.TrimSpace(str(point["heading"]))
+		if heading == "" {
+			heading = "小节"
+		}
+		if core != "" && !strings.Contains(heading, core) {
+			heading = core + "：" + heading
+		}
+		heading = clip(heading, 40)
+		if seen[heading] {
+			continue
+		}
+		seen[heading] = true
+		point["heading"] = heading
+		points = append(points, point)
+	}
+	if len(points) == 0 {
+		return outline
+	}
+	outline["points"] = points
+	return outline
+}
+
+func coreEntity(topic string) string {
+	best := ""
+	bestAt := -1
+	for _, entity := range topicEntities(topic) {
+		if genericEntity(entity) {
+			continue
+		}
+		n := utf8.RuneCountInString(entity)
+		if n < 2 {
+			continue
+		}
+		at := strings.Index(topic, entity)
+		if n > utf8.RuneCountInString(best) || (n == utf8.RuneCountInString(best) && (bestAt < 0 || at < bestAt)) {
+			best = entity
+			bestAt = at
+		}
+	}
+	return best
+}
+
+// rewriteShortSections asks once for each section that missed its budget.
+// It does not expand the whole article, and a rewrite that does not grow is discarded.
+func rewriteShortSections(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload, draft map[string]any) (map[string]any, int, []map[string]any) {
+	if draft == nil || gateway == nil || len(providers) == 0 {
+		return draft, 0, nil
+	}
+	points := outlineSections(payload)
+	sections := asList(draft["sections"])
+	var tokens int
+	var trace []map[string]any
+	for i, raw := range sections {
+		if ctx.Err() != nil || budgetLeft(ctx) < time.Second {
+			break
+		}
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		budget := 0
+		if i < len(points) {
+			budget = intOf(points[i]["word_budget"])
+		}
+		if budget < 1 {
+			continue
+		}
+		if sectionRunes(section) >= budget*95/100 {
+			continue
+		}
+		req := cloneMap(payload)
+		req["section_index"] = i + 1
+		req["section_count"] = len(sections)
+		req["section_heading"] = str(section["heading"])
+		req["section_intent"] = ""
+		if i < len(points) {
+			req["section_intent"] = str(points[i]["intent"])
+		}
+		req["section_target"] = budget
+		req["section"] = section
+		callCtx, cancel := stageContext(ctx, budgetCall)
+		part, completion, err := gateway.CompleteJSON(callCtx, providers, llm.StageMessages("正文", req), llm.StageSchema("正文"), validateDraft)
+		cancel()
+		tokens += completion.PromptTokens + completion.CompletionTokens
+		trace = append(trace, traceRows("draft", completion)...)
+		if err != nil {
+			continue
+		}
+		next := pickSection(part, str(section["heading"]), 0)
+		if sectionRunes(next) <= sectionRunes(section) {
+			continue
+		}
+		if str(section["heading"]) != "" {
+			next["heading"] = str(section["heading"])
+		}
+		sections[i] = next
+		draft["sections"] = sections
+	}
+	return draft, tokens, trace
+}
+
+func sectionRunes(section map[string]any) int {
+	if section == nil {
+		return 0
+	}
+	n := utf8.RuneCountInString(strings.TrimSpace(str(section["heading"])))
+	for _, item := range asList(section["paragraphs"]) {
+		n += utf8.RuneCountInString(strings.TrimSpace(str(item)))
+	}
+	for _, item := range asList(section["list"]) {
+		n += utf8.RuneCountInString(strings.TrimSpace(str(item)))
+	}
+	table, _ := section["table"].(map[string]any)
+	if table == nil {
+		return n
+	}
+	for _, item := range asList(table["headers"]) {
+		n += utf8.RuneCountInString(strings.TrimSpace(str(item)))
+	}
+	for _, row := range asList(table["rows"]) {
+		for _, cell := range asList(row) {
+			n += utf8.RuneCountInString(strings.TrimSpace(str(cell)))
+		}
+	}
+	return n
+}
+
+func sectionsRunes(draft map[string]any) int {
+	if draft == nil {
+		return 0
+	}
+	n := 0
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		n += sectionRunes(section)
+	}
+	return n
+}
+
+// bodyKeepsSections is the assembly invariant: the body stays at least 90% of the section text.
+func bodyKeepsSections(draft map[string]any, sum int) bool {
+	if sum < 1 {
+		return draft != nil && content.BodyRunes(draft) > 0
+	}
+	return content.BodyRunes(draft)*10 >= sum*9
+}
+
+// keepBody puts the assembled sections back when a later step wiped them.
+// Title, sources, footnotes and the AI label on the current draft stay.
+func keepBody(current, assembled map[string]any) map[string]any {
+	sum := sectionsRunes(assembled)
+	if sum < 1 || bodyKeepsSections(current, sum) {
+		return current
+	}
+	if assembled == nil {
+		return current
+	}
+	sections := cloneDraft(map[string]any{"sections": assembled["sections"]})
+	if current == nil {
+		current = cloneDraft(assembled)
+		return current
+	}
+	if sections != nil {
+		current["sections"] = sections["sections"]
+	}
+	if strings.TrimSpace(str(current["title"])) == "" || str(current["title"]) == "正在生成" {
+		if title := strings.TrimSpace(str(assembled["title"])); title != "" && title != "正在生成" {
+			current["title"] = title
+		}
+	}
+	if strings.TrimSpace(str(current["closing"])) == "" {
+		if closing := strings.TrimSpace(str(assembled["closing"])); closing != "" {
+			current["closing"] = closing
+		}
+	}
+	return current
+}
+
 // writeSectionedDraft asks for one JSON section per outline point, then keeps
 // those sections in outline order. Rendering walks that structure and does not
 // trust a later rewrite to put a table or a heading back where it belongs.
@@ -5582,7 +5753,7 @@ func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []
 		completion = callCompletion
 		tokens += callCompletion.PromptTokens + callCompletion.CompletionTokens
 		if err != nil {
-			if assembled != nil && (callCtx.Err() != nil || budgetTight(ctx)) {
+			if assembled != nil && len(asList(assembled["sections"])) > 0 {
 				break
 			}
 			return compactOutline(assembled), tokens, trace, callCompletion, err
@@ -5592,13 +5763,10 @@ func writeSectionedDraft(ctx context.Context, gateway *llm.Gateway, providers []
 		noteProgress(ctx, "draft", assembled, topic, trace, tokens)
 	}
 	assembled = compactOutline(assembled)
-	if assembled == nil {
-		if ctx.Err() != nil {
+	if assembled == nil || len(asList(assembled["sections"])) == 0 || !bodyKeepsSections(assembled, sectionsRunes(assembled)) {
+		if ctx.Err() != nil && (assembled == nil || len(asList(assembled["sections"])) == 0) {
 			return nil, tokens, trace, completion, ctx.Err()
 		}
-		return nil, tokens, trace, completion, errStr("正文没有写出来")
-	}
-	if len(asList(assembled["sections"])) == 0 {
 		return nil, tokens, trace, completion, errStr("正文没有写出来")
 	}
 	return assembled, tokens, trace, completion, nil
@@ -5726,7 +5894,7 @@ func absorbSection(assembled, part map[string]any, heading string, index, count 
 		return assembled
 	}
 	text := strings.TrimSpace(sectionPlain(section))
-	if text != "" && assembled != nil && strings.Contains(bodyPlain(assembled), text) {
+	if text != "" && assembled != nil && sameSectionText(assembled, text) {
 		return assembled
 	}
 	if assembled == nil {
@@ -5804,25 +5972,60 @@ func compactOutline(draft map[string]any) map[string]any {
 
 func pickSection(part map[string]any, heading string, index int) map[string]any {
 	sections := asList(part["sections"])
-	if heading != "" {
-		for _, raw := range sections {
-			section, _ := raw.(map[string]any)
-			if section != nil && strings.TrimSpace(str(section["heading"])) == heading {
-				return cloneSection(section)
-			}
+	var matched map[string]any
+	matchedEmpty := false
+	var filled []map[string]any
+	for _, raw := range sections {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
 		}
+		if heading != "" && strings.TrimSpace(str(section["heading"])) == heading {
+			matched = section
+			matchedEmpty = !sectionHasBody(section)
+		}
+		if sectionHasBody(section) {
+			filled = append(filled, section)
+		}
+	}
+	// A heading match that already has text wins. An empty match is only a placeholder:
+	// if the model put the words in the one other section, keep those words.
+	if matched != nil && !matchedEmpty {
+		return cloneSection(matched)
+	}
+	if matchedEmpty && len(filled) == 1 {
+		chosen := cloneSection(filled[0])
+		if heading != "" {
+			chosen["heading"] = heading
+		}
+		return chosen
+	}
+	if matchedEmpty {
+		return nil
 	}
 	if index >= 0 && index < len(sections) {
-		if section, _ := sections[index].(map[string]any); section != nil {
+		if section, _ := sections[index].(map[string]any); sectionHasBody(section) {
 			return cloneSection(section)
 		}
 	}
-	if len(sections) == 1 {
-		if section, _ := sections[0].(map[string]any); section != nil {
-			return cloneSection(section)
+	if len(filled) == 1 {
+		chosen := cloneSection(filled[0])
+		if heading != "" {
+			chosen["heading"] = heading
 		}
+		return chosen
 	}
 	return nil
+}
+
+func sameSectionText(draft map[string]any, text string) bool {
+	for _, raw := range asList(draft["sections"]) {
+		section, _ := raw.(map[string]any)
+		if section != nil && strings.TrimSpace(sectionPlain(section)) == text {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneSection(section map[string]any) map[string]any {
