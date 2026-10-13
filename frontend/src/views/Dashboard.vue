@@ -58,7 +58,7 @@
           <template v-if="card.plan">
             <button v-if="card.plan.status !== 'active'" class="btn" type="button" @click="resume(card.plan)">启动</button>
             <button v-else class="btn-ghost" type="button" @click="pause(card.plan)">暂停</button>
-            <button class="btn" type="button" :disabled="busyId === card.plan.id" @click="generate(card.plan)">
+            <button :class="card.plan.status === 'active' ? 'btn' : 'btn-ghost'" type="button" :disabled="busyId === card.plan.id" @click="generate(card.plan)">
               {{ busyId === card.plan.id ? "正在生成…" : "立即生成一篇" }}
             </button>
             <router-link class="btn-ghost" :to="'/app/plans/' + card.plan.id">编辑</router-link>

@@ -1,8 +1,8 @@
 <template>
   <div class="grid-2">
     <form class="card stack" @submit.prevent="submit">
-      <h1 style="font-size: 32px">写作方向</h1>
-      <p class="muted">全托管：只选方向。系统按子话题和栏目轮换，90 天内尽量不重复同一主题。</p>
+      <h1 style="font-size: 32px">给这个号写什么</h1>
+      <p class="muted">选一个公众号和一个主题。默认每天写一篇，其他都可以先不改。</p>
       <p v-if="error" class="banner">{{ error }}</p>
       <p class="banner info">今天还剩 {{ quota.daily_remaining ?? 0 }} 篇，{{ quota.period_label || "本月" }}还剩 {{ quota.period_remaining ?? 0 }} 篇。各方向每天篇数加起来不能超过 {{ quota.daily_limit || 1 }} 篇。</p>
       <p v-if="quota.tier === 'free'" class="banner info">免费版固定在夜间低峰生成，每天最多 {{ quota.daily_limit || 1 }} 篇，单篇不超过 {{ quota.max_words || 1000 }} 字。</p>
@@ -12,23 +12,14 @@
           <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.name }}（{{ account.delivery_label }}）</option>
         </select>
       </label>
-      <label>方向
+      <label>写什么
         <select v-model="directionChoice">
           <option v-for="item in directions" :key="item.key" :value="item.key">{{ item.name }}</option>
           <option value="__custom">自己填写</option>
         </select>
       </label>
       <label v-if="directionChoice === '__custom'">自定义方向<input v-model="customDirection" placeholder="例如：城市徒步" /></label>
-      <label>风格
-        <select v-model="form.style_key">
-          <option v-for="style in styleChoices" :key="style.key" :value="style.key">{{ style.name }}</option>
-        </select>
-      </label>
-      <p v-if="selectedStyle" class="muted">{{ selectedStyle.description }}</p>
-      <label>这个方向每天几篇
-        <input v-model.number="form.daily_count" type="number" min="1" :max="quota.daily_limit || 1" />
-      </label>
-      <label>周期
+      <label>什么时候写
         <select v-model="form.schedule_type">
           <option value="daily">每天</option>
           <option value="weekly">每周</option>
@@ -41,13 +32,22 @@
       </div>
       <details class="stack">
         <summary>更多设置</summary>
-        <p class="muted">排版、篇幅、时段、开头结尾和这个号自己的关键词都收在这里。留空也不影响保存。</p>
+        <p class="muted">语气、篇幅、配图都有默认值。留空也会保存。</p>
+        <label>语气风格
+          <select v-model="form.style_key">
+            <option v-for="style in styleChoices" :key="style.key" :value="style.key">{{ style.name }}</option>
+          </select>
+        </label>
+        <p v-if="selectedStyle" class="muted">{{ selectedStyle.description }}</p>
+        <label>每天几篇
+          <input v-model.number="form.daily_count" type="number" min="1" :max="quota.daily_limit || 1" />
+        </label>
         <label>排版
           <select v-model="form.template_key">
             <option v-for="item in templateChoices" :key="item.key" :value="item.key">{{ item.name }}</option>
           </select>
         </label>
-        <label>目标篇幅
+        <label>大概写多长
           <select v-model.number="form.word_target">
             <option v-for="words in wordOptions" :key="words" :value="words">{{ words }} 字以内</option>
           </select>
@@ -60,7 +60,7 @@
         <label>固定开头<input v-model="form.opening" maxlength="200" placeholder="例如：关注后回复「目录」可看往期" /></label>
         <label>固定结尾<input v-model="form.ending" maxlength="200" placeholder="例如：觉得有用就转给同事" /></label>
         <label>栏目名<input v-model="form.column_name" placeholder="留空则整号用上面的风格" /></label>
-        <label>该栏目风格<input v-model="form.column_style" placeholder="例如 plain，只在这一栏切换" /></label>
+        <label>这一栏换一种语气<input v-model="form.column_style" placeholder="留空就用上面的语气" /></label>
         <label>关键词<input v-model="form.keywords" maxlength="80" placeholder="例如：验收,机房,弱电" /></label>
         <label>读者<input v-model="form.audience" maxlength="80" placeholder="留空则用这个号已保存的读者" /></label>
         <label>语气<input v-model="form.tone" maxlength="80" placeholder="留空则用这个号已保存的语气" /></label>
@@ -68,13 +68,13 @@
         <label>口头禅<input v-model="form.signatures" maxlength="80" placeholder="留空则用这个号已保存的口头禅" /></label>
         <label>不写的话题<input v-model="form.taboos" maxlength="80" placeholder="留空则用这个号已保存的不写话题" /></label>
         <label>禁用词<input v-model="form.banned_words" maxlength="80" placeholder="逗号分隔，这篇里不要出现" /></label>
-        <label>垂类资料包
+        <label>文章类型
           <select v-model="form.vertical_key">
             <option value="">按方向自动匹配</option>
             <option v-for="item in verticals" :key="item.key" :value="item.key">{{ item.name }}</option>
           </select>
         </label>
-        <label>选题方式
+        <label>题目怎么选
           <select v-model="form.topic_mode">
             <option value="auto">自动</option>
             <option value="rotate">只按方向轮换</option>
@@ -91,7 +91,7 @@
           </select>
         </label>
       </details>
-      <button class="btn" :disabled="loading">{{ loading ? "保存中…" : "保存计划" }}</button>
+      <button class="btn" :disabled="loading">{{ loading ? "保存中…" : "开始写" }}</button>
     </form>
     <div class="stack">
       <section v-for="group in groups" :key="group.account ? group.account.id : 'loose'" class="stack">
@@ -108,7 +108,7 @@
         <div class="row">
           <button v-if="plan.status !== 'active'" class="btn" type="button" @click="toggle(plan)">启动</button>
           <button v-else class="btn-ghost" type="button" @click="toggle(plan)">暂停</button>
-          <button class="btn" type="button" :disabled="busyId === plan.id" @click="generate(plan)">
+          <button :class="plan.status === 'active' ? 'btn' : 'btn-ghost'" type="button" :disabled="busyId === plan.id" @click="generate(plan)">
             {{ busyId === plan.id ? "正在生成…" : "立即生成一篇" }}
           </button>
           <router-link class="btn-ghost" :to="'/app/plans/' + plan.id">编辑</router-link>

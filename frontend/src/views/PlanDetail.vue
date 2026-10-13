@@ -16,13 +16,13 @@
       <div class="row">
         <button v-if="plan.status !== 'active'" class="btn" type="button" @click="toggle">启动</button>
         <button v-else class="btn-ghost" type="button" @click="toggle">暂停</button>
-        <button class="btn" type="button" :disabled="busy" @click="generate">{{ busy ? "正在生成…" : "立即生成一篇" }}</button>
+        <button :class="plan.status === 'active' ? 'btn' : 'btn-ghost'" type="button" :disabled="busy" @click="generate">{{ busy ? "正在生成…" : "立即生成一篇" }}</button>
       </div>
       <p class="muted">立即生成一篇只写这一次。计划暂停时，这一次不会把它改成运行中。</p>
     </section>
     <form v-if="plan.id" class="card stack" @submit.prevent="save">
       <h2>这个号的设置</h2>
-      <p class="muted">方向、关键词、读者、风格、排版、篇幅、周期、禁用词、开头结尾、垂类、选题和配图都只属于「{{ plan.account_name || "这个公众号" }}」。另一个号请单独建计划。</p>
+      <p class="muted">这里只改「{{ plan.account_name || "这个公众号" }}」。另一个号要单独建一个计划。</p>
       <label>方向
         <select v-model="directionChoice">
           <option v-for="item in directions" :key="item.key" :value="item.key">{{ item.name }}</option>
@@ -62,7 +62,7 @@
             <option v-for="item in templateChoices" :key="item.key" :value="item.key">{{ item.name }}</option>
           </select>
         </label>
-      <label>目标篇幅
+      <label>大概写多长
         <select v-model.number="form.word_target">
           <option v-for="words in wordOptions" :key="words" :value="words">{{ words }} 字以内</option>
         </select>
