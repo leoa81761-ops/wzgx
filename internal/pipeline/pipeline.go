@@ -55,6 +55,7 @@ type Deps struct {
 type work struct {
 	TaskID            int64
 	UserID            int64
+	UserTavilyKey     string
 	Tier              string
 	PlanID            int64
 	Direction         string
@@ -124,6 +125,9 @@ type Built struct {
 	NoDatedNews    bool
 	Thin           bool
 	Searched       bool
+	OwnSearch      bool
+	TavilyNotice   string
+	TavilyOK       bool
 }
 
 type pushed struct {
@@ -599,6 +603,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			uses = []string{}
 		}
 		w.ColumnUses = uses
+		w.UserTavilyKey = loadUserTavily(ctx, deps, tx, user.ID)
 		ok = true
 		return nil
 	})
@@ -698,6 +703,12 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 		}
 	}
 	built, err := Build(ctx, deps.Gateway, in, sensitive, providers, policy, now)
+	if built.TavilyNotice != "" && w.UserID > 0 {
+		emitNotice(ctx, deps, w.UserID, "tavily", "Tavily 密钥不可用", built.TavilyNotice)
+		_ = deps.Store.SetTavilyNotice(ctx, w.UserID, built.TavilyNotice)
+	} else if built.TavilyOK && w.UserID > 0 {
+		_ = deps.Store.SetTavilyNotice(ctx, w.UserID, "")
+	}
 	if err != nil {
 		if built.Topic.Column != "" {
 			rememberColumn(ctx, deps, w, built.Topic)
@@ -761,10 +772,7 @@ func generate(ctx context.Context, deps Deps, w *work, now time.Time) (map[strin
 	if in.CostNote != "" {
 		note = joinNote(note, "本月成本已达上限")
 	}
-	searchCents := 0
-	if built.Searched {
-		searchCents = costPolicy.SearchCents
-	}
+	searchCents := chargeSearch(built.Searched, built.OwnSearch, costPolicy.SearchCents)
 	return map[string]any{
 		"draft": built.Draft, "html": html, "topic": built.Topic, "tokens": built.Tokens, "trace": trace,
 		"status": push.Status, "draft_media_id": push.MediaID, "thumb_media_id": push.ThumbID,
@@ -817,6 +825,8 @@ type Input struct {
 	ColumnRotation string
 	ColumnWeekdays map[int]int64
 	RunAt          time.Time
+	UserID         int64
+	UserTavilyKey  string
 }
 
 func hotAllowed(in *Input) bool {
@@ -864,7 +874,7 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, RecentTopics: w.RecentTopics, ColumnUses: w.ColumnUses, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, RecentTopics: w.RecentTopics, ColumnUses: w.ColumnUses, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt, UserID: w.UserID, UserTavilyKey: w.UserTavilyKey}
 }
 
 // AppendSiblingCoverage keeps another account's recent angles out of this plan's rotation.
@@ -1681,8 +1691,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	base["topic_title"] = topicTitle
 	var researchSources []any
 	searched := false
-	if w.Tier != "free" && len(providers["research"]) > 0 {
+	ownSearch := false
+	tavilyNotice := ""
+	tavilyOK := false
+	if w.Tier != "free" && (len(providers["research"]) > 0 || strings.TrimSpace(w.UserTavilyKey) != "") {
 		searched = true
+		ownSearch = strings.TrimSpace(w.UserTavilyKey) != ""
 		researchPayload := cloneMap(base)
 		researchPayload["topic_title"] = topicTitle
 		blocked := policy.Block
@@ -1695,7 +1709,17 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		}
 		noteProgress(ctx, "research", nil, topic, trace, tokens)
 		researchCtx, researchCancel := stageContext(ctx, budgetResearch)
-		notes, listed, completion, err := fetchResearch(researchCtx, gateway, providers["research"], researchPayload, policy)
+		actor := searchActor{UserID: w.UserID, TavilyKey: w.UserTavilyKey}
+		var notes string
+		var listed []any
+		var completion llm.Completion
+		var err error
+		if len(providers["research"]) > 0 {
+			notes, listed, completion, err = fetchResearch(researchCtx, gateway, providers["research"], researchPayload, policy, actor)
+		} else {
+			notes, listed, completion, err = searchWithoutModel(researchCtx, gateway, researchPayload, policy, actor)
+		}
+		tavilyNotice, tavilyOK = tavilyKeyState(completion)
 		researchCancel()
 		if err != nil {
 			trace = appendStage(trace, "research", completion, err)
@@ -2032,7 +2056,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if err != nil {
 		return Built{Trace: trace, Topic: topic}, err
 	}
-	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Searched: searched}, nil
+	return Built{Draft: draft, HTML: html, Topic: topic, Tokens: tokens, Trace: trace, MissingSources: missingSources, Uncited: uncited, LengthShort: lengthShort, NoFacts: noFacts, OffStructure: offStructure, NoDatedNews: noDatedNews, Thin: thin, Searched: searched, OwnSearch: ownSearch, TavilyNotice: tavilyNotice, TavilyOK: tavilyOK}, nil
 }
 
 func thinExperience(draft map[string]any, experience bool, column string) bool {
@@ -2784,7 +2808,7 @@ func chooseCover(ctx context.Context, deps Deps, image *llm.Provider, title, dir
 	return body, filename, row
 }
 
-func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, policy content.SourcePolicy) (string, []any, llm.Completion, error) {
+func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any, policy content.SourcePolicy, actor searchActor) (string, []any, llm.Completion, error) {
 	topic := topicText(payload)
 	messages := llm.StageMessages("资料检索", payload)
 	var first llm.Completion
@@ -2872,7 +2896,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			searchWG.Add(1)
 			go func(i int, query string) {
 				defer searchWG.Done()
-				foundRows[i], foundLogs[i], foundErr[i] = backupHTMLSearch(ctx, gateway, query)
+				foundRows[i], foundLogs[i], foundErr[i] = backupHTMLSearch(ctx, gateway, query, actor)
 			}(i, query)
 		}
 		searchWG.Wait()
@@ -2967,17 +2991,113 @@ func retryResearch(completion llm.Completion, err error) bool {
 	return strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "没有返回文本")
 }
 
-func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string) ([]map[string]any, []map[string]any, error) {
+type searchActor struct {
+	UserID    int64
+	TavilyKey string
+	TavilyURL string
+}
+
+func chargeSearch(searched, own bool, cents int) int {
+	if searched && !own {
+		return cents
+	}
+	return 0
+}
+
+func loadUserTavily(ctx context.Context, deps Deps, q db.Q, userID int64) string {
+	if deps.Store == nil || userID <= 0 {
+		return ""
+	}
+	cipher, _, err := deps.Store.TavilySecret(ctx, q, userID)
+	if err != nil || strings.TrimSpace(cipher) == "" {
+		return ""
+	}
+	plain, err := security.DecryptSecret(deps.Settings.MasterKey, cipher)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(plain)
+}
+
+func tavilyKeyState(completion llm.Completion) (string, bool) {
+	notice := ""
+	ok := false
+	for _, attempt := range completion.Attempts {
+		list, _ := attempt["engines"].([]map[string]any)
+		for _, engine := range list {
+			if str(engine["owner"]) != "user" {
+				continue
+			}
+			switch str(engine["key_error"]) {
+			case "quota":
+				notice = "你的 Tavily 额度已用完，这篇已改用站内检索。可以在会员页更换密钥，或等额度恢复后再试。"
+			case "invalid":
+				notice = "你的 Tavily 密钥无效，这篇已改用站内检索。请在会员页更换密钥。"
+			default:
+				if intOf(engine["count"]) > 0 {
+					ok = true
+				}
+			}
+		}
+	}
+	if notice != "" {
+		ok = false
+	}
+	return notice, ok
+}
+
+func searchWithoutModel(ctx context.Context, gateway *llm.Gateway, payload map[string]any, policy content.SourcePolicy, actor searchActor) (string, []any, llm.Completion, error) {
+	topic := topicText(payload)
+	queries := backupQueries(payload)
+	rows, engines := collectBackup(ctx, gateway, queries, actor)
+	client := httpClient(gateway)
+	notes, sources, dropped, relaxed := takeSources(ctx, client, "", rows, policy, topic)
+	merged := llm.Completion{ProviderName: "检索"}
+	stampSourceTrace(&merged, sources, dropped, relaxed, len(rows), engines)
+	stripRankScores(sources)
+	return notes, anySources(sources), merged, nil
+}
+
+func collectBackup(ctx context.Context, gateway *llm.Gateway, queries []string, actor searchActor) ([]map[string]any, []map[string]any) {
+	foundRows := make([][]map[string]any, len(queries))
+	foundLogs := make([][]map[string]any, len(queries))
+	foundErr := make([]error, len(queries))
+	var searchWG sync.WaitGroup
+	for i, query := range queries {
+		searchWG.Add(1)
+		go func(i int, query string) {
+			defer searchWG.Done()
+			foundRows[i], foundLogs[i], foundErr[i] = backupHTMLSearch(ctx, gateway, query, actor)
+		}(i, query)
+	}
+	searchWG.Wait()
+	var rows []map[string]any
+	var engines []map[string]any
+	for i, query := range queries {
+		engines = append(engines, foundLogs[i]...)
+		if foundErr[i] != nil && len(foundLogs[i]) == 0 {
+			engines = append(engines, map[string]any{"engine": "backup", "provider": "backup", "query": query, "count": 0, "error": clip(foundErr[i].Error(), 180)})
+		}
+		rows = append(rows, foundRows[i]...)
+	}
+	return rows, engines
+}
+
+func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string, actor searchActor) ([]map[string]any, []map[string]any, error) {
 	if gateway == nil {
 		return nil, nil, nil
 	}
-	var targets []llm.SearchTarget
-	if target, ok := llm.ConfiguredSearch(gateway.SearchAPIProvider, gateway.SearchAPIURL, gateway.SearchAPIKey); ok {
-		targets = append(targets, target)
-	}
-	for _, raw := range []string{gateway.BackupSearchURL, gateway.BackupSearchAlt, gateway.BackupSearchBaidu} {
-		if strings.TrimSpace(raw) != "" {
-			targets = append(targets, llm.SearchTarget{URL: raw})
+	targets := llm.PlanTargets(llm.ChainOptions{
+		UserTavilyKey: actor.TavilyKey, UserTavilyURL: actor.TavilyURL,
+		SearxngURL: gateway.SearxngURL, PlatformTavilyKey: gateway.PlatformTavilyKey, PlatformTavilyURL: gateway.PlatformTavilyURL,
+		Provider: gateway.SearchAPIProvider, APIURL: gateway.SearchAPIURL, APIKey: gateway.SearchAPIKey,
+		Bing: gateway.BackupSearchURL, Sogou: gateway.BackupSearchAlt, Baidu: gateway.BackupSearchBaidu,
+	})
+	guard := gateway.EnsureSearx()
+	for i := range targets {
+		if targets[i].Provider == "searxng" {
+			targets[i].Guard = guard
+			targets[i].UserID = actor.UserID
 		}
 	}
 	if len(targets) == 0 {

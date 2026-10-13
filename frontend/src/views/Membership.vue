@@ -23,6 +23,18 @@
       <button v-if="pay.enabled" class="btn-ghost" type="button" @click="askRefund">申请 7 天内未使用退款</button>
     </section>
     <section class="card stack">
+      <h2>我的 Tavily 检索</h2>
+      <p class="muted">填了自己的密钥后，生成先用你的 Tavily，再用站内 SearXNG 和免费搜索。这把钥匙只属于你，不会计入平台额度。密钥加密保存，页面上只显示末四位。</p>
+      <p v-if="tavily.notice" class="banner">{{ tavily.notice }}</p>
+      <p v-if="tavily.set" class="muted">已保存 {{ tavily.mask }}</p>
+      <label>Tavily API Key<input v-model="tavilyKey" type="password" autocomplete="off" :placeholder="tavily.set ? '留空则不修改，填写则替换' : '粘贴你的密钥'" /></label>
+      <div class="row">
+        <button class="btn" type="button" @click="saveTavily">{{ tavily.set ? "替换密钥" : "保存密钥" }}</button>
+        <button class="btn-ghost" type="button" :disabled="!tavily.set" @click="testTavily">测试连通</button>
+        <button class="btn-ghost" type="button" :disabled="!tavily.set" @click="deleteTavily">删除密钥</button>
+      </div>
+    </section>
+    <section class="card stack">
       <h2>数据与账号</h2>
       <p class="muted">导出的 JSON 含账号、计划和文章，不含 AppSecret。注销会立刻删除公众号密钥和账号数据，且不能恢复。</p>
       <div class="row">
@@ -76,6 +88,49 @@ const phone = ref("");
 const phoneCode = ref("");
 const message = ref("");
 const error = ref("");
+const tavily = ref({ set: false, mask: "", notice: "" });
+const tavilyKey = ref("");
+
+async function loadTavily() {
+  tavily.value = await api("/api/me/tavily");
+}
+
+async function saveTavily() {
+  error.value = "";
+  message.value = "";
+  try {
+    tavily.value = await api("/api/me/tavily", { method: "PUT", body: { api_key: tavilyKey.value } });
+    tavilyKey.value = "";
+    message.value = "Tavily 密钥已保存";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function testTavily() {
+  error.value = "";
+  message.value = "";
+  try {
+    tavily.value = await api("/api/me/tavily/test", { method: "POST", body: {} });
+    message.value = "Tavily 可以连通";
+  } catch (err) {
+    error.value = err.message;
+    await loadTavily();
+  }
+}
+
+async function deleteTavily() {
+  error.value = "";
+  message.value = "";
+  if (!window.confirm("删除后，生成不再使用你的 Tavily 密钥。")) return;
+  try {
+    tavily.value = await api("/api/me/tavily", { method: "DELETE" });
+    tavilyKey.value = "";
+    message.value = "已删除 Tavily 密钥";
+  } catch (err) {
+    error.value = err.message;
+  }
+}
 
 async function askRefund() {
   error.value = "";
@@ -151,6 +206,7 @@ onMounted(async () => {
   quota.value = await api("/api/me/quota");
   referral.value = await api("/api/me/referral");
   consents.value = await api("/api/me/consents");
+  await loadTavily();
   const meta = await api("/api/meta");
   pay.value = meta.pay || pay.value;
 });

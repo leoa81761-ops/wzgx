@@ -22,21 +22,22 @@ import (
 )
 
 type App struct {
-	Cfg           config.Settings
-	DB            *db.DB
-	Store         *store.Store
-	HTTP          *http.Client
-	Tokens        *wechat.TokenCache
-	Cache         *runtime.Cache
-	Gateway       *llm.Gateway
-	Pool          *scheduler.Pool
-	Runner        *scheduler.Runner
-	complaints    *ipWindow
-	smsSendIP     *ipWindow
-	smsLoginIP    *ipWindow
-	smsLoginPhone *ipWindow
-	credTest      *ipWindow
-	cancel        context.CancelFunc
+	Cfg            config.Settings
+	DB             *db.DB
+	Store          *store.Store
+	HTTP           *http.Client
+	Tokens         *wechat.TokenCache
+	Cache          *runtime.Cache
+	Gateway        *llm.Gateway
+	Pool           *scheduler.Pool
+	Runner         *scheduler.Runner
+	complaints     *ipWindow
+	smsSendIP      *ipWindow
+	smsLoginIP     *ipWindow
+	smsLoginPhone  *ipWindow
+	credTest       *ipWindow
+	cancel         context.CancelFunc
+	TavilyProbeURL string
 }
 
 func Open(cfg config.Settings) (*App, error) {
@@ -67,6 +68,9 @@ func Open(cfg config.Settings) (*App, error) {
 	gateway.ResearchTimeout = cfg.ResearchTimeout
 	gateway.ResearchBackupModel = cfg.ResearchBackupModel
 	syncSearch(gateway, cfg)
+	gateway.EnsureSearx().Quota = func(ctx context.Context, userID int64, cap int) (bool, error) {
+		return st.TakeSearxng(ctx, userID, cap)
+	}
 	app := &App{
 		Cfg: cfg, DB: database, Store: st, HTTP: client, Tokens: wechat.NewTokenCache(),
 		Cache: runtime.New(st, cfg), Gateway: gateway,
@@ -93,6 +97,12 @@ func syncSearch(gateway *llm.Gateway, cfg config.Settings) {
 	gateway.SearchAPIURL = cfg.ResearchSearchAPI
 	gateway.SearchAPIKey = cfg.ResearchSearchKey
 	gateway.SearchAPIProvider = cfg.ResearchSearchProvider
+	gateway.SearxngURL = cfg.SearxngURL
+	gateway.SearxngDailyCap = cfg.SearxngDailyCap
+	gateway.SearxngBreaker = cfg.SearxngBreaker
+	gateway.PlatformTavilyKey = cfg.TavilyAPIKey
+	gateway.PlatformTavilyURL = cfg.TavilyAPIURL
+	gateway.EnsureSearx()
 }
 
 func (a *App) deps() pipeline.Deps {

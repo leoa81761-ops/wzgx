@@ -62,9 +62,31 @@ type Gateway struct {
 	SearchAPIURL        string
 	SearchAPIKey        string
 	SearchAPIProvider   string
+	SearxngURL          string
+	SearxngDailyCap     int
+	SearxngBreaker      int
+	PlatformTavilyKey   string
+	PlatformTavilyURL   string
 	CacheTTL            time.Duration
 	cacheMu             sync.Mutex
 	cache               map[string]cachedCompletion
+	searx               *SearxGuard
+}
+
+// EnsureSearx returns the process-wide SearXNG guard, creating it on first use.
+func (g *Gateway) EnsureSearx() *SearxGuard {
+	if g == nil {
+		return NewSearxGuard()
+	}
+	g.cacheMu.Lock()
+	if g.searx == nil {
+		g.searx = NewSearxGuard()
+	}
+	guard := g.searx
+	daily, breaker := g.SearxngDailyCap, g.SearxngBreaker
+	g.cacheMu.Unlock()
+	guard.SetLimits(daily, breaker)
+	return guard
 }
 
 type cachedCompletion struct {

@@ -3,11 +3,13 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -30,11 +32,31 @@ var (
 )
 
 // SearchTarget is one backup search endpoint. An API key selects the JSON provider.
-// Provider is bocha, tavily, or bing. An empty provider with a key stays on the Bocha-shaped POST.
+// Provider is bocha, tavily, bing, or searxng. Owner is "user" only for that user's own Tavily key.
+// Guard and UserID are set for SearXNG so the shared limiter can count the right person.
 type SearchTarget struct {
 	URL      string
 	APIKey   string
 	Provider string
+	Owner    string
+	UserID   int64
+	Guard    *SearxGuard
+}
+
+// KeyError means a keyed provider rejected the key or the key's quota.
+type KeyError struct {
+	Status int
+	Kind   string
+}
+
+func (e *KeyError) Error() string {
+	if e == nil {
+		return "检索密钥不可用"
+	}
+	if e.Kind == "quota" {
+		return "检索密钥额度已用完"
+	}
+	return "检索密钥无效"
 }
 
 // ConfiguredSearch is the API target when a key is set. The provider defaults to Bocha.
@@ -196,15 +218,40 @@ func SearchChainLogged(ctx context.Context, client *http.Client, targets []Searc
 		name := searchEngineName(target)
 		var rows []map[string]any
 		var err error
-		if strings.TrimSpace(target.APIKey) != "" {
+		extra := map[string]any{}
+		switch {
+		case strings.EqualFold(strings.TrimSpace(target.Provider), "searxng"):
+			if target.Guard == nil {
+				err = &Error{Message: "searxng 未就绪"}
+			} else {
+				var meta map[string]any
+				rows, meta, err = target.Guard.Search(ctx, client, target.URL, query, target.UserID)
+				for key, value := range meta {
+					extra[key] = value
+				}
+			}
+		case strings.TrimSpace(target.APIKey) != "":
 			rows, err = SearchProvider(ctx, client, target, query)
-		} else {
+		default:
 			rows, err = SearchWeb(ctx, client, target.URL, query)
 		}
-		row := map[string]any{"engine": name, "query": clipSearch(query, 40), "count": len(rows)}
+		row := map[string]any{
+			"engine": name, "provider": providerLabel(target),
+			"query": clipSearch(query, 40), "count": len(rows),
+		}
+		if owner := strings.TrimSpace(target.Owner); owner != "" {
+			row["owner"] = owner
+		}
+		for key, value := range extra {
+			row[key] = value
+		}
 		if err != nil {
 			last = err
 			row["error"] = clipSearch(err.Error(), 180)
+			var keyErr *KeyError
+			if errors.As(err, &keyErr) {
+				row["key_error"] = keyErr.Kind
+			}
 			engines = append(engines, row)
 			continue
 		}
@@ -214,6 +261,13 @@ func SearchChainLogged(ctx context.Context, client *http.Client, targets []Searc
 		}
 	}
 	return nil, engines, last
+}
+
+func providerLabel(target SearchTarget) string {
+	if provider := strings.ToLower(strings.TrimSpace(target.Provider)); provider != "" {
+		return provider
+	}
+	return searchEngineName(target)
 }
 
 func searchEngineName(target SearchTarget) string {
@@ -308,9 +362,30 @@ func SearchProvider(ctx context.Context, client *http.Client, target SearchTarge
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, &Error{Message: "检索接口返回 " + resp.Status}
+		return nil, classifySearchStatus(resp.StatusCode, body)
 	}
 	return ParseSearchBody(body), nil
+}
+
+func classifySearchStatus(status int, body []byte) error {
+	text := strings.ToLower(string(body))
+	kind := ""
+	switch status {
+	case 401, 403:
+		kind = "invalid"
+	case 429, 432, 433:
+		kind = "quota"
+	}
+	if strings.Contains(text, "quota") || strings.Contains(text, "usage limit") || strings.Contains(text, "plan limit") || strings.Contains(text, "exceed") {
+		kind = "quota"
+	}
+	if kind == "" && (strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid api") || strings.Contains(text, "invalid key") || strings.Contains(text, "forbidden")) {
+		kind = "invalid"
+	}
+	if kind == "" {
+		return &Error{Message: "检索接口返回 " + strconv.Itoa(status)}
+	}
+	return &KeyError{Status: status, Kind: kind}
 }
 
 func setSearchQuery(host string, values url.Values, query string) {
