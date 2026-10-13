@@ -1583,7 +1583,20 @@ func writeSourceJudge(w http.ResponseWriter, req map[string]any) {
 		if fact != "" {
 			facts = []any{fact}
 		}
-		items = append(items, map[string]any{"index": i + 1, "score": 3, "facts": facts})
+		index := i + 1
+		if row != nil {
+			switch n := row["index"].(type) {
+			case float64:
+				if int(n) > 0 {
+					index = int(n)
+				}
+			case int:
+				if n > 0 {
+					index = n
+				}
+			}
+		}
+		items = append(items, map[string]any{"index": index, "score": 3, "facts": facts})
 	}
 	if items == nil {
 		items = []any{}
@@ -1785,13 +1798,13 @@ func TestHardDropIgnoresTermOverlap(t *testing.T) {
 		"https://www.mohurd.gov.cn/gongkai/untitled",
 		"https://www.example.com/office",
 		"https://www.example.com/tea",
+		"https://www.example.com/blank",
 	} {
 		if !seen[url] {
 			t.Fatal("missing", url, kept, dropped)
 		}
 	}
 	for _, url := range []string{
-		"https://www.example.com/blank",
 		"https://www.xitongzhijia.net/win10.iso",
 		"https://www.iqiyi.com/v/1",
 		"https://apps.apple.com/app/id1",
@@ -2203,6 +2216,213 @@ func TestConcurrentAccountsDoNotShareOpenings(t *testing.T) {
 	}
 	if elvHTML == "" || strings.Contains(elvHTML, "爷爷奶奶") {
 		t.Fatal(elvHTML)
+	}
+}
+
+func TestParseJudgeItemsToleratesShapes(t *testing.T) {
+	fenced, ok := parseJudgeItems("说明如下：\n```json\n[{\"index\":1,\"rating\":\"3\",\"fact\":\"核对材料\"}]\n```\n")
+	if !ok || len(fenced) != 1 || asInt(fenced[0].(map[string]any)["score"]) != 3 {
+		t.Fatal(ok, fenced)
+	}
+	facts := fenced[0].(map[string]any)["facts"].([]any)
+	if len(facts) != 1 || facts[0] != "核对材料" {
+		t.Fatal(facts)
+	}
+	alt, ok := parseJudgeItems(`{"results":[{"idx":2,"relevance":2,"points":["线槽先看清楚"]}]}`)
+	if !ok || len(alt) != 1 || asInt(alt[0].(map[string]any)["index"]) != 2 || asInt(alt[0].(map[string]any)["score"]) != 2 {
+		t.Fatal(ok, alt)
+	}
+	partial, ok := parseJudgeItems(`{"items":[{"index":1,"score":3,"facts":["施工前核对"]},{"index":2,"score":2,"facts":["线`)
+	if !ok || len(partial) != 1 || asInt(partial[0].(map[string]any)["score"]) != 3 {
+		t.Fatal(ok, partial)
+	}
+	if _, ok := parseJudgeItems(`{"items":[]}`); ok {
+		t.Fatal("empty items is a failed judgment")
+	}
+	if _, ok := parseJudgeItems(`{"note":"no items"}`); ok {
+		t.Fatal("missing ratings")
+	}
+}
+
+func TestJudgeRetriesOnceOnAnotherModel(t *testing.T) {
+	var models []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		if stageOf(req) != "来源判断" {
+			t.Errorf("stage %s", stageOf(req))
+		}
+		msgs, _ := req["messages"].([]any)
+		system := ""
+		if len(msgs) > 0 {
+			first, _ := msgs[0].(map[string]any)
+			system, _ = first["content"].(string)
+		}
+		if !strings.Contains(system, "JSON Schema") || !strings.Contains(system, `"items"`) {
+			t.Errorf("judge prompt %s", system)
+		}
+		model, _ := req["model"].(string)
+		models = append(models, model)
+		if model == "grok-4.20-0309-non-reasoning" {
+			writeSourceJudge(w, req)
+			return
+		}
+		writeChoice(w, map[string]any{"note": "no items"})
+	}))
+	defer srv.Close()
+	gateway := llm.NewGateway(false, srv.Client())
+	gateway.MaxAttempts = 1
+	sources := []map[string]any{{"title": "综合布线验收说明", "snippet": "施工前要核对材料清单", "url": "https://www.mohurd.gov.cn/a"}}
+	judged, extra, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
+		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
+	}}, "综合布线验收", sources)
+	if len(models) != 2 || models[0] != "grok-chat-fast" || models[1] != "grok-4.20-0309-non-reasoning" {
+		t.Fatal(models)
+	}
+	if len(judged) != 1 || str(judged[0]["url"]) != "https://www.mohurd.gov.cn/a" {
+		t.Fatal(judged, extra)
+	}
+	raw, _ := completion.Attempts[len(completion.Attempts)-1]["judge_raw"].(string)
+	if !strings.Contains(raw, "no items") {
+		t.Fatal(raw)
+	}
+}
+
+func TestJudgeFallsBackToRanking(t *testing.T) {
+	var models []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		model, _ := req["model"].(string)
+		models = append(models, model)
+		writeChoice(w, map[string]any{"note": "no items"})
+	}))
+	defer srv.Close()
+	gateway := llm.NewGateway(false, srv.Client())
+	gateway.MaxAttempts = 1
+	sources := []map[string]any{
+		{"title": "综合布线验收说明", "url": "https://www.mohurd.gov.cn/a"},
+		{"title": "综合布线验收记录", "url": "https://www.example.com/b"},
+		{"title": "综合布线验收材料", "url": "https://www.example.com/c"},
+		{"title": "综合布线现场做法", "url": "https://www.example.com/d"},
+		{"title": "奶奶的养生茶", "url": "https://www.example.com/tea"},
+	}
+	judged, _, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
+		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
+	}}, "综合布线验收", sources)
+	if len(models) != 2 || models[1] != "grok-4.20-0309-non-reasoning" {
+		t.Fatal(models)
+	}
+	if len(judged) < 3 || len(judged) > 6 {
+		t.Fatal(judged)
+	}
+	seen := map[string]bool{}
+	for _, row := range judged {
+		seen[str(row["url"])] = true
+	}
+	if !seen["https://www.mohurd.gov.cn/a"] || seen["https://www.example.com/tea"] {
+		t.Fatal(judged)
+	}
+	raw, _ := completion.Attempts[len(completion.Attempts)-1]["judge_raw"].(string)
+	if !strings.Contains(raw, "no items") {
+		t.Fatal(raw)
+	}
+}
+
+func TestJudgeUsesFencedRatingsWithoutRetry(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body := "```json\n[{\"index\":1,\"rating\":\"3\",\"fact\":\"施工前要核对材料清单\"}]\n```"
+		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": body}}}})
+		_, _ = w.Write(out)
+	}))
+	defer srv.Close()
+	gateway := llm.NewGateway(false, srv.Client())
+	gateway.MaxAttempts = 1
+	sources := []map[string]any{{"title": "", "snippet": "施工前要核对材料清单", "url": "https://www.example.com/no-title"}}
+	judged, extra, _ := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
+		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
+	}}, "综合布线验收", sources)
+	if calls != 1 || len(judged) != 1 || str(judged[0]["url"]) != "https://www.example.com/no-title" {
+		t.Fatal(calls, judged, extra)
+	}
+	facts := asList(judged[0]["facts"])
+	if len(facts) != 1 || facts[0] != "施工前要核对材料清单" {
+		t.Fatal(judged[0])
+	}
+}
+
+func TestJudgeBatchesAtMostEight(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		if req["model"] != "grok-chat-fast" {
+			t.Errorf("model %#v", req["model"])
+		}
+		calls++
+		payload := map[string]any{}
+		msgs, _ := req["messages"].([]any)
+		if len(msgs) > 0 {
+			last, _ := msgs[len(msgs)-1].(map[string]any)
+			content, _ := last["content"].(string)
+			_ = json.Unmarshal([]byte(content), &payload)
+		}
+		cands, _ := payload["candidates"].([]any)
+		if len(cands) == 0 || len(cands) > 8 {
+			t.Errorf("batch %d", len(cands))
+		}
+		writeSourceJudge(w, req)
+	}))
+	defer srv.Close()
+	gateway := llm.NewGateway(false, srv.Client())
+	gateway.MaxAttempts = 1
+	var sources []map[string]any
+	for i := 0; i < 9; i++ {
+		sources = append(sources, map[string]any{
+			"title": "综合布线验收说明", "snippet": "施工前要核对材料清单",
+			"url": "https://www.example.com/s" + itoa(i),
+		})
+	}
+	judged, _, completion := judgeAndKeep(t.Context(), gateway, []llm.Provider{{
+		Name: "判断", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "grok-chat-fast", Timeout: 5 * time.Second,
+	}}, "综合布线验收", sources)
+	if calls != 2 || len(judged) != 6 {
+		t.Fatal(calls, len(judged))
+	}
+	raw, _ := completion.Attempts[len(completion.Attempts)-1]["judge_raw"].(string)
+	if !strings.Contains(raw, "综合布线验收说明") {
+		t.Fatal(raw)
+	}
+}
+
+func TestExperienceDraftSplitsAndDedupes(t *testing.T) {
+	long := "第一句讲清楚。第二句接着说。第三句补一个做法。第四句收一下。第五句不该还在这段。第六句再写就挤了。"
+	dup := "先把材料清单核对完，再看线槽怎么走。"
+	draft := map[string]any{
+		"title":    "健康常识怎么看",
+		"sections": []any{map[string]any{"paragraphs": []any{long, dup, dup, "这一步见[1]。"}}},
+	}
+	out := settleExperience(draft, "qa", 0)
+	paras := draftParagraphs(out)
+	joined := strings.Join(paras, "\n")
+	if strings.Contains(joined, "[1]") || strings.Count(joined, dup) != 1 {
+		t.Fatal(paras)
+	}
+	for _, para := range paras {
+		if strings.Contains(para, "第一句") && strings.Contains(para, "第六句") {
+			t.Fatal(para)
+		}
+		if strings.Count(para, "。") > 4 {
+			t.Fatal(para)
+		}
+	}
+	if !quality.StructureOK("qa", paras) {
+		t.Fatal(paras)
 	}
 }
 

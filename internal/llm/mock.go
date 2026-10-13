@@ -19,7 +19,9 @@ const citationRule = "用到 research_sources 里的事实时，在句末用 [1]
 
 const factSheetRule = "fact_sheet 是这篇稿唯一允许使用的外部证据。每句事实的句末必须带上对应的 [n]，序号和事实清单一致。不要写清单以外的数字、机构、标准、新闻或网址。引用在写正文时就标上，不要留到后面再补。"
 
-const experienceRule = "writing_mode 是 experience：这是经验分享。不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。文末来源会标成经验分享。"
+const experienceRule = "writing_mode 是 experience：这是经验分享。不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。文末来源会标成经验分享。" +
+	"仍然要遵守 column_structure 和 structure 里的栏目结构模板：问答至少一对，问句以问号结尾，答案用「答：」接上，答案里不要再出现问号；步骤每一段都要有序号，例如「1. 」或「第一步」；快报没有可核对的新闻时不要编造日期和引用。" +
+	"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。"
 
 func evidenceRule(payload map[string]any) string {
 	if asString(payload["writing_mode"]) == "experience" {
@@ -118,7 +120,9 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 	case "来源判断":
 		system = "你是资料相关性判断。对照 topic，给 candidates 里每一条打 0 到 3 分：0 无关，1 只是沾到同一个词，2 确实在讲这件事，3 直接回答选题。" +
 			"同时列出该来源里能核对的关键事实，没有就给空数组。不要因为标题里有相同的两个字就给 2 分。" +
-			"软件下载、系统镜像、影视剧、视频站和应用商店一律 0 分。index 用候选里的序号。只输出 JSON。"
+			"软件下载、系统镜像、影视剧、视频站和应用商店一律 0 分。index 必须使用候选里的 index，不要改序号。" +
+			"没有标题时用 url 和 snippet 判断。只输出一个 JSON 对象，不要使用 Markdown 代码块，不要增加字段，不要输出解释。" +
+			"\nJSON Schema：\n" + schemaText(schema)
 	case "资料检索":
 		system = "你是资料检索助手。请立刻联网搜索，先用中文搜索，优先中文网页。" +
 			"为下面的选题查找 3 到 5 条最近、相关、可公开核对的资料。每条都要讲这篇选题本身，不要用只沾到一个词的页面。" +
@@ -140,7 +144,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"目标大约是 word_target 的 105%，收尾补写时按 expand_goal，大约是 word_target 的 110%。写到这个目标就停，不要为了凑到 130% 而注水。" +
 			"如果输入里有 shortfall，这是离 expand_goal 还差的字数，请把这段篇幅补上。" +
 			"正文字数统计各小节的小标题、段落、列表、表格单元格和结尾，不含文章标题、摘要、参考来源和脚注。" +
-			sourcedFacts + namedSourceRule + anecdoteRule + evidenceRule(payload) +
+			sourcedFacts + namedSourceRule + anecdoteRule + evidenceRule(payload) + columnRule(payload) +
 			"保留输入里已有的事实和 sources，不要新造网址。只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "缩写":
 		schema = StageSchema("正文")
@@ -185,6 +189,17 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
 	case "栏目结构":
 		schema = StageSchema("正文")
+		if asString(payload["writing_mode"]) == "experience" {
+			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按 column_structure 和 structure 里的栏目结构模板重写成一篇完整稿。" +
+				"不要写外部事实、数字、机构、标准或新闻，不要使用 [n]。" +
+				"qa 或问答：至少一对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
+				"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
+				"news 或快报：没有可核对的新闻时不要编造日期和 [n]，按栏目定位写成经验分享。" +
+				"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。" +
+				"不要在句首机械地加「近日」，不要补空泛的「答：」。" +
+				"只输出一个 JSON 对象，不要使用 Markdown 代码块。\nJSON Schema：\n" + schemaText(schema)
+			break
+		}
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
 			"qa 或问答：至少一对。问句以问号结尾，答案用「答：」接在同一段问号后面，或单独写成下一段；答案里不要再出现问号。问答必须相邻。" +
@@ -408,7 +423,11 @@ func mockJudge(payload map[string]any) map[string]any {
 		if score >= 2 && fact != "" {
 			facts = []any{fact}
 		}
-		items = append(items, map[string]any{"index": i + 1, "score": score, "facts": facts})
+		index := i + 1
+		if row != nil && intOf(row["index"]) > 0 {
+			index = intOf(row["index"])
+		}
+		items = append(items, map[string]any{"index": index, "score": score, "facts": facts})
 	}
 	if items == nil {
 		items = []any{}

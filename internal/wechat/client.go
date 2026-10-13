@@ -532,7 +532,7 @@ func (c *LiveClient) UploadContentImage(ctx context.Context, image []byte, filen
 }
 
 func (c *LiveClient) AddDraft(ctx context.Context, article DraftArticle) (string, error) {
-	data, err := c.request(ctx, http.MethodPost, "/cgi-bin/draft/add", map[string]any{"articles": []any{article.fields()}}, true)
+	data, err := c.draftWrite(ctx, http.MethodPost, "/cgi-bin/draft/add", map[string]any{"articles": []any{article.fields()}})
 	if err != nil {
 		return "", err
 	}
@@ -544,11 +544,54 @@ func (c *LiveClient) AddDraft(ctx context.Context, article DraftArticle) (string
 }
 
 func (c *LiveClient) UpdateDraft(ctx context.Context, mediaID string, article DraftArticle) (string, error) {
-	_, err := c.request(ctx, http.MethodPost, "/cgi-bin/draft/update", map[string]any{"media_id": mediaID, "index": 0, "articles": article.fields()}, true)
+	_, err := c.draftWrite(ctx, http.MethodPost, "/cgi-bin/draft/update", map[string]any{"media_id": mediaID, "index": 0, "articles": article.fields()})
 	if err != nil {
 		return "", err
 	}
 	return mediaID, nil
+}
+
+// draftWrite uses the same detached 90s timeout and retries as image upload.
+// The parent task context can already be at its deadline when draft/add runs.
+func (c *LiveClient) draftWrite(ctx context.Context, method, path string, body map[string]any) (map[string]any, error) {
+	var last error
+	refresh := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(200 * time.Millisecond)
+			<-timer.C
+		}
+		callCtx, cancel := c.uploadContext(ctx)
+		token, err := c.token(callCtx, refresh)
+		if err != nil {
+			cancel()
+			last = err
+			refresh = false
+			if !retryUpload(err) || attempt == 2 {
+				return nil, err
+			}
+			continue
+		}
+		data, err := c.doOnce(callCtx, method, path, map[string]string{"access_token": token}, body)
+		cancel()
+		if err == nil {
+			return data, nil
+		}
+		last = err
+		if tokenExpired(err) {
+			c.Cache.Delete(c.key)
+			refresh = true
+			if attempt == 2 {
+				return nil, err
+			}
+			continue
+		}
+		refresh = false
+		if !retryUpload(err) || attempt == 2 {
+			return nil, err
+		}
+	}
+	return nil, last
 }
 
 func (c *LiveClient) GetDraft(ctx context.Context, mediaID string) (map[string]any, error) {
@@ -777,6 +820,10 @@ func tokenExpired(err error) bool {
 func (c *LiveClient) do(ctx context.Context, method, path string, query map[string]string, body map[string]any) (map[string]any, error) {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()
+	return c.doOnce(ctx, method, path, query, body)
+}
+
+func (c *LiveClient) doOnce(ctx context.Context, method, path string, query map[string]string, body map[string]any) (map[string]any, error) {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)

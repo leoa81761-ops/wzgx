@@ -954,6 +954,78 @@ func rewriteTabooText(text string, words []string) string {
 	return strings.Join(kept, "")
 }
 
+// LimitParagraphs splits a paragraph that runs past max sentences into chunks of max.
+// A combined question-and-answer paragraph stays intact. A numbered step keeps its number on each chunk.
+func LimitParagraphs(draft map[string]any, max int) map[string]any {
+	if draft == nil || max < 1 {
+		return draft
+	}
+	for _, section := range sectionsOf(draft) {
+		var next []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" {
+				continue
+			}
+			for _, part := range chunkSentences(text, max) {
+				next = append(next, part)
+			}
+		}
+		if next == nil {
+			next = []any{}
+		}
+		section["paragraphs"] = next
+	}
+	return draft
+}
+
+func chunkSentences(text string, max int) []string {
+	if strings.Contains(text, "答") && (strings.Contains(text, "？") || strings.Contains(text, "?")) {
+		return []string{text}
+	}
+	parts := splitSentences(text)
+	if len(parts) <= max {
+		return []string{text}
+	}
+	lead := numberedLead(text)
+	var out []string
+	for i := 0; i < len(parts); i += max {
+		j := i + max
+		if j > len(parts) {
+			j = len(parts)
+		}
+		chunk := strings.Join(parts[i:j], "")
+		if i > 0 && lead != "" && !strings.HasPrefix(strings.TrimSpace(chunk), strings.TrimSpace(lead)) {
+			chunk = lead + chunk
+		}
+		out = append(out, chunk)
+	}
+	return out
+}
+
+func numberedLead(text string) string {
+	text = strings.TrimSpace(text)
+	for _, prefix := range []string{"第十步", "第九步", "第八步", "第七步", "第六步", "第五步", "第四步", "第三步", "第二步", "第一步"} {
+		if strings.HasPrefix(text, prefix) {
+			return prefix
+		}
+	}
+	i := 0
+	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(text) {
+		return ""
+	}
+	if text[i] == '.' {
+		return text[:i+1] + " "
+	}
+	if strings.HasPrefix(text[i:], "、") {
+		return text[:i+len("、")]
+	}
+	return ""
+}
+
 func splitSentences(text string) []string {
 	var out []string
 	var buf strings.Builder
