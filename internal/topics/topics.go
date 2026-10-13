@@ -671,11 +671,20 @@ func GenericAngle(text string) bool {
 		return true
 	}
 	for _, phrase := range genericAngles {
-		if text == phrase || strings.HasSuffix(text, "："+phrase) || strings.HasSuffix(text, ":"+phrase) || strings.Contains(text, "先看失败点") {
+		if text == phrase || strings.HasSuffix(text, "："+phrase) || strings.HasSuffix(text, ":"+phrase) || strings.Contains(text, phrase) && abstractPhrase(phrase) {
 			return true
 		}
 	}
 	return false
+}
+
+func abstractPhrase(phrase string) bool {
+	switch phrase {
+	case "先看失败点", "先把手边这一件说完", "先把手边这一件做完", "先把手边这一处做完", "先把手边", "这一件说完", "这一件做完", "那一个具体麻烦", "晚饭后的那一会儿":
+		return true
+	default:
+		return false
+	}
 }
 
 var genericAngles = []string{
@@ -683,6 +692,9 @@ var genericAngles = []string{
 	"今天就能做", "先看问题", "一个做法", "先讲结论", "从一个日常场景说起", "把一个具体问题讲清楚",
 	"三件今天就能做的小事", "新手最容易漏的步骤", "按顺序的一周小计划", "先把能做的一步写清楚",
 	"一个听起来很对的说法", "为什么会有这种误解",
+	"先把手边这一件说完", "先把手边这一件做完", "先把手边这一处做完", "先把手边",
+	"这一件说完", "这一件做完", "那一个具体麻烦", "晚饭后的那一会儿",
+	"从一件家里的小事说起", "讲一个能照做的家庭提醒", "先讲家里的场景再给一个做法",
 }
 
 // ReaderPain is one concrete scene for this column, this account, and this reader.
@@ -698,25 +710,66 @@ func ReaderPain(column, positioning, structure, theme, tone, signatures, name st
 	if object == "" {
 		object = "这件事"
 	}
+	object = concreteObject(blob, object)
 	switch {
 	case strings.Contains(blob, "奶奶"):
-		thing := object
-		if strings.Contains(thing, "奶奶") || genericTheme(thing) {
-			thing = "晚饭后的那一会儿"
+		if object == "" || strings.Contains(object, "奶奶") || genericTheme(object) {
+			object = "灶台"
 		}
-		return "奶奶" + thing + "，先把手边这一处做完"
+		return "奶奶收拾" + object + "时，擦了一遍还是黏"
 	case familyColumn(blob):
-		return "家里的" + object + "，先把手边这一件做完"
-	case faqColumn(blob):
-		return object + "这一步，先看哪里？"
-	case strings.Contains(blob, "拆解") || strings.Contains(strings.ToLower(blob), "steps"):
-		return object + "做不通时，先查手边这一处"
-	default:
-		if sig := strings.TrimSpace(signatures); sig != "" && !GenericAngle(sig) && utf8.RuneCountInString(sig) <= 16 {
-			return object + "，" + sig
+		if object == "" {
+			object = "灶台"
 		}
-		return object + "遇到的那一个具体麻烦"
+		return "家里的" + object + "没收拾完，油还黏在台面上"
+	case faqColumn(blob):
+		if object == "" {
+			object = "这一处接口"
+		}
+		return object + "对不上号，下一步该量哪一段"
+	case strings.Contains(blob, "拆解") || strings.Contains(strings.ToLower(blob), "steps"):
+		if object == "" {
+			object = "这段线"
+		}
+		lead := object
+		if strings.Contains(blob, "弱电") && !strings.Contains(object, "弱电") {
+			lead = "弱电" + object
+		}
+		return lead + "测到一半对不上，不知道先查哪一段"
+	default:
+		if object == "" {
+			object = "手头这个件"
+		}
+		return object + "做到一半对不上，不知道先查哪一段"
 	}
+}
+
+func concreteObject(blob, object string) string {
+	switch {
+	case strings.Contains(blob, "灶") || strings.Contains(blob, "做饭") || strings.Contains(blob, "炒"):
+		return "灶台"
+	case strings.Contains(blob, "灰尘") || strings.Contains(blob, "除尘"):
+		return "桌面积灰"
+	case strings.Contains(blob, "花盆") || strings.Contains(blob, "绿植") || strings.Contains(blob, "浇花"):
+		return "花盆"
+	case strings.Contains(blob, "布线"):
+		return "综合布线"
+	case strings.Contains(blob, "监控"):
+		return "监控画面"
+	}
+	if object == "" || genericTheme(object) || abstractObject(object) {
+		return ""
+	}
+	return object
+}
+
+func abstractObject(text string) bool {
+	for _, word := range []string{"手边", "这一件", "这一处", "家务", "家庭", "日子", "一天", "晚饭", "麻烦", "具体", "失败"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
 }
 
 func columnAngles(column, positioning, structure string) []string {

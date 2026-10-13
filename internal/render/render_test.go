@@ -99,7 +99,7 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 		"column_label": "工程圈快报",
 		"sections":     []any{map[string]any{"heading": "甲", "paragraphs": []any{"乙"}}},
 	}, "simple", false, false)
-	if !strings.Contains(labeledColumn, "栏目 · 工程圈快报") {
+	if strings.Contains(labeledColumn, "栏目 ·") || strings.Contains(labeledColumn, "工程圈快报") {
 		t.Fatal(labeledColumn)
 	}
 }

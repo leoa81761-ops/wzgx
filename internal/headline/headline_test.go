@@ -97,3 +97,16 @@ func TestSelfScoresDoNotOutrankAShortTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestHighestScoredTitleWins(t *testing.T) {
+	high := Scored{Title: "现场核对永远排在计算参数前面", HasScores: true, Hook: 5, Concrete: 5, Consistent: 5, Persona: 5}
+	numbered := Scored{Title: "验收现场还有 3 处线槽没盖好", HasScores: true, Hook: 2, Concrete: 4, Consistent: 4, Persona: 3}
+	body := "现场核对永远排在计算参数前面。验收现场还有 3 处线槽没盖好。"
+	best, alts := RankScored([]Scored{numbered, high}, "", body, nil, nil, "")
+	if best.Title != high.Title {
+		t.Fatal(best, alts)
+	}
+	if !Outranks(best, alts) {
+		t.Fatal("a 5/5 title should not be sent to a second picker", best, alts)
+	}
+}

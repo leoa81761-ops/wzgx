@@ -56,6 +56,9 @@ func RankScored(candidates []Scored, summary, body string, redLines, recent []st
 		if digitMissing(row.Title, summary, body) {
 			continue
 		}
+		if row.HasScores {
+			score += (row.Hook + row.Concrete + row.Consistent + row.Persona) * 10
+		}
 		ranked = append(ranked, item{row: row, score: score})
 	}
 	if len(ranked) == 0 {
@@ -76,6 +79,24 @@ func RankScored(candidates []Scored, summary, body string, redLines, recent []st
 		alts = append(alts, row.row)
 	}
 	return chosen, alts
+}
+
+// Outranks reports that best already has a strictly higher model score than every scored alternative.
+// A second comparison call must not replace that title.
+func Outranks(best Scored, alts []Scored) bool {
+	if !best.HasScores {
+		return false
+	}
+	bestN := best.Hook + best.Concrete + best.Consistent + best.Persona
+	for _, alt := range alts {
+		if !alt.HasScores {
+			continue
+		}
+		if alt.Hook+alt.Concrete+alt.Consistent+alt.Persona >= bestN {
+			return false
+		}
+	}
+	return true
 }
 
 // Score ranks one title. Length outside 14–28 runes is a mild penalty.

@@ -2401,8 +2401,23 @@ func TestExperienceDraftSplitsAndDedupes(t *testing.T) {
 			t.Fatal(para)
 		}
 	}
-	if !quality.StructureOK("qa", paras) {
-		t.Fatal(paras)
+	if quality.StructureOK("qa", paras) {
+		t.Fatal("a short note is not five substantive answers", paras)
+	}
+}
+
+func TestManualGenerateKeepsAPausedPlan(t *testing.T) {
+	status, reason := resumeQuotaPause("paused", "用户暂停", "manual")
+	if status != "paused" || reason != "用户暂停" {
+		t.Fatal(status, reason)
+	}
+	status, reason = resumeQuotaPause("paused", "额度已用完", "manual")
+	if status != "paused" || reason != "额度已用完" {
+		t.Fatal(status, reason)
+	}
+	status, reason = resumeQuotaPause("paused", "额度已用完", "schedule")
+	if status != "active" || reason != "" {
+		t.Fatal(status, reason)
 	}
 }
 
