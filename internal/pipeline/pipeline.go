@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -148,6 +149,15 @@ func (e *tracedError) Error() string {
 
 func (e *tracedError) Unwrap() error { return e.err }
 
+// StuckTaskLimit is how long a task may stay in generating before the watchdog marks it failed.
+// Article 50 stayed on generating because prepare writes that status before any model call returns,
+// and ScanOnce waits out the worker. A call that never comes back, or a process that dies mid-run,
+// never reaches finishFailure, and the old requeue only reset the task after an hour without touching the article.
+const StuckTaskLimit = 15 * time.Minute
+
+// StuckTaskReason is stored on the task and the article when the watchdog or the run deadline fires.
+const StuckTaskReason = "生成超过 15 分钟未结束，已标记失败。文章在模型返回前就被标成生成中；这次调用没有在时限内结束，调度会一直等着，文章就停在生成中。"
+
 func Execute(ctx context.Context, deps Deps, taskID int64, claim bool, now time.Time) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -156,9 +166,15 @@ func Execute(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 	if !ok {
 		return
 	}
-	result, err := generate(ctx, deps, w, now)
+	runCtx, cancel := context.WithTimeout(ctx, StuckTaskLimit)
+	defer cancel()
+	result, err := generate(runCtx, deps, w, now)
 	if err != nil {
-		finishFailure(ctx, deps, taskID, clip(err.Error(), 500), now, authFailed(err), traceOf(err))
+		message := clip(err.Error(), 500)
+		if ctx.Err() == nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded)) {
+			message = StuckTaskReason
+		}
+		finishFailure(ctx, deps, taskID, message, now, authFailed(err), traceOf(err))
 		return
 	}
 	finishSuccess(ctx, deps, taskID, result, now)
@@ -1721,6 +1737,11 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if imageStyle != "" {
 		draft["image_style"] = imageStyle
 	}
+	draft = editorial.ShapeCopy(draft)
+	trace = append(trace, map[string]any{
+		"stage": "body", "ok": true, "chars": content.BodyRunes(draft),
+		"stages": stageCharList(trace),
+	})
 	html, err := render.RenderWithinLimit(draft, w.TemplateKey, false)
 	if err != nil {
 		return Built{Trace: trace, Topic: topic}, err
@@ -1901,6 +1922,9 @@ func finishSuccess(ctx context.Context, deps Deps, taskID int64, result map[stri
 		task, err := deps.Store.GetTask(ctx, tx, taskID)
 		if err != nil || task == nil || task.ArticleID == nil {
 			return err
+		}
+		if task.Status == "failed" && task.FailureReason == StuckTaskReason {
+			return nil
 		}
 		article, err := deps.Store.GetArticle(ctx, tx, *task.ArticleID)
 		if err != nil || article == nil {
@@ -2373,9 +2397,10 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	client := httpClient(gateway)
 	if err1 == nil {
 		notes, sources, dropped, relaxed = takeSources(ctx, client, first.Content, first.ResearchSources, policy, topic)
-		if len(sources) >= 3 {
+		if len(sources) >= 2 {
 			sources = preferMaps(sources, payload)
-			stampSourceTrace(&first, sources, dropped, relaxed)
+			stampSourceTrace(&first, sources, dropped, relaxed, len(first.ResearchSources), nil)
+			stripRankScores(sources)
 			return notes, anySources(sources), first, nil
 		}
 	}
@@ -2428,9 +2453,23 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			}
 		}
 	}
-	if len(sources) < 3 {
-		found, searchErr := backupHTMLSearch(ctx, gateway, shortSearchQuery(payload))
-		if searchErr == nil && len(found) > 0 {
+	rawCount := len(first.ResearchSources)
+	if len(second.ResearchSources) > 0 {
+		rawCount += len(second.ResearchSources)
+	}
+	var engines []map[string]any
+	if len(sources) < 2 {
+		var found []map[string]any
+		for _, query := range backupQueries(payload) {
+			rows, logged, searchErr := backupHTMLSearch(ctx, gateway, query)
+			engines = append(engines, logged...)
+			if searchErr != nil && len(logged) == 0 {
+				engines = append(engines, map[string]any{"engine": "backup", "query": query, "count": 0, "error": clip(searchErr.Error(), 180)})
+			}
+			found = append(found, rows...)
+		}
+		rawCount += len(found)
+		if len(found) > 0 {
 			combined := append(append([]map[string]any{}, sources...), found...)
 			notes3, sources3, dropped3, relaxed3 := takeSources(ctx, client, notes, combined, policy, topic)
 			dropped = append(dropped, dropped3...)
@@ -2446,21 +2485,6 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			}
 		}
 	}
-	if len(sources) < 3 {
-		found, searchErr := backupHTMLSearch(ctx, gateway, focusedQuery(payload))
-		if searchErr == nil && len(found) > 0 {
-			combined := append(append([]map[string]any{}, sources...), found...)
-			notes4, sources4, dropped4, relaxed4 := takeSources(ctx, client, notes, combined, policy, topic)
-			dropped = append(dropped, dropped4...)
-			if len(sources4) > len(sources) {
-				if notes == "" && notes4 != "" {
-					notes = notes4
-				}
-				sources = sources4
-				relaxed = relaxed || relaxed4
-			}
-		}
-	}
 	if sourcesHaveURL(sources) || err2 == nil || err1 == nil {
 		if merged.Model == "" {
 			merged.ProviderID = first.ProviderID
@@ -2470,7 +2494,8 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 			merged.Content = first.Content
 		}
 		sources = preferMaps(sources, payload)
-		stampSourceTrace(&merged, sources, dropped, relaxed)
+		stampSourceTrace(&merged, sources, dropped, relaxed, rawCount, engines)
+		stripRankScores(sources)
 		if sourcesHaveURL(sources) || err2 == nil || (err1 == nil && err2 == nil) {
 			return notes, anySources(sources), merged, nil
 		}
@@ -2479,8 +2504,10 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 		}
 	}
 	if err2 != nil {
+		stampSourceTrace(&merged, nil, dropped, relaxed, rawCount, engines)
 		return "", nil, merged, err2
 	}
+	stripRankScores(sources)
 	return notes, anySources(sources), merged, nil
 }
 
@@ -2510,9 +2537,9 @@ func retryResearch(completion llm.Completion, err error) bool {
 	return strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "没有返回文本")
 }
 
-func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string) ([]map[string]any, error) {
+func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string) ([]map[string]any, []map[string]any, error) {
 	if gateway == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var targets []llm.SearchTarget
 	for _, raw := range []string{gateway.BackupSearchURL, gateway.BackupSearchAlt} {
@@ -2521,9 +2548,49 @@ func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string) (
 		}
 	}
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return llm.SearchChain(ctx, gateway.Client, targets, query)
+	return llm.SearchChainLogged(ctx, gateway.Client, targets, query)
+}
+
+func backupQueries(payload map[string]any) []string {
+	var out []string
+	add := func(query string) {
+		query = strings.TrimSpace(query)
+		if query == "" || len(out) >= 3 {
+			return
+		}
+		for _, prev := range out {
+			if prev == query {
+				return
+			}
+		}
+		out = append(out, query)
+	}
+	add(shortSearchQuery(payload))
+	add(focusedQuery(payload))
+	title := strings.TrimSpace(str(payload["topic_title"]))
+	if title == "" {
+		title = strings.TrimSpace(str(payload["subtopic"]))
+	}
+	if utf8.RuneCountInString(title) > 12 {
+		title = string([]rune(title)[:12])
+	}
+	extra := strings.TrimSpace(str(payload["keywords"]))
+	if extra == "" {
+		extra = strings.TrimSpace(str(payload["direction"]))
+	}
+	if utf8.RuneCountInString(extra) > 8 {
+		extra = string([]rune(extra)[:8])
+	}
+	add(strings.TrimSpace(title + " " + extra))
+	if len(out) < 2 {
+		base := shortSearchQuery(payload)
+		if utf8.RuneCountInString(base) > 8 {
+			add(string([]rune(base)[:8]))
+		}
+	}
+	return out
 }
 
 func focusedQuery(payload map[string]any) string {
@@ -2660,6 +2727,7 @@ func filterAnySources(ctx context.Context, client *http.Client, sources []any, t
 	}
 	enrichSources(ctx, client, maps)
 	kept, _ := filterSourceQuality(maps, topic)
+	stripRankScores(kept)
 	out := make([]any, len(kept))
 	for i := range kept {
 		out[i] = kept[i]
@@ -2754,7 +2822,18 @@ func enrichSources(ctx context.Context, client *http.Client, sources []map[strin
 	}
 }
 
+// sourceFloor is the lowest overlap that can be kept. One shared topic term clears it.
+// Authority alone does not, so an unrelated gov.cn page stays out without a hard phrase rule.
+const sourceFloor = 2
+
+const sourceKeepMax = 6
+
 func filterSourceQuality(sources []map[string]any, topic string) (kept []map[string]any, dropped []map[string]any) {
+	type scored struct {
+		source map[string]any
+		score  int
+	}
+	var ranked []scored
 	for _, source := range sources {
 		if source == nil {
 			continue
@@ -2762,66 +2841,97 @@ func filterSourceQuality(sources []map[string]any, topic string) (kept []map[str
 		raw := str(source["url"])
 		title := strings.TrimSpace(str(source["title"]))
 		if templatePage(raw, title+" "+str(source["name"])) {
-			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "PPT模板或文库"})
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "PPT模板或文库"})
 			continue
 		}
 		if content.DictionaryHost(raw) || content.ReferenceEntry(title) {
-			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "词典或百科"})
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "词典或百科"})
 			continue
 		}
 		if content.SearchResultURL(raw) {
-			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "搜索结果页"})
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "搜索结果页"})
 			continue
 		}
-		blob := strings.TrimSpace(title + " " + str(source["snippet"]) + " " + str(source["note"]) + " " + raw)
-		if content.StandardNumberTopic(topic) && content.SharesStandardNumber(topic, blob) {
-			kept = append(kept, source)
+		score, overlap := scoreSource(source, topic)
+		if overlap < sourceFloor || score < sourceFloor {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": score, "reason": "低于分数线"})
 			continue
 		}
-		if !onTopic(blob, topic) {
-			dropped = append(dropped, map[string]any{"url": raw, "title": title, "reason": "与选题无关"})
-			continue
+		source["rank_score"] = score
+		ranked = append(ranked, scored{source: source, score: score})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].score > ranked[j].score
+	})
+	if len(ranked) > sourceKeepMax {
+		for _, extra := range ranked[sourceKeepMax:] {
+			dropped = append(dropped, map[string]any{
+				"url": str(extra.source["url"]), "title": str(extra.source["title"]),
+				"score": extra.score, "reason": "超出保留条数",
+			})
 		}
-		kept = append(kept, source)
+		ranked = ranked[:sourceKeepMax]
+	}
+	for _, row := range ranked {
+		kept = append(kept, row.source)
 	}
 	return kept, dropped
 }
 
-func onTopic(text, topic string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return false
-	}
-	phrases := topicPhrases(topic)
-	if len(phrases) > 0 {
-		for _, phrase := range phrases {
-			if strings.Contains(text, phrase) {
-				return true
-			}
-		}
-		return false
-	}
-	words := topicWords(topic)
-	need := 2
-	if len(words) < need {
-		need = len(words)
-	}
-	if need == 0 {
-		return false
-	}
-	hits := 0
-	seen := map[string]bool{}
-	for _, word := range words {
-		if seen[word] || !strings.Contains(text, word) {
+func scoreSource(source map[string]any, topic string) (score, overlap int) {
+	title := strings.TrimSpace(str(source["title"]))
+	meta := strings.TrimSpace(str(source["snippet"]) + " " + str(source["note"]) + " " + str(source["fetched_meta"]))
+	blob := strings.TrimSpace(title + " " + meta + " " + str(source["url"]))
+	phrases := 0
+	for _, phrase := range topicPhrases(topic) {
+		if !strings.Contains(blob, phrase) {
 			continue
 		}
-		seen[word] = true
-		hits++
-		if hits >= need {
-			return true
+		points := 3
+		if strings.Contains(title, phrase) {
+			points = 4
+		}
+		overlap += points
+		phrases++
+		if phrases >= 3 {
+			break
 		}
 	}
-	return false
+	terms := 0
+	seen := map[string]bool{}
+	for _, term := range topicTerms(topic) {
+		if seen[term] || !strings.Contains(blob, term) {
+			continue
+		}
+		seen[term] = true
+		overlap += 2
+		terms++
+		if terms >= 4 {
+			break
+		}
+	}
+	if content.SharesStandardNumber(topic, blob) {
+		overlap += 6
+	}
+	score = overlap
+	if overlap > 0 && content.OfficialHost(str(source["url"])) {
+		score += 3
+	}
+	if strings.Contains(title, "百科") || strings.Contains(title, "词典") || strings.Contains(title, "搜索") {
+		score -= 4
+	}
+	if score < 0 {
+		score = 0
+	}
+	return score, overlap
+}
+
+func stripRankScores(sources []map[string]any) {
+	for _, source := range sources {
+		if source != nil {
+			delete(source, "rank_score")
+		}
+	}
 }
 
 func topicPhrases(topic string) []string {
@@ -2839,23 +2949,6 @@ func topicPhrases(topic string) []string {
 			seen[phrase] = true
 			out = append(out, phrase)
 		}
-	}
-	return out
-}
-
-func topicWords(topic string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, run := range hanRuns(topic) {
-		if len(run) != 2 {
-			continue
-		}
-		word := string(run)
-		if seen[word] || noisyTerm(word) {
-			continue
-		}
-		seen[word] = true
-		out = append(out, word)
 	}
 	return out
 }
@@ -2944,7 +3037,7 @@ func templatePage(raw, title string) bool {
 	return false
 }
 
-func stampSourceTrace(completion *llm.Completion, sources []map[string]any, dropped []map[string]any, relaxed bool) {
+func stampSourceTrace(completion *llm.Completion, sources []map[string]any, dropped []map[string]any, relaxed bool, raw int, engines []map[string]any) {
 	if completion == nil {
 		return
 	}
@@ -2955,8 +3048,28 @@ func stampSourceTrace(completion *llm.Completion, sources []map[string]any, drop
 		}}
 	}
 	last := completion.Attempts[len(completion.Attempts)-1]
+	last["raw"] = raw
 	last["kept"] = len(sources)
 	last["relaxed"] = relaxed
+	if len(engines) > 0 {
+		last["engines"] = engines
+	}
+	var scored []any
+	for _, source := range sources {
+		if source == nil {
+			continue
+		}
+		scored = append(scored, map[string]any{
+			"url": str(source["url"]), "title": str(source["title"]),
+			"score": source["rank_score"], "reason": "保留",
+		})
+	}
+	for _, row := range dropped {
+		scored = append(scored, row)
+	}
+	if len(scored) > 0 {
+		last["scored"] = scored
+	}
 	if len(dropped) > 0 {
 		last["dropped"] = dropped
 	}
@@ -3430,12 +3543,24 @@ func traceRows(stage string, completion llm.Completion) []map[string]any {
 		}}
 	}
 	out := make([]map[string]any, 0, len(completion.Attempts))
+	chars := utf8.RuneCountInString(completion.Content)
 	for _, attempt := range completion.Attempts {
-		row := map[string]any{"stage": stage}
+		row := map[string]any{"stage": stage, "chars": chars}
 		for k, v := range attempt {
 			row[k] = v
 		}
+		if _, ok := row["chars"]; !ok {
+			row["chars"] = chars
+		}
 		out = append(out, row)
+	}
+	return out
+}
+
+func stageCharList(trace []map[string]any) []any {
+	var out []any
+	for _, row := range trace {
+		out = append(out, map[string]any{"stage": row["stage"], "chars": row["chars"]})
 	}
 	return out
 }

@@ -501,6 +501,36 @@ func (a *App) adminTasks(w http.ResponseWriter, r *http.Request, _ *model.User) 
 	return nil
 }
 
+func (a *App) adminTask(w http.ResponseWriter, r *http.Request, _ *model.User) error {
+	id, err := pathID(r, "id", "找不到这个任务")
+	if err != nil {
+		return err
+	}
+	task, err := a.Store.GetTask(r.Context(), nil, id)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return &AppError{Status: 404, Message: "找不到这个任务"}
+	}
+	articleID := int64(0)
+	if task.ArticleID != nil {
+		articleID = *task.ArticleID
+	}
+	trace := task.ModelTrace
+	if trace == nil {
+		trace = []map[string]any{}
+	}
+	writeJSON(w, 200, map[string]any{
+		"id": task.ID, "user_id": task.UserID, "plan_id": task.PlanID, "article_id": articleID,
+		"status": task.Status, "trigger_type": task.TriggerType, "failure_reason": task.FailureReason,
+		"duration_ms": task.DurationMs, "created_at": jtimev(task.CreatedAt),
+		"started_at": jtime(task.StartedAt), "finished_at": jtime(task.FinishedAt),
+		"model_trace": trace,
+	})
+	return nil
+}
+
 func (a *App) exportMe(w http.ResponseWriter, r *http.Request, user *model.User) error {
 	fresh, err := a.Store.GetUser(r.Context(), nil, user.ID)
 	if err != nil || fresh == nil {

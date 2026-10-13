@@ -1398,6 +1398,331 @@ func citationSourceText(source map[string]any) string {
 	return strings.TrimSpace(title + " " + snippet)
 }
 
+// ShapeCopy repairs formatting the model drops: a run-on with no sentence breaks,
+// a markdown or label table left as one paragraph, an empty subheading, a reader
+// addressed as if they had sent something in, and a buzzword repeated past twice.
+// It also makes sure the closing asks the reader to follow, comment, or wait for the next issue.
+func ShapeCopy(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := dropReaderAddress(textOf(item))
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			if table := tableFromParagraph(text); table != nil && section["table"] == nil {
+				section["table"] = table
+				continue
+			}
+			paras = append(paras, repairRunOn(text))
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		if heading := dropReaderAddress(textOf(section["heading"])); heading != textOf(section["heading"]) {
+			section["heading"] = heading
+		}
+	}
+	dropEmptySections(draft)
+	capBuzzword(draft, "温暖", 2)
+	draft["closing"] = repairRunOn(dropReaderAddress(textOf(draft["closing"])))
+	ensureCTA(draft)
+	return draft
+}
+
+func dropEmptySections(draft map[string]any) {
+	sections := anyList(draft["sections"])
+	var kept []any
+	for _, raw := range sections {
+		section, _ := raw.(map[string]any)
+		if section == nil {
+			continue
+		}
+		heading := strings.TrimSpace(textOf(section["heading"]))
+		paras := anyList(section["paragraphs"])
+		items := anyList(section["list"])
+		_, hasTable := section["table"].(map[string]any)
+		body := false
+		for _, item := range paras {
+			if strings.TrimSpace(textOf(item)) != "" {
+				body = true
+				break
+			}
+		}
+		if !body {
+			for _, item := range items {
+				if strings.TrimSpace(textOf(item)) != "" {
+					body = true
+					break
+				}
+			}
+		}
+		if heading != "" && !body && !hasTable {
+			continue
+		}
+		kept = append(kept, section)
+	}
+	if len(kept) == 0 {
+		return
+	}
+	draft["sections"] = kept
+}
+
+func capBuzzword(draft map[string]any, word string, keep int) {
+	if keep < 1 || word == "" {
+		return
+	}
+	seen := 0
+	rewrite := func(text string) string {
+		var b strings.Builder
+		rest := text
+		for {
+			i := strings.Index(rest, word)
+			if i < 0 {
+				b.WriteString(rest)
+				return b.String()
+			}
+			b.WriteString(rest[:i])
+			if word == "温暖" && strings.HasPrefix(rest[i:], "温暖亲和") {
+				b.WriteString("温暖亲和")
+				rest = rest[i+len("温暖亲和"):]
+				continue
+			}
+			seen++
+			if seen <= keep {
+				b.WriteString(word)
+			} else {
+				b.WriteString("踏实")
+			}
+			rest = rest[i+len(word):]
+		}
+	}
+	for _, section := range sectionsOf(draft) {
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			paras = append(paras, rewrite(textOf(item)))
+		}
+		section["paragraphs"] = paras
+	}
+	if closing := textOf(draft["closing"]); closing != "" {
+		draft["closing"] = rewrite(closing)
+	}
+}
+
+func dropReaderAddress(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	var kept []string
+	changed := false
+	for _, sentence := range splitSentences(text) {
+		if containsAny(sentence, "您分享的", "您发来的", "您提供的", "你分享的", "您刚发来") {
+			changed = true
+			continue
+		}
+		kept = append(kept, sentence)
+	}
+	if !changed {
+		return text
+	}
+	return strings.Join(kept, "")
+}
+
+func ensureCTA(draft map[string]any) {
+	closing := strings.TrimSpace(textOf(draft["closing"]))
+	if ctaConcrete(closing) {
+		return
+	}
+	column := strings.TrimSpace(textOf(draft["column_label"]))
+	line := "关注本号，把你遇到的情况写在评论里。"
+	if column != "" {
+		line = "关注本号，在评论里留下你的做法。下一期「" + column + "」继续写。"
+	}
+	if closing == "" {
+		draft["closing"] = line
+		return
+	}
+	draft["closing"] = closing + "\n\n" + line
+}
+
+func ctaConcrete(text string) bool {
+	if strings.Contains(text, "关注") {
+		return true
+	}
+	if strings.Contains(text, "下期") || strings.Contains(text, "下一期") {
+		return true
+	}
+	return strings.Contains(text, "评论")
+}
+
+func repairRunOn(text string) string {
+	text = strings.TrimSpace(text)
+	n := utf8.RuneCountInString(text)
+	marks := 0
+	for _, r := range text {
+		switch r {
+		case '。', '！', '？', '!', '?':
+			marks++
+		}
+	}
+	if text == "" || n < 36 || (marks > 0 && n/marks < 80) {
+		return text
+	}
+	var b strings.Builder
+	clause := 0
+	inMark := false
+	for _, r := range text {
+		if r == '[' {
+			inMark = true
+		}
+		if inMark {
+			b.WriteRune(r)
+			if r == ']' {
+				inMark = false
+			}
+			continue
+		}
+		if r == '，' || r == ',' {
+			if clause >= 18 {
+				b.WriteRune('。')
+				clause = 0
+				continue
+			}
+			b.WriteRune(r)
+			clause = 0
+			continue
+		}
+		switch r {
+		case '。', '！', '？', '!', '?', '；', ';':
+			b.WriteRune(r)
+			clause = 0
+			continue
+		}
+		b.WriteRune(r)
+		clause++
+		if clause >= 40 {
+			b.WriteRune('。')
+			clause = 0
+		}
+	}
+	return b.String()
+}
+
+func tableFromParagraph(text string) map[string]any {
+	text = strings.TrimSpace(text)
+	if strings.Contains(text, "|") {
+		if table := markdownTable(text); table != nil {
+			return table
+		}
+	}
+	parts := strings.Split(text, "；")
+	if len(parts) < 2 {
+		parts = strings.Split(text, ";")
+	}
+	if len(parts) < 2 {
+		return nil
+	}
+	var rows []any
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		label, value, ok := strings.Cut(part, "：")
+		if !ok {
+			label, value, ok = strings.Cut(part, ":")
+		}
+		if !ok {
+			return nil
+		}
+		label = strings.TrimSpace(label)
+		value = strings.TrimSpace(value)
+		if label == "" || value == "" || utf8.RuneCountInString(label) > 12 || utf8.RuneCountInString(value) > 40 {
+			return nil
+		}
+		rows = append(rows, []any{label, value})
+	}
+	if len(rows) < 2 {
+		return nil
+	}
+	return map[string]any{"headers": []any{"项目", "说明"}, "rows": rows}
+}
+
+func markdownTable(text string) map[string]any {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "|") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) < 2 {
+		return nil
+	}
+	cells := splitPipes(lines[0])
+	if len(cells) < 2 {
+		return nil
+	}
+	start := 1
+	if looksLikeRule(lines[1]) {
+		start = 2
+	}
+	var rows []any
+	for _, line := range lines[start:] {
+		if looksLikeRule(line) {
+			continue
+		}
+		row := splitPipes(line)
+		if len(row) == 0 {
+			continue
+		}
+		item := make([]any, len(cells))
+		for i := range cells {
+			if i < len(row) {
+				item[i] = row[i]
+			} else {
+				item[i] = ""
+			}
+		}
+		rows = append(rows, item)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	headers := make([]any, len(cells))
+	for i, cell := range cells {
+		headers[i] = cell
+	}
+	return map[string]any{"headers": headers, "rows": rows}
+}
+
+func splitPipes(line string) []string {
+	line = strings.Trim(line, "|")
+	parts := strings.Split(line, "|")
+	var out []string
+	for _, part := range parts {
+		out = append(out, strings.TrimSpace(part))
+	}
+	return out
+}
+
+func looksLikeRule(line string) bool {
+	line = strings.Trim(line, "| ")
+	if line == "" {
+		return false
+	}
+	for _, r := range line {
+		switch r {
+		case '-', ':', '|', ' ':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func clone(draft map[string]any) map[string]any {
 	buf, err := json.Marshal(draft)
 	if err != nil {

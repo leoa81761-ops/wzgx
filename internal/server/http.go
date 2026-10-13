@@ -279,6 +279,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/admin/hot-sources/{id}", a.withUser(true, a.adminDeleteHotSource))
 	mux.HandleFunc("POST /api/admin/hot-sources/{id}/test", a.withUser(true, a.adminTestHotSource))
 	mux.HandleFunc("GET /api/admin/tasks", a.withUser(true, a.adminTasks))
+	mux.HandleFunc("GET /api/admin/tasks/{id}", a.withUser(true, a.adminTask))
 	mux.HandleFunc("GET /api/admin/orders", a.withUser(true, a.adminOrders))
 	mux.HandleFunc("POST /api/admin/orders/{id}/refund", a.withUser(true, a.adminRefundOrder))
 	mux.HandleFunc("GET /api/admin/complaints", a.withUser(true, a.adminComplaints))

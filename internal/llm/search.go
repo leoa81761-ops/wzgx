@@ -130,8 +130,17 @@ func pageMeta(html string) (string, string) {
 
 // SearchChain tries each endpoint until one returns a result. An API key uses the JSON provider.
 func SearchChain(ctx context.Context, client *http.Client, targets []SearchTarget, query string) ([]map[string]any, error) {
+	rows, _, err := SearchChainLogged(ctx, client, targets, query)
+	return rows, err
+}
+
+// SearchChainLogged is SearchChain plus one row per engine: name, how many results came back, and the error when that engine failed.
+// The first engine with rows is still the one whose results are returned.
+func SearchChainLogged(ctx context.Context, client *http.Client, targets []SearchTarget, query string) ([]map[string]any, []map[string]any, error) {
 	var last error
+	var engines []map[string]any
 	for _, target := range targets {
+		name := searchEngineName(target)
 		var rows []map[string]any
 		var err error
 		if strings.TrimSpace(target.APIKey) != "" {
@@ -139,15 +148,35 @@ func SearchChain(ctx context.Context, client *http.Client, targets []SearchTarge
 		} else {
 			rows, err = SearchWeb(ctx, client, target.URL, query)
 		}
+		row := map[string]any{"engine": name, "query": clipSearch(query, 40), "count": len(rows)}
 		if err != nil {
 			last = err
+			row["error"] = clipSearch(err.Error(), 180)
+			engines = append(engines, row)
 			continue
 		}
+		engines = append(engines, row)
 		if len(rows) > 0 {
-			return rows, nil
+			return rows, engines, nil
 		}
 	}
-	return nil, last
+	return nil, engines, last
+}
+
+func searchEngineName(target SearchTarget) string {
+	raw := strings.TrimSpace(target.URL)
+	if raw == "" {
+		return "search"
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return clipSearch(raw, 40)
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	if strings.TrimSpace(target.APIKey) != "" {
+		return host + " api"
+	}
+	return host
 }
 
 // SearchAPI calls an optional key-based search such as Bocha.

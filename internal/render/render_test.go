@@ -57,8 +57,17 @@ func TestRendererInlinesStylesAndRewritesURLs(t *testing.T) {
 			},
 		}},
 	}, "simple", false, false)
-	if strings.Contains(wide, "<table") || !strings.Contains(wide, "甲：1") {
+	if !strings.Contains(wide, "<table") || !strings.Contains(wide, "甲") || strings.Contains(wide, "甲：1") {
 		t.Fatal(wide)
+	}
+	qa := RenderHTML(map[string]any{
+		"sections": []any{map[string]any{"paragraphs": []any{"验收要看什么？答：先对照图纸。", "材料怎么算？", "答：按现场清单。"}}},
+	}, "simple", false, false)
+	if !strings.Contains(qa, "<strong>验收要看什么？</strong>") || !strings.Contains(qa, "先对照图纸。") || strings.Contains(qa, "答：") {
+		t.Fatal(qa)
+	}
+	if !strings.Contains(qa, "<strong>材料怎么算？</strong>") || !strings.Contains(qa, "按现场清单。") {
+		t.Fatal(qa)
 	}
 	if DisplayURL("a.b.c") != "a点b点c" {
 		t.Fatal(DisplayURL("a.b.c"))

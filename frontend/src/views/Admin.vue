@@ -201,7 +201,7 @@
       <table>
         <thead><tr><th>ID</th><th>用户</th><th>状态</th><th>触发</th><th>耗时</th><th>原因</th></tr></thead>
         <tbody>
-          <tr v-for="task in tasks" :key="task.id">
+          <tr v-for="task in tasks" :key="task.id" style="cursor:pointer" @click="openTask(task)">
             <td>{{ task.id }}</td>
             <td>{{ task.user_id }}</td>
             <td>{{ task.status }}</td>
@@ -211,6 +211,20 @@
           </tr>
         </tbody>
       </table>
+      <article v-if="taskDetail" class="card stack">
+        <h3>任务 {{ taskDetail.id }} · {{ taskDetail.status }}</h3>
+        <p v-if="taskDetail.failure_reason">{{ taskDetail.failure_reason }}</p>
+        <p v-if="researchTrace">检索原始 {{ researchTrace.raw ?? 0 }} 条，保留 {{ researchTrace.kept ?? 0 }} 条。</p>
+        <ul v-if="engineRows.length">
+          <li v-for="(row, i) in engineRows" :key="'e'+i">{{ row.engine }} · {{ row.query }} · {{ row.count }} 条<span v-if="row.error"> · {{ row.error }}</span></li>
+        </ul>
+        <ul v-if="sourceRows.length">
+          <li v-for="(row, i) in sourceRows" :key="'s'+i">{{ row.score }} 分 · {{ row.reason }} · {{ row.title || row.url }}</li>
+        </ul>
+        <ul>
+          <li v-for="(row, i) in stageRows" :key="'g'+i">{{ row.stage }} · {{ row.chars ?? 0 }} 字</li>
+        </ul>
+      </article>
     </section>
 
     <section v-if="tab === 'complaints'" class="stack">
@@ -562,6 +576,16 @@ const words = ref("");
 const blockedDomains = ref("");
 const allowedDomains = ref("");
 const tasks = ref([]);
+const taskDetail = ref(null);
+const traceRows = computed(() => taskDetail.value?.model_trace || []);
+const researchTrace = computed(() => traceRows.value.find((row) => row.stage === "research") || null);
+const engineRows = computed(() => traceRows.value.flatMap((row) => row.engines || []));
+const sourceRows = computed(() => traceRows.value.flatMap((row) => row.scored || []));
+const stageRows = computed(() => {
+  const body = traceRows.value.find((row) => row.stage === "body");
+  if (body?.stages?.length) return [...body.stages, { stage: "body", chars: body.chars }];
+  return traceRows.value.map((row) => ({ stage: row.stage, chars: row.chars }));
+});
 const complaints = ref([]);
 const payOrders = ref([]);
 const styles = ref([]);
@@ -810,6 +834,11 @@ async function load() {
   Object.assign(inviteRules, await api("/api/admin/invite-rules"));
   hotSources.value = await api("/api/admin/hot-sources");
   fillIntegrations(await api("/api/admin/integrations"));
+}
+
+async function openTask(task) {
+  error.value = "";
+  taskDetail.value = await api("/api/admin/tasks/" + task.id);
 }
 
 async function saveInviteRules() {
