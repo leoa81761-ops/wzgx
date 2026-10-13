@@ -131,6 +131,7 @@ type Built struct {
 	Broken         bool
 	Stub           bool
 	OffTitle       bool
+	OutlineOff     bool
 	Leaked         bool
 	Searched       bool
 	OwnSearch      bool
@@ -1567,6 +1568,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	if w.SpecifiedTitle != "" {
 		base["specified_title"] = w.SpecifiedTitle
 	}
+	if hint := monthHint(w.RunAt); hint != "" {
+		base["season_hint"] = hint
+	}
 	if w.Pack.Key != "" {
 		base["vertical_key"] = w.Pack.Key
 	}
@@ -1657,17 +1661,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			base["column"] = topic.Column
 		}
 	}
-	theme := accountTheme(w, picked, topic)
-	topicTitle = topics.FitTitle(topicTitle, topic.Column, picked.Positioning, picked.Structure, theme)
-	if topics.TemplateLeak(topic.Subtopic) {
-		if concrete := topics.ConcreteTopic(theme); concrete != "" {
-			topic.Subtopic = concrete
-			base["subtopic"] = concrete
-		}
-	}
-	if topics.GenericAngle(topicTitle) || strings.Contains(topicTitle, "先看失败点") {
-		topicTitle = clip(pain, 64)
-	}
+	topicTitle = chooseJudgedTitle(ctx, gateway, providers["topic"], base, topicData, topicTitle, &tokens, &trace)
 	if topics.ComparisonFrame(topic.Angle) {
 		if angles := angleChoices(usingColumn, picked, topic.Angle); len(angles) > 0 {
 			topic.Angle = angles[0]
@@ -1756,16 +1750,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			if text := strings.TrimSpace(alt.Positioning); text != "" {
 				base["column_positioning"] = text
 			}
-			altTheme := accountTheme(w, alt, topic)
-			topicTitle = topics.FitTitle(clip(topic.Subtopic+"："+topic.Angle, 64), topic.Column, alt.Positioning, alt.Structure, altTheme)
-			if topics.TemplateLeak(topic.Subtopic) {
-				if concrete := topics.ConcreteTopic(altTheme); concrete != "" {
-					topic.Subtopic = concrete
-					base["subtopic"] = concrete
-				}
+			topicTitle = clip(str(base["topic_title"]), 64)
+			if topicTitle == "" {
+				topicTitle = clip(topic.Subtopic+"："+topic.Angle, 64)
 			}
-			if topics.GenericAngle(topicTitle) || strings.Contains(topicTitle, "先看失败点") {
-				topicTitle = clip(pain, 64)
+			if kept := topics.FitTitle(topicTitle, topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic)); kept != "" {
+				topicTitle = kept
 			}
 			base["topic_title"] = topicTitle
 			if alt.WordTarget > w.WordTarget {
@@ -1806,9 +1796,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		if retryErr == nil {
 			retried = assignOutlineBudgets(retried, w.WordTarget)
 			retried = anchorHeadings(retried, subject)
-			if editorial.OutlineHits(retried, topicTitle) > editorial.OutlineHits(outline, topicTitle) {
+			if !editorial.OutlineMisses(retried, topicTitle) {
 				outline = retried
 			}
+		}
+		if editorial.OutlineMisses(outline, topicTitle) {
+			return Built{Topic: topic, Tokens: tokens, Trace: trace, OutlineOff: true}, nil
 		}
 	}
 	base["outline"] = outline
@@ -2038,6 +2031,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 	draft = editorial.StripAnswerPrefixes(draft)
 	draft = editorial.StripVagueQuantities(draft)
 	draft = editorial.LiftTables(draft)
+	draft = editorial.FinishText(draft)
 	broken := editorial.BrokenGrammar(draft)
 	repeated := editorial.RepeatedBody(draft)
 	offTitle := editorial.OffTitle(draft)
@@ -2136,6 +2130,9 @@ func heldDelivery(built Built) (bool, string) {
 	}
 	if built.Stub {
 		note = joinNote(note, "正文被删得太短，未写入公众号草稿。")
+	}
+	if built.OutlineOff {
+		note = joinNote(note, "大纲没有覆盖标题，未写正文，未写入公众号草稿。")
 	}
 	if built.OffTitle {
 		note = joinNote(note, "正文大部分小节没有写标题里的那件事，未写入公众号草稿。")
@@ -2976,7 +2973,7 @@ func fetchResearch(ctx context.Context, gateway *llm.Gateway, providers []llm.Pr
 	// Model citations are not a reason to skip the backup search. A later judge
 	// can drop every one of them. SearXNG is included only when an admin enabled it.
 	{
-		queries := backupQueries(payload)
+		queries := searchQueries(ctx, gateway, providers, payload)
 		foundRows := make([][]map[string]any, len(queries))
 		foundLogs := make([][]map[string]any, len(queries))
 		foundErr := make([]error, len(queries))
@@ -3137,7 +3134,7 @@ func tavilyKeyState(completion llm.Completion) (string, bool) {
 
 func searchWithoutModel(ctx context.Context, gateway *llm.Gateway, payload map[string]any, policy content.SourcePolicy, actor searchActor) (string, []any, llm.Completion, error) {
 	topic := topicText(payload)
-	queries := backupQueries(payload)
+	queries := searchQueries(ctx, gateway, nil, payload)
 	rows, engines := collectBackup(ctx, gateway, queries, actor)
 	client := httpClient(gateway)
 	notes, sources, dropped, relaxed := takeSources(ctx, client, "", rows, policy, topic)
@@ -3196,7 +3193,45 @@ func backupHTMLSearch(ctx context.Context, gateway *llm.Gateway, query string, a
 }
 
 func backupQueries(payload map[string]any) []string {
-	topic := specificQueryTitle(payload)
+	if got := cleanQueries(payload["search_queries"]); len(got) > 0 {
+		return got
+	}
+	return titleQueries(payload)
+}
+
+// searchQueries asks the model for three queries from the chosen topic.
+// A missing reply falls back to the topic title itself, never a character window of the plan theme.
+func searchQueries(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, payload map[string]any) []string {
+	if got := cleanQueries(payload["search_queries"]); len(got) > 0 {
+		return got
+	}
+	if gateway != nil && len(providers) > 0 {
+		data, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("检索词", payload), llm.StageSchema("检索词"), validateQueries)
+		if err == nil {
+			if got := cleanQueries(data["queries"]); len(got) > 0 {
+				payload["search_queries"] = got
+				_ = completion
+				return got
+			}
+		}
+	}
+	got := titleQueries(payload)
+	if len(got) > 0 {
+		payload["search_queries"] = got
+	}
+	return got
+}
+
+func validateQueries(data map[string]any) (map[string]any, error) {
+	got := cleanQueries(data["queries"])
+	if len(got) == 0 {
+		return nil, errStr("检索词是空的")
+	}
+	data["queries"] = got
+	return data, nil
+}
+
+func cleanQueries(raw any) []string {
 	var out []string
 	add := func(query string) {
 		query = strings.TrimSpace(query)
@@ -3204,7 +3239,7 @@ func backupQueries(payload map[string]any) []string {
 			query = string([]rune(query)[:32])
 		}
 		query = strings.TrimSpace(query)
-		if query == "" || singleWordQuery(query) || vagueSearch(query) || len(out) >= 4 {
+		if query == "" || singleWordQuery(query) || vagueSearch(query) || len(out) >= 3 {
 			return
 		}
 		for _, prev := range out {
@@ -3214,26 +3249,56 @@ func backupQueries(payload map[string]any) []string {
 		}
 		out = append(out, query)
 	}
-	add(topic)
-	added := 0
-	for _, phrase := range queryEntityPhrases(topic) {
-		if strings.Contains(topic, phrase) && phrase != topic {
-			extra := strings.TrimSpace(topic + " " + phrase)
-			if utf8.RuneCountInString(topic) > 24 {
-				extra = phrase
-			}
-			add(extra)
-		} else {
-			add(phrase)
+	switch list := raw.(type) {
+	case []string:
+		for _, item := range list {
+			add(item)
 		}
-		added++
-		if added >= 3 || len(out) >= 4 {
-			break
+	case []any:
+		for _, item := range list {
+			add(str(item))
 		}
 	}
-	if len(out) == 0 {
-		add(shortSearchQuery(payload))
-		add(focusedQuery(payload))
+	return out
+}
+
+// titleQueries uses the chosen topic, split on punctuation.
+// It does not slide a character window across the plan theme.
+func titleQueries(payload map[string]any) []string {
+	raw := strings.TrimSpace(str(payload["topic_title"]))
+	if vagueSearch(raw) || singleWordQuery(raw) {
+		raw = strings.TrimSpace(str(payload["subtopic"]))
+	}
+	if vagueSearch(raw) || singleWordQuery(raw) {
+		return nil
+	}
+	var out []string
+	add := func(query string) {
+		query = strings.TrimSpace(query)
+		if utf8.RuneCountInString(query) > 32 {
+			query = string([]rune(query)[:32])
+		}
+		query = strings.TrimSpace(query)
+		if query == "" || singleWordQuery(query) || vagueSearch(query) || len(out) >= 3 {
+			return
+		}
+		for _, prev := range out {
+			if prev == query || strings.Contains(prev, query) {
+				return
+			}
+		}
+		out = append(out, query)
+	}
+	add(raw)
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ' ', '，', '。', '？', '?', '！', '、', '：', ':', '；', ';', '\n', ',', '的':
+			return true
+		default:
+			return false
+		}
+	}) {
+		add(part)
 	}
 	return out
 }
@@ -3250,115 +3315,6 @@ func singleWordQuery(query string) bool {
 	return utf8.RuneCountInString(query) <= 2
 }
 
-func queryEntityPhrases(topic string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, entity := range topicEntities(topic) {
-		n := utf8.RuneCountInString(entity)
-		if n < 2 || entity == topic || seen[entity] || genericEntity(entity) {
-			continue
-		}
-		seen[entity] = true
-		out = append(out, entity)
-	}
-	// Longer phrases first, and skip a phrase that is only a piece of one already chosen.
-	sort.Slice(out, func(i, j int) bool {
-		return utf8.RuneCountInString(out[i]) > utf8.RuneCountInString(out[j])
-	})
-	var kept []string
-	for _, phrase := range out {
-		nested := false
-		for _, prev := range kept {
-			if strings.Contains(prev, phrase) {
-				nested = true
-				break
-			}
-		}
-		if nested {
-			continue
-		}
-		kept = append(kept, phrase)
-		if len(kept) == 3 {
-			break
-		}
-	}
-	return kept
-}
-
-func specificQueryTitle(payload map[string]any) string {
-	var best string
-	for _, key := range []string{"topic_title", "subtopic", "keywords", "direction", "column_positioning"} {
-		text := stripComparison(strings.TrimSpace(str(payload[key])))
-		text = strings.Trim(text, "：: ")
-		if vagueSearch(text) || singleWordQuery(text) {
-			continue
-		}
-		if utf8.RuneCountInString(text) > utf8.RuneCountInString(best) {
-			best = text
-		}
-	}
-	if best == "" {
-		best = stripComparison(strings.TrimSpace(topicText(payload)))
-	}
-	if singleWordQuery(best) {
-		best = ""
-		for _, phrase := range queryEntityPhrases(topicText(payload)) {
-			best += phrase
-			if utf8.RuneCountInString(best) >= 4 {
-				break
-			}
-		}
-	}
-	if utf8.RuneCountInString(best) > 32 {
-		best = string([]rune(best)[:32])
-	}
-	return strings.TrimSpace(best)
-}
-
-func queryVariants(payload map[string]any, title string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, part := range queryEntities(payload) {
-		if part == "" || strings.Contains(title, part) || seen[part] {
-			continue
-		}
-		seen[part] = true
-		out = append(out, strings.TrimSpace(title+" "+part))
-		if len(out) == 3 {
-			break
-		}
-	}
-	return out
-}
-
-func queryEntities(payload map[string]any) []string {
-	raw := stripComparison(strings.Join([]string{
-		str(payload["subtopic"]),
-		str(payload["topic_title"]),
-		str(payload["keywords"]),
-		str(payload["direction"]),
-	}, " "))
-	var parts []string
-	seen := map[string]bool{}
-	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
-		switch r {
-		case ' ', '，', '。', '？', '?', '！', '、', '：', ':', '；', ';', '\n', ',':
-			return true
-		default:
-			return false
-		}
-	}) {
-		part = strings.TrimSpace(part)
-		n := utf8.RuneCountInString(part)
-		if n < 2 || n > 16 || seen[part] || searchStop(part) || vagueSearch(part) {
-			continue
-		}
-		seen[part] = true
-		parts = append(parts, part)
-	}
-	return parts
-}
-
 func vagueSearch(text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" || topics.ComparisonFrame(text) {
@@ -3370,7 +3326,7 @@ func vagueSearch(text string) bool {
 		}
 		cleaned := strings.ReplaceAll(text, phrase, "")
 		cleaned = strings.Trim(cleaned, "：:，, 、 ")
-		if utf8.RuneCountInString(cleaned) < 4 {
+		if utf8.RuneCountInString(cleaned) < 6 {
 			return true
 		}
 	}
@@ -6239,10 +6195,119 @@ func authFailed(err error) bool {
 
 func accountPain(topic topics.Choice, picked columns.Column, w Input) string {
 	sub := strings.TrimSpace(topic.Subtopic)
-	if utf8.RuneCountInString(sub) >= 2 && !topics.GenericAngle(sub) {
+	if utf8.RuneCountInString(sub) >= 2 && !topics.GenericAngle(sub) && !topics.ComparisonFrame(sub) {
 		return sub
 	}
-	return topics.ReaderPain(topic.Column, picked.Positioning, picked.Structure, accountTheme(w, picked, topic)+" "+w.AccountName, w.Tone, w.Signatures, w.AccountName)
+	return ""
+}
+
+// ChooseTopic asks the model for candidates and lets the judge pick one.
+// The result is one of those candidates. It is not a sentence written in Go.
+func ChooseTopic(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, brief map[string]any) (string, error) {
+	data, _, err := completeTopic(ctx, gateway, providers, llm.StageMessages("选题", brief), llm.StageSchema("选题"), validateTopic)
+	if err != nil {
+		return "", err
+	}
+	var tokens int
+	var trace []map[string]any
+	title := chooseJudgedTitle(ctx, gateway, providers, brief, data, str(data["title"]), &tokens, &trace)
+	if strings.TrimSpace(title) == "" {
+		return "", errStr("选题没有标题")
+	}
+	return title, nil
+}
+
+func chooseJudgedTitle(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, base, topicData map[string]any, fallback string, tokens *int, trace *[]map[string]any) string {
+	cands := topicCandidateMaps(topicData)
+	column := str(base["column"])
+	if len(cands) < 2 {
+		if kept := topics.FitTitle(fallback, column, str(base["column_positioning"]), str(base["column_structure"]), str(base["direction"])); kept != "" {
+			return kept
+		}
+		return clip(strings.TrimSpace(fallback), 64)
+	}
+	payload := cloneMap(base)
+	list := make([]any, 0, len(cands))
+	for _, cand := range cands {
+		list = append(list, cand)
+	}
+	payload["candidates"] = list
+	winner := ""
+	if gateway != nil && len(providers) > 0 {
+		data, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("选题判断", payload), llm.StageSchema("选题判断"), validateTopicJudge)
+		if tokens != nil {
+			*tokens += completion.PromptTokens + completion.CompletionTokens
+		}
+		if trace != nil {
+			*trace = append(*trace, traceRows("topic_judge", completion)...)
+		}
+		if err == nil {
+			winner = strings.TrimSpace(str(data["winner"]))
+		}
+	}
+	for _, cand := range cands {
+		title := strings.TrimSpace(str(cand["title"]))
+		if winner != "" && title == winner {
+			return clip(title, 64)
+		}
+	}
+	for _, cand := range cands {
+		title := strings.TrimSpace(str(cand["title"]))
+		if topics.FitTitle(title, column, "", "", "") != "" {
+			return clip(title, 64)
+		}
+	}
+	if title := strings.TrimSpace(fallback); title != "" {
+		return clip(title, 64)
+	}
+	if len(cands) > 0 {
+		return clip(str(cands[0]["title"]), 64)
+	}
+	return ""
+}
+
+func topicCandidateMaps(data map[string]any) []map[string]any {
+	var out []map[string]any
+	seen := map[string]bool{}
+	add := func(title, angle, pain string) {
+		title = strings.TrimSpace(title)
+		if title == "" || seen[title] {
+			return
+		}
+		seen[title] = true
+		out = append(out, map[string]any{"title": title, "angle": strings.TrimSpace(angle), "pain": strings.TrimSpace(pain)})
+	}
+	if data == nil {
+		return nil
+	}
+	for _, item := range asList(data["candidates"]) {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			add(str(item), "", "")
+			continue
+		}
+		add(str(row["title"]), str(row["angle"]), str(row["pain"]))
+	}
+	return out
+}
+
+func validateTopicJudge(data map[string]any) (map[string]any, error) {
+	if strings.TrimSpace(str(data["winner"])) == "" {
+		return nil, errStr("选题判断没有选出标题")
+	}
+	return data, nil
+}
+
+func monthHint(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	names := [...]string{"", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"}
+	m := int(at.Month())
+	if m < 1 || m > 12 {
+		return ""
+	}
+	return names[m]
 }
 
 // completeTopic calls the configured topic model, retries once on an empty or non-JSON reply, then uses the non-reasoning model.

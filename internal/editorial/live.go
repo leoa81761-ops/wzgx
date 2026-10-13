@@ -15,7 +15,7 @@ const (
 	minSubstantiveSections = 3
 )
 
-var vagueQuantityRe = regexp.MustCompile(`(?:\d+|[一两二三四五六七八九十]+)\s*(?:个)?(?:小时|分钟|天|周|轮)\s*(?:以内|内)`)
+var vagueQuantityRe = regexp.MustCompile(`(?:\d+|[一两二三四五六七八九十]+)\s*(?:个)?(?:小时|分钟|天|周|轮)\s*(?:以内|内)|超过一半|一半以上|过半`)
 
 var instructionLeak = regexp.MustCompile(`只需写|不用列公式|不用列|字数|word_target|JSON Schema|只输出|编辑要求|稿件数据|reader_pain|section_heading|section_target|栏目是问答|栏目是步骤|请改写|请对照|请重写|重写这一节|请用完整`)
 
@@ -697,27 +697,254 @@ func mapSentences(draft map[string]any, edit func(string) string) map[string]any
 	return draft
 }
 
-var sceneStem = regexp.MustCompile(`(?:孙子|孙女|奶奶|爷爷|孩子|宝宝|爸爸|妈妈).{0,12}(?:端着|拿着|抱着|看着|喊着|跑来|走来|走过来)`)
-
-// OnceScene keeps one family-scene sentence. Later variants of 孙子端着 are dropped.
+// OnceScene keeps the first sentence that opens on a four-character stem
+// already used by a different sentence. A stem inside the title is ignored,
+// and a paragraph that only repeats one short sentence is left intact.
 func OnceScene(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
 	}
-	seen := false
+	title := textOf(draft["title"])
+	var sentences []string
+	collect := func(text string) {
+		if lengthPad(text) {
+			return
+		}
+		for _, part := range splitSentences(text) {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				sentences = append(sentences, part)
+			}
+		}
+	}
+	for _, key := range []string{"summary", "closing"} {
+		collect(textOf(draft[key]))
+	}
+	for _, section := range sectionsOf(draft) {
+		for _, item := range anyList(section["paragraphs"]) {
+			collect(textOf(item))
+		}
+		for _, item := range anyList(section["list"]) {
+			collect(textOf(item))
+		}
+		for _, item := range anyList(section["qa"]) {
+			row, _ := item.(map[string]any)
+			if row == nil {
+				continue
+			}
+			collect(textOf(row["question"]))
+			collect(textOf(row["answer"]))
+		}
+		if table, _ := section["table"].(map[string]any); table != nil {
+			for _, item := range anyList(table["headers"]) {
+				collect(textOf(item))
+			}
+			for _, raw := range anyList(table["rows"]) {
+				cells, ok := rowCells(raw)
+				if !ok {
+					continue
+				}
+				for _, cell := range cells {
+					collect(textOf(cell))
+				}
+			}
+		}
+	}
+	stemCount := map[string]int{}
+	seenSentence := map[string]bool{}
+	for _, sentence := range sentences {
+		if seenSentence[sentence] {
+			continue
+		}
+		seenSentence[sentence] = true
+		stem := openingStem(sentence)
+		if stem == "" || strings.Contains(title, stem) || stopPhrase(stem) {
+			continue
+		}
+		stemCount[stem]++
+	}
+	hot := map[string]bool{}
+	for stem, n := range stemCount {
+		if n >= 2 {
+			hot[stem] = true
+		}
+	}
+	if len(hot) == 0 {
+		return draft
+	}
+	used := map[string]bool{}
 	return mapSentences(draft, func(sentence string) string {
-		if lengthPad(sentence) || !sceneStem.MatchString(sentence) {
+		if lengthPad(sentence) {
 			return sentence
 		}
-		if seen {
+		stem := openingStem(sentence)
+		if stem == "" || !hot[stem] {
+			return sentence
+		}
+		if used[stem] {
 			return ""
 		}
-		seen = true
+		used[stem] = true
 		return sentence
 	})
 }
 
+func openingStem(sentence string) string {
+	var buf []rune
+	for _, r := range sentence {
+		if r >= 0x4e00 && r <= 0x9fff {
+			buf = append(buf, r)
+			if len(buf) == 4 {
+				return string(buf)
+			}
+			continue
+		}
+		if len(buf) > 0 {
+			break
+		}
+	}
+	return ""
+}
+
+func headingAlreadyUsed(heading string, sections []map[string]any) bool {
+	key := strings.Trim(strings.TrimSpace(heading), "？?！!。 ")
+	if key == "" {
+		return false
+	}
+	for _, section := range sections {
+		other := strings.Trim(strings.TrimSpace(textOf(section["heading"])), "？?！!。 ")
+		if other != "" && other == key {
+			return true
+		}
+	}
+	return false
+}
+
+// NormalizeFAQ dedupes answers by question, drops an intro that copies an answer,
+// and gives the first section a heading when the model left it blank.
+func NormalizeFAQ(draft map[string]any) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	sections := sectionsOf(draft)
+	for i, section := range sections {
+		qa := dedupeQA(anyList(section["qa"]))
+		if len(qa) == 0 {
+			delete(section, "qa")
+		} else {
+			section["qa"] = qa
+		}
+		var answers []string
+		for _, item := range qa {
+			row, _ := item.(map[string]any)
+			if row == nil {
+				continue
+			}
+			if answer := strings.TrimSpace(textOf(row["answer"])); answer != "" {
+				answers = append(answers, answer)
+			}
+		}
+		var paras []any
+		for _, item := range anyList(section["paragraphs"]) {
+			text := strings.TrimSpace(textOf(item))
+			if text == "" || copiesAnswer(text, answers) {
+				continue
+			}
+			paras = append(paras, text)
+		}
+		if paras == nil {
+			paras = []any{}
+		}
+		section["paragraphs"] = paras
+		if i == 0 && len(qa) > 0 && strings.TrimSpace(textOf(section["heading"])) == "" {
+			heading := strings.TrimSpace(textOf(draft["title"]))
+			if heading == "" {
+				if row, _ := qa[0].(map[string]any); row != nil {
+					heading = strings.TrimSpace(textOf(row["question"]))
+				}
+			}
+			if heading != "" && !headingAlreadyUsed(heading, sections) {
+				section["heading"] = heading
+			}
+		}
+	}
+	return draft
+}
+
+func dedupeQA(items []any) []any {
+	var out []any
+	seen := map[string]bool{}
+	for _, item := range items {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		question := strings.TrimSpace(textOf(row["question"]))
+		answer := strings.TrimSpace(textOf(row["answer"]))
+		key := strings.Trim(question, "？?？!！。 ")
+		if question == "" || answer == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, map[string]any{"question": question, "answer": answer})
+	}
+	return out
+}
+
+func copiesAnswer(text string, answers []string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	for _, answer := range answers {
+		answer = strings.TrimSpace(stripOneAnswer(answer))
+		if answer == "" {
+			continue
+		}
+		if text == answer || strings.Contains(text, answer) {
+			return true
+		}
+		for _, part := range splitSentences(answer) {
+			part = strings.TrimSpace(stripOneAnswer(part))
+			if part != "" && text == part {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// FinishText runs the stored-body filters on every text node, including FAQ
+// answers and table cells, after later rewrites have finished.
+func FinishText(draft map[string]any) map[string]any {
+	draft = NormalizeFAQ(draft)
+	draft = OnceScene(draft)
+	draft = StripAnswerPrefixes(draft)
+	draft = StripVagueQuantities(draft)
+	draft = StripPromptLeak(draft)
+	draft = DedupeSentences(draft)
+	return draft
+}
+
 // OutlineHits counts outline points that address the title's single subject.
+func outlinePoints(outline map[string]any) []map[string]any {
+	var out []map[string]any
+	if outline == nil {
+		return nil
+	}
+	for _, item := range anyList(outline["points"]) {
+		row, _ := item.(map[string]any)
+		if row == nil {
+			continue
+		}
+		if utf8.RuneCountInString(strings.TrimSpace(textOf(row["heading"]))) < 2 {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 func OutlineHits(outline map[string]any, title string) int {
 	if outline == nil {
 		return 0
@@ -727,11 +954,7 @@ func OutlineHits(outline map[string]any, title string) int {
 		return 0
 	}
 	hit := 0
-	for _, item := range anyList(outline["points"]) {
-		row, _ := item.(map[string]any)
-		if row == nil {
-			continue
-		}
+	for _, row := range outlinePoints(outline) {
 		if pointAddresses(textOf(row["heading"])+textOf(row["intent"]), core) {
 			hit++
 		}
@@ -741,9 +964,10 @@ func OutlineHits(outline map[string]any, title string) int {
 
 // OutlineMisses reports that the outline does not cover the title.
 // Zero hits is a miss. A title with no concrete subject is left alone.
+// A heading shorter than two characters cannot name the subject, so it is not counted.
 func OutlineMisses(outline map[string]any, title string) bool {
-	points := anyList(outline["points"])
-	if outline == nil || len(points) < 2 {
+	points := outlinePoints(outline)
+	if len(points) < 2 {
 		return false
 	}
 	if utf8.RuneCountInString(coreSubject(title)) < 2 {

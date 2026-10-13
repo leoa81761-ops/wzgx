@@ -1562,27 +1562,18 @@ func StripHeadingPrefixes(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
 	}
-	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ", "知识", "家长里短", "栏目", "老年人常", "动态速递", "工程圈快报", "速递"}
+	prefixes := []string{"拆解", "简单", "简约", "第一步", "步骤", "方案拆解", "知识FAQ", "知识", "家长里短", "栏目", "老年人常"}
 	if label := strings.TrimSpace(textOf(draft["column_label"])); label != "" {
 		prefixes = append(prefixes, columnStems(label)...)
 	}
 	for _, section := range sectionsOf(draft) {
 		heading := stripLabelPrefix(textOf(section["heading"]), prefixes)
-		if templateHeading(heading) {
+		if label := strings.TrimSpace(textOf(draft["column_label"])); label != "" && strings.TrimSpace(heading) == label {
 			heading = ""
 		}
 		section["heading"] = heading
 	}
 	return draft
-}
-
-func templateHeading(text string) bool {
-	switch strings.TrimSpace(text) {
-	case "动态速递", "工程圈快报", "方案拆解", "知识FAQ", "速递":
-		return true
-	default:
-		return false
-	}
 }
 
 func stripLabelPrefix(text string, prefixes []string) string {
@@ -2763,10 +2754,6 @@ func latinLeak(text string) bool {
 
 var datedToken = regexp.MustCompile(`\d{4}年|\d{1,2}月\d{1,2}日`)
 
-// A topic stuffed into the old length-padding formula, for example
-// 「先打开辟谣不吓人的检修口」.
-var jammedTemplate = regexp.MustCompile(`先打开[^。！？!?\n]{1,24}的检修口|晚饭后先把[^。！？!?\n]{1,24}旁边的椅子挪开|用螺丝把盖板固定住`)
-
 // repeatMin is the shortest block or line that a second copy will hold.
 // Shorter sentences, including the length pad 「合适的正文。」, are ignored.
 const repeatMin = 15
@@ -2819,9 +2806,6 @@ func RepeatedBody(draft map[string]any) bool {
 	if text := strings.TrimSpace(textOf(draft["closing"])); text != "" {
 		lines = append(lines, text)
 		blocks = append(blocks, text)
-	}
-	if jammedTemplate.MatchString(strings.Join(lines, "\n")) {
-		return true
 	}
 	if repeatedBlocks(blocks) || repeatedLines(lines) {
 		return true

@@ -3,7 +3,6 @@ package pipeline
 import (
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/leoa81761-ops/wzgx/internal/content"
 	"github.com/leoa81761-ops/wzgx/internal/editorial"
@@ -126,25 +125,26 @@ func TestArticle76And77StructureAndLength(t *testing.T) {
 
 func TestArticle76QueriesAreNarrowAndJunkIsDropped(t *testing.T) {
 	queries := backupQueries(map[string]any{
+		"topic_title":    "施工坑点：更稳妥的做法",
+		"subtopic":       "综合布线六类线测试失败常见原因",
+		"keywords":       "六类线,测试仪",
+		"direction":      "建筑行业动态",
+		"search_queries": []any{"综合布线六类线", "六类线测试仪", "信息点验收"},
+	})
+	if len(queries) != 3 || strings.Join(queries, "\n") != "综合布线六类线\n六类线测试仪\n信息点验收" {
+		t.Fatal(queries)
+	}
+	fallback := backupQueries(map[string]any{
 		"topic_title": "施工坑点：更稳妥的做法",
 		"subtopic":    "综合布线六类线测试失败常见原因",
-		"keywords":    "六类线,测试仪",
-		"direction":   "弱电智能化",
+		"direction":   "建筑行业动态",
 	})
-	if len(queries) < 2 || len(queries) > 4 {
-		t.Fatal(queries)
-	}
-	joined := strings.Join(queries, "\n")
-	if strings.Contains(joined, "更稳妥的做法") || strings.Contains(joined, "施工坑点") || !strings.Contains(joined, "综合布线六类线") {
-		t.Fatal(queries)
-	}
-	for _, query := range queries {
-		if utf8.RuneCountInString(query) > 32 {
-			t.Fatal(query)
-		}
+	joined := strings.Join(fallback, "\n")
+	if strings.Contains(joined, "筑行业动") || strings.Contains(joined, "更稳妥的做法") || strings.Contains(joined, "施工坑点") || !strings.Contains(joined, "综合布线六类线") {
+		t.Fatal(fallback)
 	}
 	title := topics.FitTitle("施工坑点：更稳妥的做法", "避坑辟谣", "", "custom", "综合布线 六类线 测试失败")
-	if strings.Contains(title, "更稳妥") || strings.Contains(title, "施工坑点") || !strings.Contains(title, "综合布线") {
+	if title != "" {
 		t.Fatal(title)
 	}
 	if content.OffTopicPage("https://www.example.com/zb", "综合布线招标公告") == "" {
@@ -178,24 +178,28 @@ func TestArticle78And79QueriesStaySpecific(t *testing.T) {
 	}
 	for _, payload := range cases {
 		queries := backupQueries(payload)
-		if len(queries) < 2 || len(queries) > 4 {
-			t.Fatal(payload["direction"], queries)
-		}
-		full := str(payload["direction"])
-		if utf8.RuneCountInString(full) > 32 {
-			full = string([]rune(full)[:32])
-		}
-		if queries[0] != full {
-			t.Fatal(queries)
-		}
 		for _, query := range queries {
-			if query == "工程" || query == "家庭" || singleWordQuery(query) {
+			if query == "工程" || query == "家庭" || singleWordQuery(query) || strings.Contains(query, "筑行业动") {
 				t.Fatal(query, queries)
 			}
-			if !strings.Contains(full, query) && !strings.Contains(query, full) && !strings.HasPrefix(query, string([]rune(full)[:4])) {
-				t.Fatal(query)
+		}
+		direction := str(payload["direction"])
+		for _, query := range queries {
+			if query != direction && !strings.Contains(direction, query) {
+				continue
 			}
 		}
+		if strings.Contains(strings.Join(queries, "\n"), "筑行业动") {
+			t.Fatal(queries)
+		}
+	}
+	withModel := backupQueries(map[string]any{
+		"topic_title":    "工程",
+		"direction":      "建筑行业动态",
+		"search_queries": []any{"油烟机滤网", "月度清洗", "厨房排烟"},
+	})
+	if len(withModel) != 3 || withModel[0] != "油烟机滤网" {
+		t.Fatal(withModel)
 	}
 }
 

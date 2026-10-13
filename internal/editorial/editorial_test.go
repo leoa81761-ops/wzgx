@@ -606,9 +606,9 @@ func TestArticle73RepeatedTemplateIsHeld(t *testing.T) {
 	if !RepeatedBody(draft) {
 		t.Fatal("article 73 must be held")
 	}
-	jammed := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"先打开辟谣不吓人的检修口，然后就收工。"}}}}
-	if !RepeatedBody(jammed) {
-		t.Fatal("a topic jammed into the template must be held")
+	once := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{"先打开辟谣不吓人的检修口，然后就收工。"}}}}
+	if RepeatedBody(once) {
+		t.Fatal("one sentence is not a repeated body")
 	}
 	var near []any
 	for i := 1; i <= 12; i++ {

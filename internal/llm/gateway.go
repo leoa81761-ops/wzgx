@@ -558,7 +558,7 @@ func routeStage(provider Provider, messages []map[string]string) Provider {
 		return provider
 	}
 	switch stageFromMessages(messages) {
-	case "大纲", "结构润色", "正文", "审核", "标题", "事实核对", "栏目结构", "意象改写", "套话改写", "开头比较", "标题比较", "禁忌改写":
+	case "大纲", "结构润色", "正文", "审核", "标题", "事实核对", "栏目结构", "意象改写", "套话改写", "开头比较", "标题比较", "禁忌改写", "选题判断", "检索词":
 		provider.Model = FallbackModel
 		provider.FirstToken = 0
 	}

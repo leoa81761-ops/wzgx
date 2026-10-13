@@ -29,10 +29,40 @@ func StageSchema(stageLabel string) *Schema {
 		)}
 	case "选题":
 		return &Schema{Name: "topic", Body: objectSchema(
-			[]string{"title", "angle"},
+			[]string{"title", "angle", "candidates"},
 			map[string]any{
-				"title": strField("文章标题，不超过 64 个字"),
+				"title": strField("选出的文章标题，必须和 candidates 里某一条 title 完全相同，不超过 64 个字"),
 				"angle": strField("这一篇具体要写的角度"),
+				"candidates": map[string]any{
+					"type":        "array",
+					"description": "五个彼此不同的选题。每个都要能从账号名、主题、人设、栏目定位和近期标题里看出来，不要写成可以套到任何账号上的句子",
+					"items": objectSchema(
+						[]string{"title", "angle", "pain"},
+						map[string]any{
+							"title": strField("候选标题，不超过 64 个字"),
+							"angle": strField("这一篇具体要写的角度"),
+							"pain":  strField("这个读者具体卡在哪一件事"),
+						},
+					),
+				},
+			},
+		)}
+	case "选题判断":
+		return &Schema{Name: "topic_judge", Body: objectSchema(
+			[]string{"winner"},
+			map[string]any{
+				"winner": strField("从 candidates 里选出的标题，必须和某一条 title 完全相同。按人设是否贴、读者的具体麻烦是否清楚、标题是否能写成一篇来选"),
+			},
+		)}
+	case "检索词":
+		return &Schema{Name: "search_queries", Body: objectSchema(
+			[]string{"queries"},
+			map[string]any{
+				"queries": map[string]any{
+					"type":        "array",
+					"description": "三条检索词，来自已选标题里的人或物，不要把栏目名或方向切成几个字",
+					"items":       map[string]any{"type": "string"},
+				},
 			},
 		)}
 	case "大纲":
