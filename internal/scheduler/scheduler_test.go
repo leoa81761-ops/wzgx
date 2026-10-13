@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,39 @@ func TestTwoPlansShareTheDay(t *testing.T) {
 	claimed, err := runner.ScanOnce(ctx, now)
 	if err != nil || len(claimed) != 2 {
 		t.Fatal(len(claimed), err)
+	}
+}
+
+func TestStuckGeneratingIsFailed(t *testing.T) {
+	st, runner := openRunner(t)
+	now := time.Now().UTC()
+	user, account, plan := seed(t, st, "stuck@example.com", now.Add(48*time.Hour))
+	ctx := context.Background()
+	started := now.Add(-20 * time.Minute)
+	task := &model.ArticleTask{
+		PlanID: plan.ID, UserID: user.ID, WxAccountID: account.ID, IdempotencyKey: "stuck-task",
+		TriggerType: "manual", Status: "running", RunAt: started, StartedAt: &started, CreatedAt: started,
+	}
+	if err := st.InsertTask(ctx, nil, task); err != nil {
+		t.Fatal(err)
+	}
+	article := &model.Article{
+		TaskID: task.ID, UserID: user.ID, PlanID: plan.ID, WxAccountID: account.ID,
+		Title: "正在生成", Status: "generating", CreatedAt: started,
+	}
+	if err := st.InsertArticle(ctx, nil, article); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.ScanOnce(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := st.GetTask(ctx, nil, task.ID)
+	if err != nil || fresh == nil || fresh.Status != "failed" || !strings.Contains(fresh.FailureReason, "15 分钟") {
+		t.Fatalf("%#v %v", fresh, err)
+	}
+	got, err := st.GetArticle(ctx, nil, article.ID)
+	if err != nil || got == nil || got.Status != "failed" || !strings.Contains(got.FailureReason, "15 分钟") {
+		t.Fatalf("%#v %v", got, err)
 	}
 }
 

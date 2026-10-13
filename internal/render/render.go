@@ -116,12 +116,7 @@ func RenderHTML(article map[string]any, templateKey string, dark, compact bool) 
 		if heading := strings.TrimSpace(asString(section["heading"])); heading != "" {
 			parts = append(parts, `<h2 style="`+theme["h2"]+`">`+html.EscapeString(heading)+`</h2>`)
 		}
-		for _, paragraph := range asList(section["paragraphs"]) {
-			text := strings.TrimSpace(asString(paragraph))
-			if text != "" {
-				parts = append(parts, `<p style="`+theme["p"]+`">`+html.EscapeString(text)+`</p>`)
-			}
-		}
+		parts = append(parts, renderParagraphs(theme, section["paragraphs"])...)
 		var items []string
 		for _, item := range asList(section["list"]) {
 			text := strings.TrimSpace(asString(item))
@@ -241,26 +236,6 @@ func renderTable(theme map[string]string, table map[string]any) string {
 	}
 	cell := "border:1px solid #e6dccf;padding:6px 8px;font-size:14px;line-height:1.5;color:#1f2933;"
 	head := cell + "font-weight:700;background:#f6f1ea;"
-	if len(headers) > 4 {
-		var cards []string
-		for _, row := range rows {
-			var bits []string
-			for i, value := range row {
-				label := "项"
-				if i < len(headers) {
-					label = headers[i]
-				}
-				if value == "" {
-					continue
-				}
-				bits = append(bits, label+"："+value)
-			}
-			if len(bits) > 0 {
-				cards = append(cards, `<p style="`+theme["p"]+`">`+html.EscapeString(strings.Join(bits, "；"))+`</p>`)
-			}
-		}
-		return strings.Join(cards, "")
-	}
 	var b strings.Builder
 	b.WriteString(`<table style="width:100%;border-collapse:collapse;margin:0 0 16px;">`)
 	b.WriteString("<tr>")
@@ -281,6 +256,86 @@ func renderTable(theme map[string]string, table map[string]any) string {
 	}
 	b.WriteString("</table>")
 	return b.String()
+}
+
+func renderParagraphs(theme map[string]string, raw any) []string {
+	var texts []string
+	for _, paragraph := range asList(raw) {
+		text := strings.TrimSpace(asString(paragraph))
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+	var parts []string
+	for i := 0; i < len(texts); i++ {
+		text := texts[i]
+		if question, answer, ok := splitAnswer(text); ok {
+			parts = append(parts, boldLine(theme, question), paragraphLine(theme, answer))
+			continue
+		}
+		if isQuestionLine(text) && i+1 < len(texts) {
+			if answer, ok := stripAnswerLead(texts[i+1]); ok {
+				parts = append(parts, boldLine(theme, text), paragraphLine(theme, answer))
+				i++
+				continue
+			}
+		}
+		parts = append(parts, paragraphLine(theme, text))
+	}
+	return parts
+}
+
+func boldLine(theme map[string]string, text string) string {
+	return `<p style="` + theme["p"] + `"><strong>` + html.EscapeString(text) + `</strong></p>`
+}
+
+func paragraphLine(theme map[string]string, text string) string {
+	return `<p style="` + theme["p"] + `">` + html.EscapeString(text) + `</p>`
+}
+
+func isQuestionLine(text string) bool {
+	text = strings.TrimSpace(text)
+	if strings.Contains(text, "答") {
+		return false
+	}
+	return strings.HasSuffix(text, "？") || strings.HasSuffix(text, "?")
+}
+
+func splitAnswer(text string) (string, string, bool) {
+	answerAt := strings.Index(text, "答")
+	if answerAt < 0 {
+		return "", "", false
+	}
+	q := strings.Index(text, "？")
+	if alt := strings.Index(text, "?"); q < 0 || (alt >= 0 && alt < q) {
+		q = alt
+	}
+	if q < 0 || q > answerAt {
+		return "", "", false
+	}
+	markLen := 1
+	if strings.HasPrefix(text[q:], "？") {
+		markLen = len("？")
+	}
+	question := strings.TrimSpace(text[:q+markLen])
+	answer := strings.TrimSpace(text[answerAt+len("答"):])
+	answer = strings.Trim(answer, "：: \t")
+	if question == "" || answer == "" {
+		return "", "", false
+	}
+	return question, answer, true
+}
+
+func stripAnswerLead(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if !strings.Contains(text, "答") {
+		return "", false
+	}
+	if strings.HasPrefix(text, "答") {
+		text = strings.TrimSpace(strings.Trim(text[len("答"):], "：: \t"))
+		return text, text != ""
+	}
+	return "", false
 }
 
 func InjectImage(htmlText, imageURL string) string {

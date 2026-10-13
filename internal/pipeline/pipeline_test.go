@@ -1717,22 +1717,53 @@ func traceStage(rows []map[string]any, stage string) map[string]any {
 	return map[string]any{}
 }
 
-func TestTakeSourcesDropsTemplatesAndOffTopic(t *testing.T) {
+func TestRankKeepsUntitledAndPartialSources(t *testing.T) {
 	_, kept, dropped, _ := takeSources(t.Context(), nil, "笔记", []map[string]any{
-		{"title": "综合布线验收", "name": "住建部", "url": "https://www.mohurd.gov.cn/a"},
-		{"title": "PPT模板下载", "name": "模板", "url": "https://www.1ppt.com/moban/1"},
-		{"title": "奶奶养生茶", "name": "茶", "url": "https://example.com/tea"},
-		{"title": "", "snippet": "弱电验收的公开说明", "url": "https://www.gov.cn/zhengce/1"},
-		{"title": "奶奶养生茶", "url": "https://www.gov.cn/tea"},
-		{"title": "", "url": "https://www.gov.cn/zhengce/untitled"},
-		{"title": "弱电验收词典", "url": "https://www.json.cn/ci"},
-		{"title": "验收说明", "url": "https://example.com/one"},
-		{"title": "弱电验收检索", "url": "https://std.samr.gov.cn/search/orgOthers?q=%E5%BC%B1%E7%94%B5"},
-		{"title": "家里（汉语词语）_百度百科", "url": "https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C"},
+		{"title": "", "snippet": "综合布线施工前要核对材料清单", "url": "https://www.mohurd.gov.cn/gongkai/untitled"},
+		{"title": "", "snippet": "机房验收记录里写了编号", "url": "https://www.gov.cn/zhengce/accept"},
+		{"title": "办公室网络布线的现场记录", "snippet": "线槽先看清楚再放线", "url": "https://www.example.com/office"},
+		{"title": "综合布线系统工程设计规范节选", "url": "https://www.gov.cn/zhengce/std"},
+		{"title": "验收要看的公开说明", "url": "https://www.people.com.cn/note"},
+		{"title": "奶奶的养生茶", "url": "https://www.example.com/tea"},
+		{"title": "", "url": "https://www.example.com/blank"},
 		{"title": "市场监管总局发出合规提示", "url": "https://www.samr.gov.cn/xw/zj/art/1.html"},
-	}, content.DefaultSourcePolicy(), "弱电 验收")
-	if len(kept) != 1 || str(kept[0]["url"]) != "https://www.gov.cn/zhengce/1" {
-		t.Fatal(kept, dropped)
+		{"title": "PPT模板下载", "url": "https://www.1ppt.com/moban/1"},
+		{"title": "弱电验收词典", "url": "https://www.json.cn/ci"},
+		{"title": "家里（汉语词语）_百度百科", "url": "https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C"},
+		{"title": "弱电验收检索", "url": "https://std.samr.gov.cn/search/orgOthers?q=1"},
+	}, content.DefaultSourcePolicy(), "弱电智能化 综合布线验收")
+	if len(kept) < 3 || len(kept) > 6 {
+		t.Fatal(len(kept), kept, dropped)
+	}
+	seen := map[string]bool{}
+	for _, row := range kept {
+		url := str(row["url"])
+		seen[url] = true
+		if score, _ := row["rank_score"].(int); score < sourceFloor {
+			t.Fatal(row)
+		}
+	}
+	for _, url := range []string{
+		"https://www.mohurd.gov.cn/gongkai/untitled",
+		"https://www.gov.cn/zhengce/accept",
+		"https://www.example.com/office",
+	} {
+		if !seen[url] {
+			t.Fatal("missing", url, kept, dropped)
+		}
+	}
+	for _, url := range []string{
+		"https://www.example.com/tea",
+		"https://www.example.com/blank",
+		"https://www.samr.gov.cn/xw/zj/art/1.html",
+		"https://www.1ppt.com/moban/1",
+		"https://www.json.cn/ci",
+		"https://baike.baidu.com/item/%E5%AE%B6%E9%87%8C",
+		"https://std.samr.gov.cn/search/orgOthers?q=1",
+	} {
+		if seen[url] {
+			t.Fatal("kept junk", url, kept)
+		}
 	}
 }
 
@@ -1795,7 +1826,7 @@ func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if researchCalls != 1 || searches == 0 {
+	if researchCalls != 1 || searches < 2 {
 		t.Fatalf("research %d searches %d notes %s", researchCalls, searches, notes)
 	}
 	if !strings.Contains(query, "综合布线验收") || utf8.RuneCountInString(query) > 32 {

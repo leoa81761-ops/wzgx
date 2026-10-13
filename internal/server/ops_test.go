@@ -106,6 +106,11 @@ func TestOpsSurface(t *testing.T) {
 	if tasks.StatusCode != 200 || len(tasks.JSONList) == 0 {
 		t.Fatal(tasks.StatusCode, tasks.Body)
 	}
+	taskID := int64(tasks.JSONList[0]["id"].(float64))
+	detail := getJSON(t, ts.URL+"/api/admin/tasks/"+itoa(taskID), adminToken)
+	if detail.StatusCode != 200 || detail.JSON["model_trace"] == nil {
+		t.Fatal(detail.StatusCode, detail.Body)
+	}
 	checkout := postJSON(t, ts.URL+"/api/billing/checkout", token, map[string]any{"tier": "standard"})
 	if checkout.StatusCode != 501 || !strings.Contains(checkout.JSON["detail"].(string), "即将开通") {
 		t.Fatal(checkout.StatusCode, checkout.Body)

@@ -100,6 +100,32 @@ func (s *Store) UpdateTask(ctx context.Context, q db.Q, t *model.ArticleTask) er
 	return err
 }
 
+// ListStuckTaskIDs returns tasks that have been generating longer than cutoff.
+// A running task counts, and so does a pending task whose article is still generating,
+// which is what a restart leaves behind after the old requeue.
+func (s *Store) ListStuckTaskIDs(ctx context.Context, q db.Q, cutoff string) ([]int64, error) {
+	if q == nil {
+		q = s.DB
+	}
+	rows, err := q.Query(ctx, `SELECT DISTINCT t.id FROM article_task t
+		LEFT JOIN article a ON a.task_id = t.id
+		WHERE t.started_at IS NOT NULL AND t.started_at < ?
+		  AND (t.status = 'running' OR (t.status = 'pending' AND a.status = 'generating'))`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) RequeueStale(ctx context.Context, q db.Q, cutoff, now string) error {
 	if q == nil {
 		q = s.DB

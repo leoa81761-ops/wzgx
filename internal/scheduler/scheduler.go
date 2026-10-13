@@ -66,6 +66,9 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 		if err := r.Deps.Store.RequeueStale(ctx, tx, cutoff, stamp); err != nil {
 			return err
 		}
+		if err := failStuck(ctx, r, tx, now); err != nil {
+			return err
+		}
 		if err := r.advanceReferrals(ctx, tx, now); err != nil {
 			return err
 		}
@@ -158,6 +161,48 @@ func (r *Runner) ScanOnce(ctx context.Context, now time.Time) ([]int64, error) {
 		log.Printf("拉取认证号数据失败: %v", err)
 	}
 	return claimed, nil
+}
+
+func failStuck(ctx context.Context, r *Runner, tx *db.Tx, now time.Time) error {
+	cutoff := schedule.Format(now.Add(-pipeline.StuckTaskLimit))
+	ids, err := r.Deps.Store.ListStuckTaskIDs(ctx, tx, cutoff)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		task, err := r.Deps.Store.GetTask(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if task == nil || (task.Status != "running" && task.Status != "pending") {
+			continue
+		}
+		task.Status = "failed"
+		task.FailureReason = pipeline.StuckTaskReason
+		finished := now
+		task.FinishedAt = &finished
+		if task.StartedAt != nil {
+			task.DurationMs = int(finished.Sub(task.StartedAt.UTC()).Milliseconds())
+		}
+		article, err := r.Deps.Store.GetArticleByTask(ctx, tx, task.ID)
+		if err != nil {
+			return err
+		}
+		if article != nil && article.Status == "generating" {
+			article.Status = "failed"
+			article.FailureReason = pipeline.StuckTaskReason
+			if err := r.Deps.Store.UpdateArticle(ctx, tx, article); err != nil {
+				return err
+			}
+		}
+		if err := r.Deps.Store.UpdateTask(ctx, tx, task); err != nil {
+			return err
+		}
+		if err := quota.Release(ctx, r.Deps.Store, tx, task.ID, pipeline.StuckTaskReason); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runner) handlePlan(ctx context.Context, tx *db.Tx, plan *model.WritingPlan, now time.Time) error {
