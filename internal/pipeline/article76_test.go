@@ -165,6 +165,35 @@ func TestArticle76QueriesAreNarrowAndJunkIsDropped(t *testing.T) {
 	}
 }
 
+func TestBingNoiseNeedsEntityOverlap(t *testing.T) {
+	_, kept, dropped, _ := takeSources(t.Context(), nil, "笔记", []map[string]any{
+		{"title": "六类线测试失败现场记录", "snippet": "综合布线里六类线测不通", "url": "https://www.example.com/cat6"},
+		{"title": "办公室网络布线的现场记录", "snippet": "线槽先看清楚再放线", "url": "https://www.example.com/office"},
+		{"title": "英语测试失败的常见原因", "snippet": "考试没通过就再练", "url": "https://www.example.com/exam"},
+		{"title": "国家工程标准公告", "snippet": "住房城乡建设发布通知", "url": "https://www.example.com/notice"},
+		{"title": "智能化新闻", "snippet": "今日热点", "url": "https://www.example.com/news"},
+	}, content.DefaultSourcePolicy(), "综合布线六类线测试失败常见原因")
+	seen := map[string]bool{}
+	for _, row := range kept {
+		seen[str(row["url"])] = true
+	}
+	for _, url := range []string{"https://www.example.com/cat6", "https://www.example.com/office"} {
+		if !seen[url] {
+			t.Fatal("missing", url, kept, dropped)
+		}
+	}
+	for _, url := range []string{"https://www.example.com/exam", "https://www.example.com/notice", "https://www.example.com/news"} {
+		if seen[url] {
+			t.Fatal("kept off-topic", url, kept)
+		}
+	}
+	for _, row := range dropped {
+		if str(row["url"]) == "https://www.example.com/exam" && str(row["reason"]) != "和选题无关" {
+			t.Fatal(row)
+		}
+	}
+}
+
 func TestExpandStopsAfterTwoFailedPasses(t *testing.T) {
 	var n int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

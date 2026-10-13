@@ -67,6 +67,7 @@ type Settings struct {
 	ResearchSearchKey         string
 	ResearchSearchProvider    string
 	SearxngURL                string
+	SearxngEngines            string
 	SearxngDailyCap           int
 	SearxngBreaker            int
 	TavilyAPIKey              string
@@ -180,6 +181,7 @@ func Load() Settings {
 		ResearchSearchKey:         os.Getenv("RESEARCH_SEARCH_KEY"),
 		ResearchSearchProvider:    strings.ToLower(strings.TrimSpace(os.Getenv("RESEARCH_SEARCH_PROVIDER"))),
 		SearxngURL:                getenv("SEARXNG_URL", "http://searxng:8080"),
+		SearxngEngines:            getenv("SEARXNG_ENGINES", "sogou,bing,360search,sogou wechat"),
 		SearxngDailyCap:           nonNeg("SEARXNG_DAILY_CAP", 40),
 		SearxngBreaker:            positiveOr("SEARXNG_BREAKER", 5),
 		TavilyAPIKey:              os.Getenv("TAVILY_API_KEY"),

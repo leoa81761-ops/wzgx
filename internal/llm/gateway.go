@@ -63,6 +63,7 @@ type Gateway struct {
 	SearchAPIKey        string
 	SearchAPIProvider   string
 	SearxngURL          string
+	SearxngEngines      string
 	SearxngDailyCap     int
 	SearxngBreaker      int
 	PlatformTavilyKey   string
@@ -84,8 +85,10 @@ func (g *Gateway) EnsureSearx() *SearxGuard {
 	}
 	guard := g.searx
 	daily, breaker := g.SearxngDailyCap, g.SearxngBreaker
+	engines := g.SearxngEngines
 	g.cacheMu.Unlock()
 	guard.SetLimits(daily, breaker)
+	guard.SetEngines(engines)
 	return guard
 }
 

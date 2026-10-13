@@ -57,7 +57,7 @@ func TestFetchResearchCallsSearxngWhenTheModelAlreadyHasSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if searches == 0 || !strings.Contains(rawQuery, "engines=360search,sogou,sogou%20wechat") {
+	if searches == 0 || !strings.Contains(rawQuery, "engines=sogou,bing,360search,sogou%20wechat") {
 		t.Fatalf("searx searches %d query %s", searches, rawQuery)
 	}
 	seen := map[string]bool{}

@@ -3601,17 +3601,86 @@ func sourceRelevant(source map[string]any, topic string) bool {
 	if content.SharesStandardNumber(topic, blob) {
 		return true
 	}
-	for _, phrase := range topicPhrases(topic) {
-		if strings.Contains(blob, phrase) {
-			return true
-		}
+	// Bing mixes in pages that only share a generic word such as 综合 or 测试失败.
+	// A kept page has to share a distinctive topic entity, such as 布线 or 六类线.
+	entities := topicEntities(topic)
+	if len(entities) == 0 {
+		entities = append(topicPhrases(topic), topicTerms(topic)...)
 	}
-	for _, term := range topicTerms(topic) {
-		if strings.Contains(blob, term) {
+	for _, entity := range entities {
+		if strings.Contains(blob, entity) {
 			return true
 		}
 	}
 	return false
+}
+
+// topicEntities are the topic pieces that are not generic words.
+// Generic stretches such as 测试失败 are peeled off first, so a page that only
+// shares those words does not count. 布线 and 六类线 stay.
+func topicEntities(topic string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(text string) {
+		if text == "" || seen[text] || genericEntity(text) {
+			return
+		}
+		seen[text] = true
+		out = append(out, text)
+	}
+	for _, run := range hanRuns(topic) {
+		mask := entityMask(run)
+		for n := 2; n <= 4; n++ {
+			for i := 0; i+n <= len(run); i++ {
+				if !spanCore(mask, i, i+n) {
+					continue
+				}
+				add(string(run[i : i+n]))
+			}
+		}
+	}
+	return out
+}
+
+func entityMask(run []rune) []bool {
+	mask := make([]bool, len(run))
+	for i := range mask {
+		mask[i] = true
+	}
+	for _, n := range []int{4, 3, 2} {
+		for i := 0; i+n <= len(run); i++ {
+			if !spanCore(mask, i, i+n) {
+				continue
+			}
+			if genericEntity(string(run[i : i+n])) {
+				for j := i; j < i+n; j++ {
+					mask[j] = false
+				}
+			}
+		}
+	}
+	return mask
+}
+
+func spanCore(mask []bool, start, end int) bool {
+	for i := start; i < end; i++ {
+		if !mask[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func genericEntity(text string) bool {
+	if genericPhrase(text) || genericTitleTerm(text) {
+		return true
+	}
+	switch text {
+	case "综合", "智能", "验收", "测试", "失败", "原因", "常见", "方法", "问题", "技术", "方案", "工作", "服务", "信息", "数据", "网络", "安全", "质量", "公司", "中国", "新闻", "相关", "内容", "介绍", "分析", "操作", "步骤", "注意", "事项", "处理", "解决", "说明", "指南", "详细", "主要", "一般", "基本", "使用", "需要", "进行", "检查", "测试失败", "常见原因", "失败原因", "注意事项", "常见问题", "解决方法", "处理方法", "相关内容", "详细介绍", "失败常见", "测试方法":
+		return true
+	default:
+		return false
+	}
 }
 
 func stripRankScores(sources []map[string]any) {

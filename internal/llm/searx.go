@@ -32,6 +32,7 @@ type SearxGuard struct {
 	ttl       time.Duration
 	dailyCap  int
 	daily     map[string]int
+	engines   string
 	// Quota, when set, is the durable per-user daily counter. A nil Quota uses the in-memory map.
 	Quota func(ctx context.Context, userID int64, cap int) (bool, error)
 	now   func() time.Time
@@ -92,24 +93,38 @@ func (g *SearxGuard) SetLimits(dailyCap, breaker int) {
 	}
 }
 
+// SetEngines stores the SearXNG engines list. A blank or invalid value uses DefaultSearxEngines.
+func (g *SearxGuard) SetEngines(engines string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.engines = NormalizeSearxEngines(engines)
+}
+
 // Search calls the SearXNG JSON API. The client may reach 127.0.0.1 because the
 // instance is local. Result URLs are returned as data and are not requested.
 func (g *SearxGuard) Search(ctx context.Context, client *http.Client, endpoint, query string, userID int64) ([]map[string]any, map[string]any, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	query = strings.Join(strings.Fields(query), " ")
-	meta := map[string]any{"provider": "searxng", "engines": "360search,sogou,sogou wechat"}
+	engines := DefaultSearxEngines
+	if g != nil {
+		engines = g.engineList()
+	}
+	meta := map[string]any{"provider": "searxng", "engines": engines}
 	if g == nil || endpoint == "" || query == "" {
 		return nil, meta, nil
 	}
-	if rows, ok := g.cached(query); ok {
+	if rows, ok := g.cached(engines, query); ok {
 		meta["cached"] = true
 		return cloneRows(rows), meta, nil
 	}
 	if err := g.before(ctx, userID); err != nil {
 		return nil, meta, err
 	}
-	rows, err := g.fetch(ctx, client, endpoint, query)
-	g.after(query, rows, err)
+	rows, err := g.fetch(ctx, client, endpoint, query, engines)
+	g.after(engines, query, rows, err)
 	return rows, meta, err
 }
 
@@ -120,10 +135,19 @@ func (g *SearxGuard) clock() time.Time {
 	return time.Now()
 }
 
-func (g *SearxGuard) cached(query string) ([]map[string]any, bool) {
+func (g *SearxGuard) engineList() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	hit, ok := g.cache[query]
+	if strings.TrimSpace(g.engines) == "" {
+		return DefaultSearxEngines
+	}
+	return g.engines
+}
+
+func (g *SearxGuard) cached(engines, query string) ([]map[string]any, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	hit, ok := g.cache[engines+"\n"+query]
 	if !ok || !g.clock().Before(hit.until) {
 		return nil, false
 	}
@@ -218,7 +242,7 @@ func (g *SearxGuard) allowDaily(ctx context.Context, userID int64) (bool, error)
 	return true, nil
 }
 
-func (g *SearxGuard) after(query string, rows []map[string]any, err error) {
+func (g *SearxGuard) after(engines, query string, rows []map[string]any, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err != nil {
@@ -245,11 +269,11 @@ func (g *SearxGuard) after(query string, rows []map[string]any, err error) {
 	if len(rows) == 0 || g.ttl <= 0 {
 		return
 	}
-	g.cache[query] = searxEntry{until: g.clock().Add(g.ttl), rows: cloneRows(rows)}
+	g.cache[engines+"\n"+query] = searxEntry{until: g.clock().Add(g.ttl), rows: cloneRows(rows)}
 }
 
-func (g *SearxGuard) fetch(ctx context.Context, client *http.Client, endpoint, query string) ([]map[string]any, error) {
-	target, err := searxEndpoint(endpoint, query)
+func (g *SearxGuard) fetch(ctx context.Context, client *http.Client, endpoint, query, engines string) ([]map[string]any, error) {
+	target, err := searxEndpoint(endpoint, query, engines)
 	if err != nil {
 		return nil, err
 	}
@@ -276,11 +300,74 @@ func (g *SearxGuard) fetch(ctx context.Context, client *http.Client, endpoint, q
 	return dropPrivateResults(ParseSearchBody(body)), nil
 }
 
-// searxEngines are the engines this instance actually answers. Bing and Baidu do not.
-// "sogou wechat" only runs when it is requested in the same engines list.
-const searxEngines = "engines=360search,sogou,sogou%20wechat"
+// DefaultSearxEngines is the engine list this SearXNG answers.
+// sogou (patched) and bing (cn.bing.com) each return results. 360search is still
+// requested. "sogou wechat" only runs when it is named in the same list.
+const DefaultSearxEngines = "sogou,bing,360search,sogou wechat"
 
-func searxEndpoint(endpoint, query string) (*url.URL, error) {
+// NormalizeSearxEngines keeps a comma-separated engine list. A blank or unusable
+// value falls back to DefaultSearxEngines. Spaces inside a name stay, so
+// "sogou wechat" is one engine.
+func NormalizeSearxEngines(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultSearxEngines
+	}
+	var parts []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.Join(strings.Fields(part), " ")
+		if part == "" || seen[strings.ToLower(part)] || !validSearxEngine(part) {
+			continue
+		}
+		seen[strings.ToLower(part)] = true
+		parts = append(parts, part)
+		if len(parts) == 8 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return DefaultSearxEngines
+	}
+	return strings.Join(parts, ",")
+}
+
+// ValidSearxEngines reports a list an operator can save. Each name is letters,
+// digits, spaces, hyphens, or underscores, and there is at least one name.
+func ValidSearxEngines(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 200 {
+		return false
+	}
+	n := 0
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.Join(strings.Fields(part), " ")
+		if part == "" {
+			continue
+		}
+		if !validSearxEngine(part) {
+			return false
+		}
+		n++
+	}
+	return n > 0 && n <= 8
+}
+
+func validSearxEngine(name string) bool {
+	if name == "" || len(name) > 40 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == ' ', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func searxEndpoint(endpoint, query, engines string) (*url.URL, error) {
 	raw := strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if !strings.HasSuffix(strings.ToLower(raw), "/search") {
 		raw += "/search"
@@ -301,7 +388,7 @@ func searxEndpoint(endpoint, query string) (*url.URL, error) {
 		encoded += "&"
 	}
 	// The space in "sogou wechat" stays %20, and the commas stay literal.
-	target.RawQuery = encoded + searxEngines
+	target.RawQuery = encoded + "engines=" + strings.ReplaceAll(NormalizeSearxEngines(engines), " ", "%20")
 	return target, nil
 }
 

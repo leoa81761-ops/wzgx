@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/leoa81761-ops/wzgx/internal/config"
+	"github.com/leoa81761-ops/wzgx/internal/llm"
 	"github.com/leoa81761-ops/wzgx/internal/model"
 	"github.com/leoa81761-ops/wzgx/internal/pay"
 	"github.com/leoa81761-ops/wzgx/internal/security"
@@ -98,6 +99,7 @@ func Sections() []Section {
 		}},
 		{Key: "search", Title: "备用检索", Fields: []Field{
 			{Key: "searxng_url", Label: "SearXNG 地址，默认 http://searxng:8080。宿主机调试用 http://127.0.0.1:8888"},
+			{Key: "searxng_engines", Label: "SearXNG 引擎，逗号分隔。默认 sogou,bing,360search,sogou wechat"},
 			{Key: "searxng_daily_cap", Label: "每人每天 SearXNG 次数，0 表示不限"},
 			{Key: "searxng_breaker", Label: "SearXNG 连续失败几次后熔断"},
 			{Key: "tavily_key", Label: "平台 Tavily 密钥（可选）。用户自备钥匙时不会用这把", Secret: true},
@@ -333,6 +335,9 @@ func Apply(base config.Settings, docs map[string]Doc) config.Settings {
 	if v := set("search", "searxng_url"); v != "" {
 		out.SearxngURL = v
 	}
+	if v := set("search", "searxng_engines"); v != "" {
+		out.SearxngEngines = v
+	}
 	if v := set("search", "searxng_daily_cap"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			out.SearxngDailyCap = n
@@ -461,6 +466,8 @@ func EnvValue(base config.Settings, section, key string) string {
 		return base.ResearchSearchProvider
 	case "search.searxng_url":
 		return base.SearxngURL
+	case "search.searxng_engines":
+		return base.SearxngEngines
 	case "search.searxng_daily_cap":
 		return strconv.Itoa(base.SearxngDailyCap)
 	case "search.searxng_breaker":
@@ -561,6 +568,10 @@ func validate(section, key, value string) error {
 		parsed, err := url.Parse(value)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			return fmt.Errorf("地址需要是 http 或 https")
+		}
+	case "search.searxng_engines":
+		if !llm.ValidSearxEngines(value) {
+			return fmt.Errorf("引擎名用逗号分隔，例如 sogou,bing,360search,sogou wechat")
 		}
 	case "search.searxng_daily_cap":
 		n, err := strconv.Atoi(value)

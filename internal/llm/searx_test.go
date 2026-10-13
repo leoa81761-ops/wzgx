@@ -65,10 +65,10 @@ func TestSearxngJSONCacheCircuitAndPrivateResults(t *testing.T) {
 		if r.URL.Query().Get("format") != "json" || r.URL.Query().Get("q") == "" {
 			t.Errorf("query %s", r.URL.RawQuery)
 		}
-		if !strings.Contains(r.URL.RawQuery, "engines=360search,sogou,sogou%20wechat") {
+		if !strings.Contains(r.URL.RawQuery, "engines=sogou,bing,360search,sogou%20wechat") {
 			t.Errorf("engines %s", r.URL.RawQuery)
 		}
-		if strings.Contains(r.URL.RawQuery, "bing") || strings.Contains(r.URL.RawQuery, "baidu") {
+		if strings.Contains(r.URL.RawQuery, "baidu") {
 			t.Errorf("engines %s", r.URL.RawQuery)
 		}
 		if searches <= 2 {
@@ -181,7 +181,7 @@ func TestSearxngRedirectStaysOnItsHost(t *testing.T) {
 
 func TestSearxngAllowlistIgnoresThePublicClient(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.RawQuery, "engines=360search,sogou,sogou%20wechat") {
+		if !strings.Contains(r.URL.RawQuery, "engines=sogou,bing,360search,sogou%20wechat") {
 			t.Errorf("engines %s", r.URL.RawQuery)
 		}
 		_, _ = io.WriteString(w, `{"results":[{"title":"综合布线验收","url":"https://www.gov.cn/a","content":"公开说明"}]}`)
@@ -195,8 +195,43 @@ func TestSearxngAllowlistIgnoresThePublicClient(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0]["url"] != "https://www.gov.cn/a" {
 		t.Fatal(rows, err)
 	}
-	if meta["provider"] != "searxng" || meta["engines"] != "360search,sogou,sogou wechat" {
+	if meta["provider"] != "searxng" || meta["engines"] != "sogou,bing,360search,sogou wechat" {
 		t.Fatal(meta)
+	}
+}
+
+func TestSearxngEnginesAreConfigurable(t *testing.T) {
+	var raw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"results":[{"title":"综合布线","url":"https://www.gov.cn/a","content":"说明"}]}`)
+	}))
+	defer srv.Close()
+	guard := NewSearxGuard()
+	guard.SetPace(100, 3)
+	guard.SetEngines("sogou, bing, 360search, sogou wechat")
+	if _, meta, err := guard.Search(context.Background(), srv.Client(), srv.URL, "综合布线", 0); err != nil {
+		t.Fatal(err)
+	} else if meta["engines"] != DefaultSearxEngines || !strings.Contains(raw, "engines=sogou,bing,360search,sogou%20wechat") {
+		t.Fatal(meta, raw)
+	}
+	guard.SetEngines("sogou")
+	if _, meta, err := guard.Search(context.Background(), srv.Client(), srv.URL, "六类线", 0); err != nil {
+		t.Fatal(err)
+	} else if meta["engines"] != "sogou" || !strings.Contains(raw, "engines=sogou") || strings.Contains(raw, "bing") {
+		t.Fatal(meta, raw)
+	}
+	guard.SetEngines("sogou,<script>")
+	if _, meta, err := guard.Search(context.Background(), srv.Client(), srv.URL, "弱电", 0); err != nil {
+		t.Fatal(err)
+	} else if meta["engines"] != "sogou" || strings.Contains(raw, "script") {
+		t.Fatal(meta, raw)
+	}
+	if !ValidSearxEngines("sogou,bing,360search,sogou wechat") || ValidSearxEngines("sogou,中文") || ValidSearxEngines("") {
+		t.Fatal("valid")
+	}
+	if NormalizeSearxEngines("") != DefaultSearxEngines || NormalizeSearxEngines("???") != DefaultSearxEngines {
+		t.Fatal(NormalizeSearxEngines(""))
 	}
 }
 

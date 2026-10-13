@@ -98,6 +98,7 @@ func syncSearch(gateway *llm.Gateway, cfg config.Settings) {
 	gateway.SearchAPIKey = cfg.ResearchSearchKey
 	gateway.SearchAPIProvider = cfg.ResearchSearchProvider
 	gateway.SearxngURL = cfg.SearxngURL
+	gateway.SearxngEngines = cfg.SearxngEngines
 	gateway.SearxngDailyCap = cfg.SearxngDailyCap
 	gateway.SearxngBreaker = cfg.SearxngBreaker
 	gateway.PlatformTavilyKey = cfg.TavilyAPIKey
