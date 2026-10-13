@@ -638,12 +638,85 @@ func ComparisonFrame(text string) bool {
 	return strings.Contains(text, "两种做法") || strings.Contains(text, "对比两种")
 }
 
-// AnglesFor returns angles that match the column. Other columns keep the catalog list.
+// AnglesFor returns angles for this column and this account.
+// Shared frames such as 先看失败点 are not reused across accounts.
 func AnglesFor(column, positioning, structure, current string) []string {
-	if list := columnAngles(column, positioning, structure); len(list) > 0 {
-		return list
+	seen := map[string]bool{}
+	var out []string
+	add := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" || seen[text] || GenericAngle(text) || ComparisonFrame(text) {
+			return
+		}
+		seen[text] = true
+		out = append(out, text)
 	}
-	return AngleOptions(current)
+	add(ReaderPain(column, positioning, structure, column+" "+positioning, "", "", ""))
+	add(current)
+	if list := columnAngles(column, positioning, structure); len(list) > 0 {
+		for _, item := range list {
+			add(item)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, ReaderPain(column, positioning, structure, column+" "+positioning, "", "", ""))
+	}
+	return out
+}
+
+// GenericAngle reports an angle that could be pasted onto any account.
+func GenericAngle(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || ComparisonFrame(text) {
+		return true
+	}
+	for _, phrase := range genericAngles {
+		if text == phrase || strings.HasSuffix(text, "："+phrase) || strings.HasSuffix(text, ":"+phrase) || strings.Contains(text, "先看失败点") {
+			return true
+		}
+	}
+	return false
+}
+
+var genericAngles = []string{
+	"先看失败点", "失败点", "把失败原因写具体", "更稳妥的做法", "一个小做法", "一个具体角度",
+	"今天就能做", "先看问题", "一个做法", "先讲结论", "从一个日常场景说起", "把一个具体问题讲清楚",
+	"三件今天就能做的小事", "新手最容易漏的步骤", "按顺序的一周小计划", "先把能做的一步写清楚",
+	"一个听起来很对的说法", "为什么会有这种误解",
+}
+
+// ReaderPain is one concrete scene for this column, this account, and this reader.
+func ReaderPain(column, positioning, structure, theme, tone, signatures, name string) string {
+	blob := name + column + positioning + structure + theme + tone + signatures
+	object := subjectTerm(theme + " " + name)
+	if object == "" || object == strings.TrimSpace(name) || genericTheme(object) {
+		object = subjectTerm(positioning)
+	}
+	if object == "" || object == strings.TrimSpace(name) || genericTheme(object) || instructionalTerm(object) {
+		object = strings.TrimSpace(column)
+	}
+	if object == "" {
+		object = "这件事"
+	}
+	switch {
+	case strings.Contains(blob, "奶奶"):
+		thing := object
+		if strings.Contains(thing, "奶奶") || genericTheme(thing) {
+			thing = "晚饭后的那一会儿"
+		}
+		return "奶奶" + thing + "，先把手边这一处做完"
+	case familyColumn(blob):
+		return "家里的" + object + "，先把手边这一件做完"
+	case faqColumn(blob):
+		return object + "这一步，先看哪里？"
+	case strings.Contains(blob, "拆解") || strings.Contains(strings.ToLower(blob), "steps"):
+		return object + "做不通时，先查手边这一处"
+	default:
+		if sig := strings.TrimSpace(signatures); sig != "" && !GenericAngle(sig) && utf8.RuneCountInString(sig) <= 16 {
+			return object + "，" + sig
+		}
+		return object + "遇到的那一个具体麻烦"
+	}
 }
 
 func columnAngles(column, positioning, structure string) []string {
@@ -716,12 +789,7 @@ func VagueTitle(title string) bool {
 		return true
 	}
 	cleaned := title
-	for _, phrase := range []string{
-		"更稳妥的做法", "施工坑点", "一个听起来很对的说法", "为什么会有这种误解",
-		"先讲结论", "从一个日常场景说起", "把一个具体问题讲清楚",
-		"三件今天就能做的小事", "新手最容易漏的步骤", "按顺序的一周小计划",
-		"先把能做的一步写清楚", "把失败原因写具体",
-	} {
+	for _, phrase := range append([]string{"施工坑点", "先看失败点"}, genericAngles...) {
 		cleaned = strings.ReplaceAll(cleaned, phrase, "")
 	}
 	cleaned = strings.Trim(cleaned, "：:，, 、？? ")
@@ -827,6 +895,28 @@ func themeTerms(theme string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+func subjectTerm(text string) string {
+	best := ""
+	for _, term := range themeTerms(text) {
+		if instructionalTerm(term) {
+			continue
+		}
+		if utf8.RuneCountInString(term) > utf8.RuneCountInString(best) {
+			best = term
+		}
+	}
+	return best
+}
+
+func instructionalTerm(text string) bool {
+	for _, word := range []string{"步骤", "照着", "拆成", "讲清", "可以", "定位", "栏目"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
 }
 
 func genericTheme(text string) bool {

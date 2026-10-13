@@ -1,6 +1,9 @@
 package persona
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // Profile is one account's positioning. Empty stored fields fall back to Suggest at generation time.
 type Profile struct {
@@ -9,6 +12,27 @@ type Profile struct {
 	Columns    string
 	Signatures string
 	Taboos     string
+}
+
+// SuggestNamed builds a starting persona from the account name, the writing direction, and the vertical pack.
+// A saved field still wins. 奶奶 in the name or direction gets that voice instead of a generic family tone.
+func SuggestNamed(name, direction, verticalKey string) Profile {
+	base := Suggest(direction, verticalKey)
+	name = strings.TrimSpace(name)
+	text := name + direction
+	if strings.Contains(text, "奶奶") {
+		return Profile{
+			Audience:   "跟着奶奶过日子的读者",
+			Tone:       "奶奶的口气，慢一点，把家里的一件事说清楚",
+			Columns:    "奶奶的一天,家里这一件",
+			Signatures: "我在家见过,先摸一摸再动手",
+			Taboos:     "恐吓式育儿,绝对化健康承诺",
+		}
+	}
+	if name != "" && utf8.RuneCountInString(name) <= 12 && !strings.Contains(base.Tone, name) {
+		base.Tone = name + "的口气，" + base.Tone
+	}
+	return base
 }
 
 // Suggest builds a starting persona from the writing direction and vertical pack.

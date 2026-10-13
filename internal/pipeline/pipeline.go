@@ -66,6 +66,7 @@ type work struct {
 	Weekdays          []int
 	TimeWindow        string
 	AccountID         int64
+	AccountName       string
 	AppID             string
 	AppSecret         string
 	AuthorizerRefresh string
@@ -578,7 +579,7 @@ func prepare(ctx context.Context, deps Deps, taskID int64, claim bool, now time.
 			TaskID: task.ID, UserID: user.ID, Tier: tier, PlanID: plan.ID, Direction: plan.Direction,
 			StyleKey: plan.StyleKey, TemplateKey: plan.TemplateKey, WordTarget: plan.WordTarget,
 			ScheduleType: plan.ScheduleType, Weekdays: plan.Weekdays, TimeWindow: plan.TimeWindow,
-			AccountID: account.ID, AppID: account.AppID, AppSecret: secret, AuthorizerRefresh: refresh, DeliveryMode: account.DeliveryMode,
+			AccountID: account.ID, AccountName: account.Name, AppID: account.AppID, AppSecret: secret, AuthorizerRefresh: refresh, DeliveryMode: account.DeliveryMode,
 			Trigger: task.TriggerType, ScheduleDate: task.ScheduleDate, RetryCount: task.RetryCount,
 			RegenArticleID: task.RegenOfArticleID, Locked: locked, ExistingMediaID: existingMedia,
 			History: history, RecentTitles: titles, RecentTopics: topicLines, ForeignTitles: foreign, Vetoed: vetoed, SpecifiedTitle: pinned, Pack: pack,
@@ -777,6 +778,7 @@ type Input struct {
 	ColumnUses     []string
 	ForeignTitles  []string
 	AccountID      int64
+	AccountName    string
 	Locked         *topics.Choice
 	Vetoed         []string
 	SpecifiedTitle string
@@ -855,7 +857,7 @@ func applyHotTopic(ctx context.Context, deps Deps, in *Input) error {
 }
 
 func (w *work) input() Input {
-	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, RecentTopics: w.RecentTopics, ColumnUses: w.ColumnUses, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt, UserID: w.UserID, UserTavilyKey: w.UserTavilyKey}
+	return Input{Direction: w.Direction, StyleKey: w.StyleKey, TemplateKey: w.TemplateKey, WordTarget: w.WordTarget, Tier: w.Tier, History: w.History, RecentTitles: w.RecentTitles, RecentTopics: w.RecentTopics, ColumnUses: w.ColumnUses, ForeignTitles: w.ForeignTitles, AccountID: w.AccountID, AccountName: w.AccountName, Locked: w.Locked, Vetoed: w.Vetoed, SpecifiedTitle: w.SpecifiedTitle, Pack: w.Pack, StyleName: w.StyleName, StyleHint: w.StyleHint, Weights: w.Weights, Opening: w.Opening, Ending: w.Ending, ColumnName: w.ColumnName, ColumnStyle: w.ColumnStyle, AssetNote: w.AssetNote, PromptExtra: w.PromptExtra, Audience: w.Audience, Keywords: w.Keywords, BannedWords: w.BannedWords, TopicMode: w.TopicMode, ImageMode: w.ImageMode, Tone: w.Tone, PersonaColumns: w.PersonaColumns, Signatures: w.Signatures, Taboos: w.Taboos, TitlePrefer: w.TitlePrefer, ActiveColumns: w.ActiveColumns, ColumnRotation: w.ColumnRotation, ColumnWeekdays: w.ColumnWeekdays, RunAt: w.RunAt, UserID: w.UserID, UserTavilyKey: w.UserTavilyKey}
 }
 
 // AppendSiblingCoverage keeps another account's recent angles out of this plan's rotation.
@@ -871,7 +873,7 @@ func AppendSiblingCoverage(ctx context.Context, st *store.Store, q db.Q, userID,
 }
 
 func fillPersona(in Input) Input {
-	suggested := persona.Suggest(in.Direction, in.Pack.Key)
+	suggested := persona.SuggestNamed(in.AccountName, in.Direction, in.Pack.Key)
 	filled := persona.Fill(persona.Profile{
 		Audience: in.Audience, Tone: in.Tone, Columns: in.PersonaColumns, Signatures: in.Signatures, Taboos: in.Taboos,
 	}, suggested)
@@ -1527,8 +1529,13 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		}
 		styleHint += w.PromptExtra
 	}
+	pain := topics.ReaderPain(topic.Column, picked.Positioning, picked.Structure, accountTheme(w, picked, topic)+" "+w.AccountName, w.Tone, w.Signatures, w.AccountName)
+	if topics.GenericAngle(topic.Angle) {
+		topic.Angle = pain
+	}
 	base := map[string]any{
 		"direction": w.Direction, "subtopic": topic.Subtopic, "column": topic.Column, "angle": topic.Angle,
+		"reader_pain": pain, "account_name": strings.TrimSpace(w.AccountName),
 		"style_key": w.StyleKey, "style_label": styleName, "style_hint": styleHint,
 		"word_target": w.WordTarget, "recent_titles": w.RecentTitles, "avoid_motifs": topics.RepeatedMotifs(w.RecentTitles), "tier": w.Tier,
 		"account_id": w.AccountID,
@@ -1627,6 +1634,9 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		}
 	}
 	topicTitle = topics.FitTitle(topicTitle, topic.Column, picked.Positioning, picked.Structure, accountTheme(w, picked, topic))
+	if topics.GenericAngle(topicTitle) || strings.Contains(topicTitle, "先看失败点") {
+		topicTitle = clip(pain, 64)
+	}
 	if topics.ComparisonFrame(topic.Angle) {
 		if angles := angleChoices(usingColumn, picked, topic.Angle); len(angles) > 0 {
 			topic.Angle = angles[0]
@@ -1702,15 +1712,23 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 				topic.Subtopic = subs[0]
 			}
 			topic = topics.Diverge(topic, subs, topics.AnglesFor(alt.Name, alt.Positioning, alt.Structure, topic.Angle), topicMemory(w.History, w.RecentTitles, w.RecentTopics))
+			pain = topics.ReaderPain(topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic)+" "+w.AccountName, w.Tone, w.Signatures, w.AccountName)
+			if topics.GenericAngle(topic.Angle) {
+				topic.Angle = pain
+			}
 			base["column"] = topic.Column
 			base["subtopic"] = topic.Subtopic
 			base["angle"] = topic.Angle
+			base["reader_pain"] = pain
 			base["structure"] = columns.StructureText(alt.Structure, alt.Positioning)
 			base["column_structure"] = columns.NormalizeStructure(alt.Structure)
 			if text := strings.TrimSpace(alt.Positioning); text != "" {
 				base["column_positioning"] = text
 			}
 			topicTitle = topics.FitTitle(clip(topic.Subtopic+"："+topic.Angle, 64), topic.Column, alt.Positioning, alt.Structure, accountTheme(w, alt, topic))
+			if topics.GenericAngle(topicTitle) || strings.Contains(topicTitle, "先看失败点") {
+				topicTitle = clip(pain, 64)
+			}
 			base["topic_title"] = topicTitle
 			if alt.WordTarget > w.WordTarget {
 				w.WordTarget = alt.WordTarget
@@ -5067,6 +5085,7 @@ func polishDraft(draft map[string]any, w Input) map[string]any {
 	draft = editorial.StripFactNumbers(draft)
 	draft = editorial.DropGlossary(draft, w.Pack.Key, w.Direction)
 	draft = editorial.DropOffTopicParagraphs(draft)
+	draft = editorial.KeepOneSubject(draft)
 	draft = editorial.StripEnglishLeaks(draft)
 	draft = editorial.CapRepeatedPhrases(draft, 2)
 	draft = editorial.CapWordRepetition(draft, 4)
