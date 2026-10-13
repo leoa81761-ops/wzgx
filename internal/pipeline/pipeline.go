@@ -1059,49 +1059,10 @@ func rewriteMotif(ctx context.Context, gateway *llm.Gateway, providers map[strin
 	return kept, tokensOf(completion), trace
 }
 
-func condenseOnce(ctx context.Context, gateway *llm.Gateway, providers map[string][]llm.Provider, draft, base map[string]any) (map[string]any, int, []map[string]any) {
-	before := content.BodyRunes(draft)
-	payload := cloneMap(base)
-	payload["draft"] = draft
-	payload["current_chars"] = before
-	condensed, completion, err := gateway.CompleteJSON(ctx, pieceProviders(providers), llm.StageMessages("缩写", payload), llm.StageSchema("正文"), validateDraft)
-	trace := appendStage(nil, "condense", completion, err)
-	if err != nil || condensed == nil {
-		return draft, tokensOf(completion), trace
-	}
-	kept, ok := keepCondensed(draft, condensed, intOf(base["word_target"]))
-	if !ok {
-		return draft, tokensOf(completion), trace
-	}
-	return kept, tokensOf(completion), trace
-}
-
 var (
 	citationMarks = regexp.MustCompile(`\[\d+\]`)
 	claimNumbers  = regexp.MustCompile(`\d+`)
 )
-
-// keepCondensed accepts a shorter draft only when it does not add numbers or change which citations appear.
-// Sources stay as they were on the pre-condense draft. Dropping a repeated marker is fine; a new marker, a missing marker, or a new number is rejected.
-// A positive floor rejects a result shorter than that many runes. Floor 0 does not add a minimum.
-func keepCondensed(original, condensed map[string]any, floor int) (map[string]any, bool) {
-	if original == nil || condensed == nil {
-		return original, false
-	}
-	before := content.BodyRunes(original)
-	next := content.BodyRunes(condensed)
-	if next == 0 || next >= before {
-		return original, false
-	}
-	if floor > 0 && next < floor {
-		return original, false
-	}
-	if citationsChanged(original, condensed) || claimsAdded(original, condensed) {
-		return original, false
-	}
-	copySources(condensed, original)
-	return condensed, true
-}
 
 func keepMotif(original, next map[string]any) (map[string]any, bool) {
 	if original == nil || next == nil {

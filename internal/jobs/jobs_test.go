@@ -127,6 +127,24 @@ func accountOf(t *testing.T, st *store.Store, plan *model.WritingPlan) *model.Wx
 	return account
 }
 
+func TestCreateRejectsAnotherUsersAccount(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC)
+	owner, plans := seedTwo(t, st, "premium", now)
+	other := &model.User{Email: "other@example.com", PasswordHash: "x", Tier: "premium", IsActive: true, CreatedAt: now}
+	if err := st.InsertUser(ctx, nil, other); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Create(ctx, st, nil, other, plans[0], accountOf(t, st, plans[0]), "manual", now, nil)
+	if err == nil || !strings.Contains(err.Error(), "不属于") {
+		t.Fatal(err)
+	}
+	if _, err := Create(ctx, st, nil, owner, plans[0], accountOf(t, st, plans[0]), "manual", now, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenTasksAreUniquePerPlan(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()

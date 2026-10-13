@@ -41,10 +41,6 @@ func TestFactCheckPromptForbidsInventedThresholds(t *testing.T) {
 	if !strings.Contains(draft[0]["content"], "reader_profile") || !strings.Contains(titles[0]["content"], "读者画像") {
 		t.Fatal("reader profile instruction missing")
 	}
-	condense := StageMessages("缩写", map[string]any{"word_target": 800})
-	if !strings.Contains(condense[0]["content"], "不要短于") || strings.Contains(condense[0]["content"], "85% 到 130%") {
-		t.Fatal(condense[0]["content"])
-	}
 }
 
 func TestURLNormalization(t *testing.T) {
