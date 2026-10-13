@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -370,6 +373,8 @@ func (a *App) planView(ctx context.Context, plan *model.WritingPlan) (map[string
 		view["persona_columns"] = extra.PersonaColumns
 		view["signatures"] = extra.Signatures
 		view["taboos"] = extra.Taboos
+		view["dry_run"] = extra.SkipDraft == 1
+		view["dry_run_set"] = extra.SkipDraft >= 0
 		rotation := extra.ColumnRotation
 		if rotation == "" {
 			rotation = "weight"
@@ -914,6 +919,7 @@ type planBody struct {
 	PersonaColumns string `json:"persona_columns"`
 	Signatures     string `json:"signatures"`
 	Taboos         string `json:"taboos"`
+	DryRun         *bool  `json:"dry_run"`
 }
 
 func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -1005,7 +1011,7 @@ func (a *App) createPlan(w http.ResponseWriter, r *http.Request, user *model.Use
 			Keywords: body.Keywords, Audience: body.Audience, BannedWords: body.BannedWords,
 			VerticalKey: body.VerticalKey, TopicMode: body.TopicMode, ImageMode: body.ImageMode,
 			Tone: body.Tone, PersonaColumns: body.PersonaColumns, Signatures: body.Signatures, Taboos: body.Taboos,
-			AssetID: body.AssetID, ProfileID: body.ProfileID,
+			AssetID: body.AssetID, ProfileID: body.ProfileID, SkipDraft: planSkipDraft(fresh, body.DryRun),
 		})
 		if err != nil {
 			return err
@@ -1286,6 +1292,22 @@ func (a *App) regenerate(w http.ResponseWriter, r *http.Request, user *model.Use
 }
 
 func (a *App) runGeneration(w http.ResponseWriter, r *http.Request, user *model.User, planID, articleID int64, trigger string) error {
+	var triggerDry *bool
+	if r.Body != nil {
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			return err
+		}
+		if len(bytes.TrimSpace(raw)) > 0 {
+			var body struct {
+				DryRun *bool `json:"dry_run"`
+			}
+			if json.Unmarshal(raw, &body) != nil {
+				return bad("请求参数不正确")
+			}
+			triggerDry = body.DryRun
+		}
+	}
 	now := time.Now().UTC()
 	var err error
 	var taskID int64
@@ -1375,6 +1397,15 @@ func (a *App) runGeneration(w http.ResponseWriter, r *http.Request, user *model.
 	})
 	if err != nil {
 		return err
+	}
+	if triggerDry != nil {
+		skip := 0
+		if *triggerDry {
+			skip = 1
+		}
+		if err := a.Store.SetTaskSkipDraft(r.Context(), nil, taskID, skip); err != nil {
+			return err
+		}
 	}
 	a.enqueue(taskID)
 	writeJSON(w, 200, articleDict(article, true))

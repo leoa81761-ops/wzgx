@@ -87,6 +87,7 @@ type ArticleTask struct {
 	Tokens           int
 	ModelTrace       []map[string]any
 	CreatedAt        time.Time
+	SkipDraft        int
 }
 
 type Article struct {

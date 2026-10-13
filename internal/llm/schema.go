@@ -10,6 +10,23 @@ type Schema struct {
 
 func StageSchema(stageLabel string) *Schema {
 	switch stageLabel {
+	case "句子改写":
+		return &Schema{Name: "sentence_rewrite", Body: objectSchema(
+			[]string{"sentences"},
+			map[string]any{
+				"sentences": map[string]any{
+					"type":        "array",
+					"description": "每一句的整句改写",
+					"items": objectSchema(
+						[]string{"from", "to"},
+						map[string]any{
+							"from": strField("原来的一整句"),
+							"to":   strField("改写后的一整句，不能只删掉中间几个字"),
+						},
+					),
+				},
+			},
+		)}
 	case "选题":
 		return &Schema{Name: "topic", Body: objectSchema(
 			[]string{"title", "angle"},

@@ -90,6 +90,10 @@
             <option value="asset">优先我的素材</option>
           </select>
         </label>
+        <label class="check">
+          <input v-model="form.dry_run" type="checkbox" />
+          <span>不推送草稿箱。勾上后，这篇只留在这里，不写入公众号草稿箱。</span>
+        </label>
       </details>
       <button class="btn" :disabled="loading">{{ loading ? "保存中…" : "开始写" }}</button>
     </form>
@@ -175,6 +179,10 @@
           <p v-if="plan.auto_publish" class="muted">已开启，审阅窗口 {{ plan.delay_minutes }} 分钟。</p>
         </div>
         <p v-else class="muted">这个公众号只写入草稿箱。自动发布只对企业认证号开放，并且默认关闭。</p>
+        <label class="check">
+          <input :checked="plan.dry_run_set ? plan.dry_run : !!quota.unlimited" type="checkbox" @change="setDryRun(plan, $event.target.checked)" />
+          <span>不推送草稿箱。勾上后，生成的稿只留在这里，不写入公众号草稿箱。</span>
+        </label>
           </div>
         </details>
       </article>
@@ -232,6 +240,7 @@ const form = reactive({
   vertical_key: "",
   topic_mode: "auto",
   image_mode: "auto",
+  dry_run: false,
 });
 
 const groups = computed(() => {
@@ -287,6 +296,7 @@ async function load() {
   if (!form.wx_account_id && accountData[0]) form.wx_account_id = accountData[0].id;
   if (route.query.account) form.wx_account_id = Number(route.query.account);
   if (quotaData.tier === "free") form.time_window = "night";
+  if (quotaData.unlimited) form.dry_run = true;
   const allowedStyles = styleChoices.value;
   if (allowedStyles.length && !allowedStyles.some((item) => item.key === form.style_key)) form.style_key = allowedStyles[0].key;
   const allowedTemplates = templateChoices.value;
@@ -342,6 +352,16 @@ async function saveDaily(plan) {
   error.value = "";
   try {
     await api(`/api/plans/${plan.id}/daily`, { method: "PUT", body: { daily_count: Number(dailyCounts[plan.id] || 1) } });
+    await load();
+  } catch (err) {
+    error.value = err.message;
+  }
+}
+
+async function setDryRun(plan, checked) {
+  error.value = "";
+  try {
+    await api(`/api/plans/${plan.id}`, { method: "PUT", body: { dry_run: checked } });
     await load();
   } catch (err) {
     error.value = err.message;
