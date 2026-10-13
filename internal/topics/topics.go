@@ -316,6 +316,114 @@ func splitColumns(text string) []string {
 	return out
 }
 
+// SameSubject reports that a new title is the same matter as a recent title or topic,
+// including a wording change such as 环状 for 环形.
+func SameSubject(title string, recent []string) bool {
+	keys := subjectKeys(foldSubject(title))
+	if len(keys) == 0 {
+		return false
+	}
+	for _, old := range recent {
+		folded := foldSubject(old)
+		hits := 0
+		seen := map[string]bool{}
+		for _, key := range keys {
+			if seen[key] || !strings.Contains(folded, key) {
+				continue
+			}
+			seen[key] = true
+			hits++
+			if hits >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SubjectHits returns distinctive words from one recent title that the body still uses.
+func SubjectHits(body string, recent []string) []string {
+	body = foldSubject(body)
+	var out []string
+	seen := map[string]bool{}
+	for _, old := range recent {
+		keys := subjectKeys(foldSubject(old))
+		var hit []string
+		for _, key := range keys {
+			if strings.Contains(body, key) {
+				hit = append(hit, key)
+			}
+		}
+		if len(hit) < 2 {
+			continue
+		}
+		for _, key := range hit {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, key)
+			if len(out) >= 8 {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func foldSubject(text string) string {
+	replacer := strings.NewReplacer("环状", "环形", "环型", "环形", "星状", "星形", "星型", "星形")
+	return replacer.Replace(text)
+}
+
+func subjectKeys(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(term string) {
+		if term == "" || seen[term] || boilerplateKey(term) {
+			return
+		}
+		seen[term] = true
+		out = append(out, term)
+	}
+	var buf []rune
+	flush := func() {
+		if len(buf) >= 2 && len(buf) <= 8 {
+			add(string(buf))
+		}
+		if len(buf) >= 2 {
+			add(string(buf[:2]))
+			if len(buf) > 2 {
+				add(string(buf[len(buf)-2:]))
+			}
+		}
+		if len(buf) >= 4 {
+			for i := 0; i+4 <= len(buf); i++ {
+				add(string(buf[i : i+4]))
+			}
+		}
+		buf = nil
+	}
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) && !motifStop(string(r)) {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+func boilerplateKey(text string) bool {
+	switch text {
+	case "今天", "就能", "今天就能", "就能做", "今天就能做", "一个做法", "小做法", "实用方法", "这件事", "怎么做", "怎么办", "是什么", "为什么", "系统", "工程", "方案", "问题", "文章", "说明", "正文", "合适", "栏目", "读者", "做法", "步骤", "标准", "设计", "建设", "管理", "工作", "要求", "文件", "公告", "发布", "规范", "技术", "国家", "关于", "这个", "没有", "不是", "可以", "进行", "通过":
+		return true
+	default:
+		return false
+	}
+}
+
 // Diverge moves off a subtopic or angle already used in recent titles, topics, or hook motifs.
 func Diverge(choice Choice, subs, angles, titles []string) Choice {
 	if next := nextUnused(subs, choice.Subtopic, titles); next != "" {

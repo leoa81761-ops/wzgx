@@ -128,6 +128,22 @@ func StandardNumberTopic(topic string) bool {
 	return standardNumber.MatchString(topic)
 }
 
+// SharesStandardNumber reports that text cites the same GB number named in the topic.
+func SharesStandardNumber(topic, text string) bool {
+	for _, num := range standardNumber.FindAllString(topic, -1) {
+		digits := make([]rune, 0, 6)
+		for _, r := range num {
+			if r >= '0' && r <= '9' {
+				digits = append(digits, r)
+			}
+		}
+		if len(digits) >= 4 && strings.Contains(text, string(digits)) {
+			return true
+		}
+	}
+	return false
+}
+
 // StandardTextHost is a standards-text site that stays blocked until the topic names a standard number.
 func StandardTextHost(domain string) bool {
 	domain = normalizeDomain(domain)
@@ -313,8 +329,53 @@ func DictionaryHost(raw string) bool {
 	for _, domain := range []string{
 		"json.cn", "dict.cn", "zdic.net", "zdic.com", "iciba.com", "youdao.com",
 		"hanyu.baidu.com", "cidianwang.com", "911cha.com",
+		"baike.baidu.com", "baike.sogou.com", "baike.so.com", "baike.com",
+		"wikipedia.org", "zh.wikipedia.org",
 	} {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
+// SearchResultURL is a search page, a results list, or a standards download tool. It is not a source.
+func SearchResultURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	path := strings.ToLower(parsed.Path)
+	query := parsed.Query()
+	if strings.Contains(path, "dcpsptools") || strings.Contains(path, "/download") && query.Get("path") != "" {
+		return true
+	}
+	if strings.Contains(path, "/search") || strings.Contains(path, "search/org") {
+		return true
+	}
+	switch host {
+	case "baidu.com", "sogou.com", "so.com", "bing.com", "google.com", "duckduckgo.com":
+		if path == "/s" || strings.HasPrefix(path, "/s") || strings.Contains(path, "search") {
+			return true
+		}
+	}
+	if query.Get("q") != "" || query.Get("wd") != "" || query.Get("query") != "" {
+		if strings.Contains(path, "search") || strings.Contains(host, "baidu") || strings.Contains(host, "sogou") || host == "so.com" || strings.Contains(host, "bing.com") {
+			return true
+		}
+	}
+	return false
+}
+
+// ReferenceEntry is a dictionary or encyclopedia headword, not an article about the topic.
+func ReferenceEntry(title string) bool {
+	for _, word := range []string{"汉语词语", "百度百科", "维基百科", "百科词条"} {
+		if strings.Contains(title, word) {
 			return true
 		}
 	}

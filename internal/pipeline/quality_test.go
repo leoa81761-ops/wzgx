@@ -109,7 +109,7 @@ func TestShortDraftIsNotPushed(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if expands != 5 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
+	if expands != 7 || article.Status != "held" || article.DraftMediaID != "" || !strings.Contains(article.DeliveryNote, "85%") {
 		t.Fatalf("expands %d status %s media %s note %s", expands, article.Status, article.DraftMediaID, article.DeliveryNote)
 	}
 }
@@ -321,6 +321,27 @@ func TestFinalTopUpAimsAt110(t *testing.T) {
 	}}}, short, map[string]any{"word_target": 800}, 800, "")
 	if content.BodyRunes(out) < 800*110/100 || str(asList(out["sources"])[0].(map[string]any)["url"]) != "https://www.gov.cn/a" {
 		t.Fatal(content.BodyRunes(out), out["sources"])
+	}
+}
+
+func TestLongColumnTopUpUsesFourPasses(t *testing.T) {
+	var calls int
+	short := map[string]any{
+		"title": "短稿", "summary": "摘要",
+		"sections": []any{map[string]any{"heading": "甲", "paragraphs": []any{"只有一句。"}, "list": []any{}}},
+		"closing":  "结束", "sources": []any{map[string]any{"url": "https://www.gov.cn/a", "title": "来源"}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		writeChoice(w, short)
+	}))
+	defer srv.Close()
+	gw := llm.NewGateway(false, srv.Client())
+	_, _, _ = topUpLength(t.Context(), gw, map[string][]llm.Provider{"draft": {{
+		Name: "写作", Protocol: "openai", BaseURL: srv.URL + "/v1", Model: "writer", Timeout: 10 * time.Second,
+	}}}, short, map[string]any{"word_target": 1500}, 1500, "")
+	if calls != 4 {
+		t.Fatal(calls)
 	}
 }
 

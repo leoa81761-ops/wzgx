@@ -57,6 +57,14 @@ func TestDivergeSkipsRepeatedAnglesAndMotifs(t *testing.T) {
 	}
 	choice := Choice{Subtopic: "星形与环形", Column: "知识FAQ", Angle: "损耗核算"}
 	got := Diverge(choice, []string{"星形与环形", "验收记录", "机房接地"}, AngleOptions(choice.Angle), append(append([]string{}, titles...), motifs...))
+	if SameSubject("环状与星状怎么算消耗", []string{"星形和环形哪种损耗更低"}) {
+		// folded wording still counts as the same subject
+	} else {
+		t.Fatal("ring and star wording should match")
+	}
+	if SameSubject("会议室扩声不稳定", []string{"系统集成投标，方案写得越全就越稳吗"}) {
+		t.Fatal("different subjects")
+	}
 	if strings.Contains(got.Subtopic, "星形") || strings.Contains(got.Subtopic, "环形") || strings.Contains(got.Angle, "损耗") || strings.Contains(got.Angle, "温茶") {
 		t.Fatal(got)
 	}

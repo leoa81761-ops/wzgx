@@ -399,6 +399,35 @@ func TestUnsupportedCitationIsRewritten(t *testing.T) {
 	}
 }
 
+func TestCitationDoesNotAttachAnUnrelatedSource(t *testing.T) {
+	draft := map[string]any{
+		"sources": []any{
+			map[string]any{"title": "住房和城乡建设部关于发布国家标准《无线局域网工程设计标准》的公告", "url": "https://www.mohurd.gov.cn/a"},
+			map[string]any{"title": "综合布线施工前材料消耗核算", "snippet": "放线前先核算材料消耗", "url": "https://www.gov.cn/b"},
+		},
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"协会会议要求先看现场再落实施工安排。[1]",
+			"放线前先核算材料消耗，避免临时加料。[2]",
+		}}},
+	}
+	out := SupportCitations(draft)
+	paras := paragraphsOf(out)
+	if strings.Contains(paras[0], "[1]") {
+		t.Fatal(paras)
+	}
+	if !strings.Contains(paras[1], "[2]") {
+		t.Fatal(paras)
+	}
+	cited := CiteSupported(out)
+	again := paragraphsOf(cited)
+	if strings.Contains(again[0], "[1]") || strings.Contains(again[0], "[2]") {
+		t.Fatal(again)
+	}
+	if !strings.Contains(again[1], "[2]") {
+		t.Fatal(again)
+	}
+}
+
 func dump(draft map[string]any) string {
 	buf, err := json.Marshal(draft)
 	if err != nil {
