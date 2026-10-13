@@ -164,6 +164,24 @@ func TestResearchPromptAsksToSearch(t *testing.T) {
 	if !strings.Contains(structure[0]["content"], "不要在句首机械地加") || strings.Contains(structure[0]["content"], "答：按上面的问题") || !strings.Contains(structure[0]["content"], "[n]") {
 		t.Fatal(structure[0]["content"])
 	}
+	experience := StageMessages("正文", map[string]any{"writing_mode": "experience", "column_structure": "qa"})
+	experienceSystem := experience[0]["content"]
+	if !strings.Contains(experienceSystem, "3 到 4") || !strings.Contains(experienceSystem, "问号") || !strings.Contains(experienceSystem, "答：") || !strings.Contains(experienceSystem, "column_structure") {
+		t.Fatal(experienceSystem)
+	}
+	experienceStructure := StageMessages("栏目结构", map[string]any{"writing_mode": "experience", "column_structure": "qa"})
+	structureSystem := experienceStructure[0]["content"]
+	if !strings.Contains(structureSystem, "3 到 4") || !strings.Contains(structureSystem, "问号") || !strings.Contains(structureSystem, "答：") || !strings.Contains(structureSystem, "不要使用 [n]") {
+		t.Fatal(structureSystem)
+	}
+	steps := StageMessages("栏目结构", map[string]any{"writing_mode": "experience", "column_structure": "steps"})
+	if !strings.Contains(steps[0]["content"], "第一步") || !strings.Contains(steps[0]["content"], "3 到 4") {
+		t.Fatal(steps[0]["content"])
+	}
+	judge := StageMessages("来源判断", map[string]any{"topic": "综合布线验收"})
+	if !strings.Contains(judge[0]["content"], "JSON Schema") || !strings.Contains(judge[0]["content"], "items") {
+		t.Fatal(judge[0]["content"])
+	}
 	for _, stage := range []string{"缩写", "事实核对", "审核", "结构润色", "补引用", "意象改写"} {
 		messages := StageMessages(stage, map[string]any{"word_target": 800})
 		if !strings.Contains(messages[0]["content"], "[n]") {

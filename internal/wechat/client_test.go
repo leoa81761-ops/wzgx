@@ -288,6 +288,41 @@ func TestUploadSurvivesCanceledParentAndRetries(t *testing.T) {
 	}
 }
 
+func TestAddDraftSurvivesCanceledParentAndRetries(t *testing.T) {
+	var adds int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/stable_token":
+			_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":7200}`))
+		case "/cgi-bin/draft/add":
+			adds++
+			if adds == 1 {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					t.Fatal("hijack")
+				}
+				conn, _, err := hj.Hijack()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.Close()
+				return
+			}
+			_, _ = w.Write([]byte(`{"media_id":"draft-1"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	client := NewLive("wx123", "sec", srv.URL, srv.Client(), NewTokenCache())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	mediaID, err := client.AddDraft(ctx, DraftArticle{Title: "健康常识", Content: "<p>先看这一步。</p>"})
+	if err != nil || mediaID != "draft-1" || adds != 2 {
+		t.Fatalf("media %s adds %d err %v", mediaID, adds, err)
+	}
+}
+
 func TestImageContentTypeFollowsFilename(t *testing.T) {
 	if imageContentType("cover.jpg") != "image/jpeg" || imageContentType("cover.jpeg") != "image/jpeg" || imageContentType("cover.png") != "image/png" {
 		t.Fatal(imageContentType("cover.jpg"), imageContentType("cover.png"))

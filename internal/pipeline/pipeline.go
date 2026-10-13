@@ -1672,8 +1672,12 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 		draft = quality.AlignStructure(picked.Structure, draft)
 	}
 	experience := str(base["writing_mode"]) == "experience"
+	columnStructure := ""
+	if usingColumn {
+		columnStructure = picked.Structure
+	}
 	if experience {
-		draft = stripCiteMarks(draft)
+		draft = settleExperience(draft, columnStructure, w.WordTarget)
 	} else {
 		draft = editorial.SupportCitations(draft)
 	}
@@ -1688,7 +1692,7 @@ func Build(ctx context.Context, gateway *llm.Gateway, w Input, sensitive []strin
 			draft = quality.AlignStructure(picked.Structure, draft)
 		}
 		if experience {
-			draft = stripCiteMarks(draft)
+			draft = settleExperience(draft, columnStructure, w.WordTarget)
 		} else {
 			draft = editorial.SupportCitations(draft)
 		}
@@ -2829,7 +2833,7 @@ func enrichSources(ctx context.Context, client *http.Client, sources []map[strin
 			continue
 		}
 		raw := strings.TrimSpace(str(source["url"]))
-		if raw == "" {
+		if raw == "" || content.PrivateURL(raw) {
 			continue
 		}
 		fetched++
@@ -2874,7 +2878,11 @@ func filterSourceQuality(sources []map[string]any, _ string) (kept []map[string]
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": reason})
 			continue
 		}
-		if title == "" && strings.TrimSpace(snippet) == "" {
+		if content.PrivateURL(raw) {
+			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "内网地址"})
+			continue
+		}
+		if title == "" && strings.TrimSpace(snippet) == "" && !content.PublicPageURL(raw) {
 			dropped = append(dropped, map[string]any{"url": raw, "title": title, "score": 0, "reason": "没有标题"})
 			continue
 		}
@@ -2887,37 +2895,552 @@ func stripRankScores(sources []map[string]any) {
 	for _, source := range sources {
 		if source != nil {
 			delete(source, "rank_score")
+			delete(source, "_from_judge")
 		}
 	}
 }
+
+const judgeBatchSize = 8
+
+const judgeRetryModel = "grok-4.20-0309-non-reasoning"
+
+const sourceFloor = 2
 
 func judgeAndKeep(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic string, sources []map[string]any) ([]map[string]any, []map[string]any, llm.Completion) {
 	if len(sources) == 0 {
 		return nil, nil, llm.Completion{}
 	}
 	if gateway == nil || len(providers) == 0 {
-		return nil, dropAll(sources, "没有判断模型"), llm.Completion{}
+		kept, dropped := rankFallback(sources, topic, true)
+		return kept, dropped, llm.Completion{Attempts: []map[string]any{{"ok": false, "error": "没有判断模型", "judge_raw": ""}}}
 	}
-	candidates := make([]any, 0, len(sources))
-	for i, source := range sources {
-		candidates = append(candidates, map[string]any{
-			"index": i + 1, "title": str(source["title"]), "snippet": sourceSnippet(source), "url": str(source["url"]),
-		})
+	var completion llm.Completion
+	var rawLog strings.Builder
+	var kept, dropped, failed []map[string]any
+	judgedOK := false
+	for offset := 0; offset < len(sources); offset += judgeBatchSize {
+		end := offset + judgeBatchSize
+		if end > len(sources) {
+			end = len(sources)
+		}
+		batch := sources[offset:end]
+		items, raw, part := judgeBatch(ctx, gateway, providers, topic, batch, offset)
+		completion = mergeCompletion(completion, part)
+		if rawLog.Len() > 0 {
+			rawLog.WriteString("\n")
+		}
+		rawLog.WriteString(raw)
+		if items == nil {
+			failed = append(failed, batch...)
+			continue
+		}
+		judgedOK = true
+		batchKept, batchDropped := applyJudgeScores(batch, alignJudgeItems(offset, batch, items))
+		for _, source := range batchKept {
+			source["_from_judge"] = true
+		}
+		kept = append(kept, batchKept...)
+		dropped = append(dropped, batchDropped...)
 	}
-	payload := map[string]any{"topic": topic, "candidates": candidates}
-	data, completion, err := gateway.CompleteJSON(ctx, providers, llm.StageMessages("来源判断", payload), llm.StageSchema("来源判断"), validateJudge)
-	if err != nil || data == nil {
-		return nil, dropAll(sources, "来源判断失败"), completion
+	if len(failed) > 0 {
+		ranked, extra := rankFallback(failed, topic, !judgedOK)
+		kept = append(kept, ranked...)
+		dropped = append(dropped, extra...)
 	}
-	kept, dropped := applyJudgeScores(sources, asList(data["items"]))
+	kept, dropped = capKept(kept, dropped)
+	rawText := clip(rawLog.String(), 1500)
+	if len(completion.Attempts) == 0 {
+		completion.Attempts = []map[string]any{{"ok": judgedOK}}
+	}
+	completion.Attempts[len(completion.Attempts)-1]["judge_raw"] = rawText
 	return kept, dropped, completion
 }
 
-func validateJudge(data map[string]any) (map[string]any, error) {
-	if _, ok := data["items"].([]any); !ok {
-		return nil, errors.New("来源判断没有返回 items")
+func judgeBatch(ctx context.Context, gateway *llm.Gateway, providers []llm.Provider, topic string, batch []map[string]any, offset int) ([]any, string, llm.Completion) {
+	candidates := make([]any, 0, len(batch))
+	for i, source := range batch {
+		title := strings.TrimSpace(str(source["title"]))
+		snippet := sourceSnippet(source)
+		candidates = append(candidates, map[string]any{
+			"index": offset + i + 1, "title": title, "snippet": snippet, "url": str(source["url"]),
+		})
 	}
-	return data, nil
+	payload := map[string]any{"topic": topic, "candidates": candidates}
+	messages := llm.StageMessages("来源判断", payload)
+	schema := llm.StageSchema("来源判断")
+	first, err := gateway.CompleteFirst(ctx, providers, messages, schema)
+	raw := strings.TrimSpace(first.Content)
+	if err != nil && raw == "" {
+		raw = err.Error()
+	}
+	if items, ok := parseJudgeItems(first.Content); ok {
+		return items, raw, first
+	}
+	base := providers[0]
+	if strings.EqualFold(strings.TrimSpace(base.Model), judgeRetryModel) {
+		return nil, raw, first
+	}
+	retry := base
+	retry.Model = judgeRetryModel
+	retry.Name = strings.TrimSpace(base.Name + " 重试")
+	second, err2 := gateway.CompleteFirst(ctx, []llm.Provider{retry}, messages, schema)
+	combined := mergeCompletion(first, second)
+	raw2 := strings.TrimSpace(second.Content)
+	if err2 != nil && raw2 == "" {
+		raw2 = err2.Error()
+	}
+	if raw2 != "" {
+		if raw != "" {
+			raw += "\n"
+		}
+		raw += raw2
+	}
+	if items, ok := parseJudgeItems(second.Content); ok {
+		return items, raw, combined
+	}
+	return nil, raw, combined
+}
+
+func mergeCompletion(base, extra llm.Completion) llm.Completion {
+	base.PromptTokens += extra.PromptTokens
+	base.CompletionTokens += extra.CompletionTokens
+	base.Attempts = append(base.Attempts, extra.Attempts...)
+	if base.Model == "" {
+		base.ProviderID = extra.ProviderID
+		base.ProviderName = extra.ProviderName
+		base.Protocol = extra.Protocol
+		base.Model = extra.Model
+	}
+	if strings.TrimSpace(extra.Content) != "" {
+		base.Content = extra.Content
+	}
+	return base
+}
+
+func alignJudgeItems(offset int, batch []map[string]any, items []any) []any {
+	n := len(batch)
+	if n == 0 || len(items) == 0 {
+		return items
+	}
+	lo, hi := offset+1, offset+n
+	global, local := 0, 0
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item == nil {
+			continue
+		}
+		index := asInt(item["index"])
+		if index >= lo && index <= hi {
+			global++
+		} else if index >= 1 && index <= n {
+			local++
+		}
+	}
+	if global == 0 || global < local {
+		return items
+	}
+	shifted := make([]any, 0, len(items))
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item == nil {
+			continue
+		}
+		clone := map[string]any{"score": item["score"], "facts": item["facts"]}
+		index := asInt(item["index"])
+		if index >= lo && index <= hi {
+			clone["index"] = index - offset
+		}
+		shifted = append(shifted, clone)
+	}
+	return shifted
+}
+
+func parseJudgeItems(text string) ([]any, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, false
+	}
+	var candidates []string
+	if fenced := extractFence(text); fenced != "" {
+		candidates = append(candidates, fenced)
+	}
+	candidates = append(candidates, text)
+	for _, raw := range candidates {
+		if items, ok := itemsFromJudgeText(raw); ok {
+			return items, true
+		}
+	}
+	for _, raw := range candidates {
+		if items := normalizeJudgeItems(salvageJudgeObjects(raw)); len(items) > 0 {
+			return items, true
+		}
+	}
+	return nil, false
+}
+
+func extractFence(text string) string {
+	start := strings.Index(text, "```")
+	if start < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(text[start+3:])
+	lower := strings.ToLower(rest)
+	if strings.HasPrefix(lower, "json") {
+		rest = strings.TrimSpace(rest[4:])
+	}
+	if end := strings.LastIndex(rest, "```"); end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimSpace(rest)
+}
+
+func itemsFromJudgeText(raw string) ([]any, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false
+	}
+	var value any
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		if obj := outermost(raw, '{', '}'); obj != "" && json.Unmarshal([]byte(obj), &value) == nil {
+		} else if arr := outermost(raw, '[', ']'); arr != "" && json.Unmarshal([]byte(arr), &value) == nil {
+		} else {
+			return nil, false
+		}
+	}
+	return coerceJudgeItems(value)
+}
+
+func outermost(raw string, open, close rune) string {
+	start := strings.IndexRune(raw, open)
+	end := strings.LastIndex(raw, string(close))
+	if start < 0 || end <= start {
+		return ""
+	}
+	return raw[start : end+len(string(close))]
+}
+
+func coerceJudgeItems(value any) ([]any, bool) {
+	switch typed := value.(type) {
+	case []any:
+		items := normalizeJudgeItems(typed)
+		return items, len(items) > 0
+	case map[string]any:
+		for _, key := range []string{"items", "sources", "results", "ratings", "candidates", "data"} {
+			child, ok := typed[key]
+			if !ok || child == nil {
+				continue
+			}
+			if items, ok := coerceJudgeItems(child); ok {
+				return items, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func normalizeJudgeItems(list []any) []any {
+	var out []any
+	rated := false
+	for _, raw := range list {
+		item, _ := raw.(map[string]any)
+		if item == nil || !judgeRating(item) {
+			continue
+		}
+		rated = true
+		index, present := judgeIndex(item)
+		normalized := map[string]any{"score": judgeScore(item), "facts": judgeFacts(item)}
+		if present {
+			normalized["index"] = index
+		}
+		out = append(out, normalized)
+	}
+	if !rated {
+		return nil
+	}
+	return out
+}
+
+func judgeRating(item map[string]any) bool {
+	for _, key := range []string{"score", "rating", "relevance", "facts", "fact", "key_facts", "points"} {
+		if _, ok := item[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func judgeIndex(item map[string]any) (int, bool) {
+	for _, key := range []string{"index", "idx", "i", "id"} {
+		if _, ok := item[key]; ok {
+			return asInt(item[key]), true
+		}
+	}
+	return 0, false
+}
+
+func judgeScore(item map[string]any) int {
+	for _, key := range []string{"score", "rating", "relevance"} {
+		if _, ok := item[key]; !ok {
+			continue
+		}
+		score := asInt(item[key])
+		if score < 0 {
+			return 0
+		}
+		if score > 3 {
+			return 3
+		}
+		return score
+	}
+	return 0
+}
+
+func judgeFacts(item map[string]any) []any {
+	for _, key := range []string{"facts", "key_facts", "points", "fact"} {
+		if _, ok := item[key]; !ok || item[key] == nil {
+			continue
+		}
+		if text, ok := item[key].(string); ok {
+			text = strings.TrimSpace(text)
+			if text != "" {
+				return []any{text}
+			}
+			continue
+		}
+		var facts []any
+		for _, fact := range asList(item[key]) {
+			text := strings.TrimSpace(str(fact))
+			if text != "" {
+				facts = append(facts, text)
+			}
+		}
+		if len(facts) > 0 {
+			return facts
+		}
+	}
+	return []any{}
+}
+
+func salvageJudgeObjects(text string) []any {
+	var items []any
+	for _, obj := range scanJSONObjects(text) {
+		var item map[string]any
+		if json.Unmarshal([]byte(obj), &item) != nil || item == nil || !judgeRating(item) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func scanJSONObjects(text string) []string {
+	var out []string
+	var starts []int
+	inString := false
+	escape := false
+	for i, r := range text {
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			if r == '\\' {
+				escape = true
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+		case '{':
+			starts = append(starts, i)
+		case '}':
+			if len(starts) == 0 {
+				continue
+			}
+			start := starts[len(starts)-1]
+			starts = starts[:len(starts)-1]
+			out = append(out, text[start:i+len(string(r))])
+		}
+	}
+	return out
+}
+
+func capKept(kept, dropped []map[string]any) ([]map[string]any, []map[string]any) {
+	if len(kept) <= sourceKeepMax {
+		return kept, dropped
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		ij := kept[i]["_from_judge"] == true
+		jj := kept[j]["_from_judge"] == true
+		if ij != jj {
+			return ij
+		}
+		return asInt(kept[i]["rank_score"]) > asInt(kept[j]["rank_score"])
+	})
+	for _, extra := range kept[sourceKeepMax:] {
+		dropped = append(dropped, map[string]any{
+			"url": str(extra["url"]), "title": str(extra["title"]),
+			"score": extra["rank_score"], "reason": "超出保留条数",
+		})
+	}
+	return kept[:sourceKeepMax], dropped
+}
+
+func rankFallback(sources []map[string]any, topic string, fill bool) (kept []map[string]any, dropped []map[string]any) {
+	type scored struct {
+		source  map[string]any
+		score   int
+		overlap int
+	}
+	var ranked []scored
+	for _, source := range sources {
+		if source == nil {
+			continue
+		}
+		score, overlap := scoreSource(source, topic)
+		source["rank_score"] = score
+		ranked = append(ranked, scored{source: source, score: score, overlap: overlap})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].score > ranked[j].score
+	})
+	var above, below []scored
+	for _, row := range ranked {
+		if row.overlap >= sourceFloor && row.score >= sourceFloor {
+			above = append(above, row)
+		} else {
+			below = append(below, row)
+		}
+	}
+	chosen := above
+	if len(chosen) > sourceKeepMax {
+		for _, extra := range chosen[sourceKeepMax:] {
+			dropped = append(dropped, map[string]any{
+				"url": str(extra.source["url"]), "title": str(extra.source["title"]),
+				"score": extra.score, "reason": "超出保留条数",
+			})
+		}
+		chosen = chosen[:sourceKeepMax]
+	}
+	if fill && len(chosen) < 3 {
+		need := 3 - len(chosen)
+		if need > len(below) {
+			need = len(below)
+		}
+		chosen = append(chosen, below[:need]...)
+		below = below[need:]
+	}
+	for _, row := range below {
+		dropped = append(dropped, map[string]any{
+			"url": str(row.source["url"]), "title": str(row.source["title"]),
+			"score": row.score, "reason": "低于分数线",
+		})
+	}
+	for _, row := range chosen {
+		kept = append(kept, row.source)
+	}
+	return kept, dropped
+}
+
+func scoreSource(source map[string]any, topic string) (score, overlap int) {
+	title := strings.TrimSpace(str(source["title"]))
+	meta := strings.TrimSpace(str(source["snippet"]) + " " + str(source["note"]) + " " + str(source["fetched_meta"]))
+	blob := strings.TrimSpace(title + " " + meta + " " + str(source["url"]))
+	phrases := 0
+	for _, phrase := range topicPhrases(topic) {
+		if !strings.Contains(blob, phrase) {
+			continue
+		}
+		points := 3
+		if strings.Contains(title, phrase) {
+			points = 4
+		}
+		overlap += points
+		phrases++
+		if phrases >= 3 {
+			break
+		}
+	}
+	terms := 0
+	seen := map[string]bool{}
+	for _, term := range topicTerms(topic) {
+		if seen[term] || !strings.Contains(blob, term) {
+			continue
+		}
+		seen[term] = true
+		overlap += 2
+		terms++
+		if terms >= 4 {
+			break
+		}
+	}
+	if content.SharesStandardNumber(topic, blob) {
+		overlap += 6
+	}
+	score = overlap
+	if overlap > 0 && content.OfficialHost(str(source["url"])) {
+		score += 3
+	}
+	if strings.Contains(title, "百科") || strings.Contains(title, "词典") || strings.Contains(title, "搜索") {
+		score -= 4
+	}
+	if score < 0 {
+		score = 0
+	}
+	return score, overlap
+}
+
+func topicPhrases(topic string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, run := range hanRuns(topic) {
+		if len(run) < 4 {
+			continue
+		}
+		for i := 0; i+4 <= len(run); i++ {
+			phrase := string(run[i : i+4])
+			if seen[phrase] || genericPhrase(phrase) {
+				continue
+			}
+			seen[phrase] = true
+			out = append(out, phrase)
+		}
+	}
+	return out
+}
+
+func hanRuns(text string) [][]rune {
+	var out [][]rune
+	var buf []rune
+	flush := func() {
+		if len(buf) > 0 {
+			out = append(out, buf)
+			buf = nil
+		}
+	}
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+func genericPhrase(text string) bool {
+	switch text {
+	case "国家标准", "标准公告", "住房城乡", "城乡建设", "市场监管", "监督管理", "正式发布", "关于发布", "关于废止", "有限公司":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]any, dropped []map[string]any) {
@@ -2995,19 +3518,6 @@ func applyJudgeScores(sources []map[string]any, items []any) (kept []map[string]
 	return kept, dropped
 }
 
-func dropAll(sources []map[string]any, reason string) []map[string]any {
-	var dropped []map[string]any
-	for _, source := range sources {
-		if source == nil {
-			continue
-		}
-		dropped = append(dropped, map[string]any{
-			"url": str(source["url"]), "title": str(source["title"]), "score": 0, "reason": reason,
-		})
-	}
-	return dropped
-}
-
 func sourceSnippet(source map[string]any) string {
 	text := strings.TrimSpace(str(source["snippet"]))
 	if text == "" {
@@ -3075,6 +3585,49 @@ func urlCount(sources []any) int {
 	return n
 }
 
+func settleExperience(draft map[string]any, structure string, target int) map[string]any {
+	if draft == nil {
+		return nil
+	}
+	draft = stripCiteMarks(draft)
+	draft = editorial.LimitParagraphs(draft, 4)
+	draft = dedupeExperience(draft, target)
+	if columns.NormalizeStructure(structure) != "custom" {
+		draft = quality.AlignStructure(structure, draft)
+	}
+	return draft
+}
+
+// dedupeExperience drops near-duplicate paragraphs. When that would push a draft
+// that already cleared the length floor back under it, the longer text stays.
+func dedupeExperience(draft map[string]any, target int) map[string]any {
+	before := content.BodyRunes(draft)
+	next := cloneDraft(draft)
+	next = editorial.RepairNearDuplicates(next)
+	next = editorial.DedupeBlocks(next)
+	after := content.BodyRunes(next)
+	floor := 0
+	if target > 0 {
+		floor = target * 85 / 100
+	}
+	if floor > 0 && before >= floor && after < floor {
+		return draft
+	}
+	return next
+}
+
+func cloneDraft(draft map[string]any) map[string]any {
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		return draft
+	}
+	var out map[string]any
+	if json.Unmarshal(raw, &out) != nil || out == nil {
+		return draft
+	}
+	return out
+}
+
 func stripCiteMarks(draft map[string]any) map[string]any {
 	if draft == nil {
 		return nil
@@ -3119,6 +3672,27 @@ func asInt(v any) int {
 		return int(n)
 	case float64:
 		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	case string:
+		n = strings.TrimSpace(n)
+		if n == "" {
+			return 0
+		}
+		sign := 1
+		if n[0] == '-' {
+			sign = -1
+			n = n[1:]
+		}
+		i := 0
+		for _, r := range n {
+			if r < '0' || r > '9' {
+				break
+			}
+			i = i*10 + int(r-'0')
+		}
+		return sign * i
 	default:
 		return 0
 	}

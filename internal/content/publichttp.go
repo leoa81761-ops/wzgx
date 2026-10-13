@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -125,6 +126,39 @@ func guardURL(raw *url.URL) error {
 		}
 	}
 	return nil
+}
+
+// PrivateURL reports a literal loopback, private, link-local, CGNAT, unspecified, or multicast host.
+// Hostnames that are not IP addresses are left alone, except localhost.
+func PrivateURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return blockedIP(ip)
+}
+
+// PublicPageURL reports an http(s) URL whose host is not a private or loopback address.
+func PublicPageURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return !PrivateURL(raw)
 }
 
 func blockedIP(ip net.IP) bool {

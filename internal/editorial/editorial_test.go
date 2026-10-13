@@ -428,6 +428,28 @@ func TestCitationDoesNotAttachAnUnrelatedSource(t *testing.T) {
 	}
 }
 
+func TestLimitParagraphsSplitsLongStepsAndKeepsAnswers(t *testing.T) {
+	draft := map[string]any{"sections": []any{map[string]any{"paragraphs": []any{
+		"第一句。第二句。第三句。第四句。第五句。第六句。",
+		"怎么看？答：先看这一项。再看下一项。",
+		"1. 一句。二句。三句。四句。五句。",
+	}}}}
+	out := LimitParagraphs(draft, 4)
+	paras := paragraphsOf(out)
+	if len(paras) != 5 {
+		t.Fatal(paras)
+	}
+	if strings.Contains(paras[0], "第六句") || !strings.Contains(paras[1], "第六句") {
+		t.Fatal(paras)
+	}
+	if !strings.Contains(paras[2], "怎么看？") || !strings.Contains(paras[2], "答：") {
+		t.Fatal(paras)
+	}
+	if !strings.HasPrefix(paras[3], "1.") || !strings.HasPrefix(strings.TrimSpace(paras[4]), "1.") || !strings.Contains(paras[4], "五句") {
+		t.Fatal(paras)
+	}
+}
+
 func dump(draft map[string]any) string {
 	buf, err := json.Marshal(draft)
 	if err != nil {
