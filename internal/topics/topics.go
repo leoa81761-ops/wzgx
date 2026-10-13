@@ -632,35 +632,32 @@ func split3(tag string) []string {
 	return []string{tag[:first], tag[first+1 : second], tag[second+1:]}
 }
 
-// ComparisonFrame reports the "两种做法" angle that was being forced onto every column.
+// ComparisonFrame reports a title or angle that is only a comparison frame.
 func ComparisonFrame(text string) bool {
 	text = strings.TrimSpace(text)
 	return strings.Contains(text, "两种做法") || strings.Contains(text, "对比两种")
 }
 
-// AnglesFor returns angles for this column and this account.
-// Shared frames such as 先看失败点 are not reused across accounts.
+// AnglesFor returns the current angle when it belongs to this request.
+// It does not invent a sentence that could be pasted onto another account.
 func AnglesFor(column, positioning, structure, current string) []string {
-	seen := map[string]bool{}
 	var out []string
 	add := func(text string) {
 		text = strings.TrimSpace(text)
-		if text == "" || seen[text] || GenericAngle(text) || ComparisonFrame(text) {
+		if text == "" || GenericAngle(text) || ComparisonFrame(text) {
 			return
 		}
-		seen[text] = true
+		for _, prev := range out {
+			if prev == text {
+				return
+			}
+		}
 		out = append(out, text)
 	}
-	add(ReaderPain(column, positioning, structure, column+" "+positioning, "", "", ""))
 	add(current)
-	if list := columnAngles(column, positioning, structure); len(list) > 0 {
-		for _, item := range list {
-			add(item)
-		}
-	}
-	if len(out) == 0 {
-		out = append(out, ReaderPain(column, positioning, structure, column+" "+positioning, "", "", ""))
-	}
+	add(positioning)
+	add(column)
+	_ = structure
 	return out
 }
 
@@ -671,20 +668,11 @@ func GenericAngle(text string) bool {
 		return true
 	}
 	for _, phrase := range genericAngles {
-		if text == phrase || strings.HasSuffix(text, "："+phrase) || strings.HasSuffix(text, ":"+phrase) || strings.Contains(text, phrase) && abstractPhrase(phrase) {
+		if text == phrase || strings.HasSuffix(text, "："+phrase) || strings.HasSuffix(text, ":"+phrase) {
 			return true
 		}
 	}
 	return false
-}
-
-func abstractPhrase(phrase string) bool {
-	switch phrase {
-	case "先看失败点", "先把手边这一件说完", "先把手边这一件做完", "先把手边这一处做完", "先把手边", "这一件说完", "这一件做完", "那一个具体麻烦", "晚饭后的那一会儿":
-		return true
-	default:
-		return false
-	}
 }
 
 var genericAngles = []string{
@@ -692,384 +680,55 @@ var genericAngles = []string{
 	"今天就能做", "先看问题", "一个做法", "先讲结论", "从一个日常场景说起", "把一个具体问题讲清楚",
 	"三件今天就能做的小事", "新手最容易漏的步骤", "按顺序的一周小计划", "先把能做的一步写清楚",
 	"一个听起来很对的说法", "为什么会有这种误解",
-	"先把手边这一件说完", "先把手边这一件做完", "先把手边这一处做完", "先把手边",
-	"这一件说完", "这一件做完", "那一个具体麻烦", "晚饭后的那一会儿",
-	"从一件家里的小事说起", "讲一个能照做的家庭提醒", "先讲家里的场景再给一个做法",
 }
 
-// ReaderPain is one concrete scene for this column, this account, and this reader.
-func ReaderPain(column, positioning, structure, theme, tone, signatures, name string) string {
-	blob := name + column + positioning + structure + theme + tone + signatures
-	object := subjectTerm(theme + " " + name)
-	if object == "" || object == strings.TrimSpace(name) || genericTheme(object) {
-		object = subjectTerm(positioning)
-	}
-	if object == "" || object == strings.TrimSpace(name) || genericTheme(object) || instructionalTerm(object) {
-		object = strings.TrimSpace(column)
-	}
-	if object == "" {
-		object = "这件事"
-	}
-	object = concreteObject(blob, object)
-	// A detail has to already be in the topic. Do not invent a stove or “还是黏”.
-	if object == "" || genericTheme(object) || strings.Contains(object, "奶奶") {
-		object = strings.TrimSpace(column)
-	}
-	if object == "" {
-		object = "这件事"
-	}
-	switch {
-	case strings.Contains(blob, "奶奶"):
-		return "奶奶先把" + object + "做完"
-	case familyColumn(blob):
-		return "家里的" + object + "还没收拾完"
-	case faqColumn(blob):
-		if object == "" {
-			object = "这一处接口"
-		}
-		return object + "对不上号，下一步该量哪一段"
-	case strings.Contains(blob, "拆解") || strings.Contains(strings.ToLower(blob), "steps"):
-		if object == "" {
-			object = "这段线"
-		}
-		lead := object
-		if strings.Contains(blob, "弱电") && !strings.Contains(object, "弱电") {
-			lead = "弱电" + object
-		}
-		return lead + "测到一半对不上，不知道先查哪一段"
-	default:
-		if object == "" {
-			object = "手头这个件"
-		}
-		return object + "做到一半对不上，不知道先查哪一段"
-	}
-}
-
-func concreteObject(blob, object string) string {
-	switch {
-	case strings.Contains(blob, "灶") || strings.Contains(blob, "做饭") || strings.Contains(blob, "炒"):
-		return "灶台"
-	case strings.Contains(blob, "灰尘") || strings.Contains(blob, "除尘"):
-		return "桌面积灰"
-	case strings.Contains(blob, "花盆") || strings.Contains(blob, "绿植") || strings.Contains(blob, "浇花"):
-		return "花盆"
-	case strings.Contains(blob, "布线"):
-		return "综合布线"
-	case strings.Contains(blob, "监控"):
-		return "监控画面"
-	}
-	if object == "" || genericTheme(object) || abstractObject(object) {
-		return ""
-	}
-	return object
-}
-
-func abstractObject(text string) bool {
-	for _, word := range []string{"手边", "这一件", "这一处", "家务", "家庭", "日子", "一天", "晚饭", "麻烦", "具体", "失败"} {
-		if strings.Contains(text, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func columnAngles(column, positioning, structure string) []string {
-	blob := column + positioning + structure
-	switch {
-	case familyColumn(blob):
-		return []string{"从一件家里的小事说起", "讲一个能照做的家庭提醒", "先讲家里的场景再给一个做法"}
-	case faqColumn(blob):
-		return []string{"问一个具体问题", "把现场会卡住的那一步问清楚", "用三问把这件事讲完"}
-	default:
-		return nil
-	}
-}
-
-func faqColumn(blob string) bool {
-	lower := strings.ToLower(blob)
-	return strings.Contains(lower, "faq") || strings.Contains(blob, "问答") || strings.HasSuffix(lower, "qa")
-}
-
-func familyColumn(blob string) bool {
-	return strings.Contains(blob, "家长里短") || strings.Contains(blob, "家里") || strings.Contains(blob, "家人") || strings.Contains(blob, "家庭")
-}
-
-// TemplateLeak reports a column label or empty shell such as 动态速递 that is not a subject.
+// TemplateLeak reports a title that is only an empty shell.
 func TemplateLeak(title string) bool {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return false
-	}
-	for _, word := range templateWords {
-		if strings.Contains(title, word) {
-			return true
-		}
-	}
-	return false
+	return VagueTitle(title)
 }
 
-// RejectTemplateTitle keeps a concrete title. A template word is replaced by the fitted topic.
+// RejectTemplateTitle keeps a title the model wrote.
+// A comparison frame or an empty shell yields the other candidate.
+// Nothing here invents a replacement sentence.
 func RejectTemplateTitle(title, fallback, column, positioning, structure, theme string) string {
+	if next := FitTitle(title, column, positioning, structure, theme); next != "" {
+		return next
+	}
+	if next := FitTitle(fallback, column, positioning, structure, theme); next != "" {
+		return next
+	}
 	title = strings.TrimSpace(title)
-	if title != "" && !TemplateLeak(title) {
+	if title != "" && !ComparisonFrame(title) {
 		return title
 	}
-	fallback = strings.TrimSpace(fallback)
-	if fallback != "" && !TemplateLeak(fallback) {
-		return fallback
-	}
-	return FitTitle("", column, positioning, structure, theme)
+	return strings.TrimSpace(fallback)
 }
 
-// ConcreteTopic is one trade subject for this account, never a column label.
-func ConcreteTopic(theme string) string {
-	for _, word := range tradeWords {
-		if strings.Contains(theme, word) {
-			return word
-		}
-	}
-	if weakAccount(theme) {
-		return "综合布线"
-	}
-	return ""
-}
-
-var templateWords = []string{"动态速递", "工程圈快报", "方案拆解", "知识FAQ", "速递"}
-
-var tradeWords = []string{"综合布线", "六类线", "水晶头", "视频监控", "门禁对讲", "门禁", "光纤", "桥架", "线槽", "配线", "监控", "机房"}
-
-func weakAccount(text string) bool {
-	return strings.Contains(text, "弱电") || strings.Contains(text, "智能化") || strings.Contains(text, "工程")
-}
-
-func weakLabelOnly(text string) bool {
-	cleaned := text
-	for _, word := range []string{"弱电", "智能化", "工程", "知识", "问题", "栏目", "分享"} {
-		cleaned = strings.ReplaceAll(cleaned, word, "")
-	}
-	return utf8.RuneCountInString(strings.TrimSpace(cleaned)) < 2
-}
-
-// FitTitle keeps a title that matches the column and the account theme.
-// A comparison frame, a template word such as 动态速递, or a title such as 代理机构信息登记 on a 弱电 account, is replaced.
+// FitTitle keeps a title that already names a subject.
+// An empty title, a comparison frame, a generic angle, or a bare column name is rejected.
+// The caller uses another model candidate. This function does not write one.
 func FitTitle(title, column, positioning, structure, theme string) string {
 	title = strings.TrimSpace(title)
-	if title != "" && !ComparisonFrame(title) && !VagueTitle(title) && !TemplateLeak(title) && onTheme(title, theme) && matchesColumn(title, column, positioning, structure) {
-		return title
+	column = strings.TrimSpace(column)
+	if title == "" || ComparisonFrame(title) || GenericAngle(title) || VagueTitle(title) {
+		return ""
 	}
-	return ColumnTopic(column, positioning, structure, theme)
+	if column != "" && (title == column || strings.Trim(title, "：: ") == column) {
+		return ""
+	}
+	return title
 }
 
-// ColumnTopic is the fallback title for one column.
-func ColumnTopic(column, positioning, structure, theme string) string {
-	blob := column + positioning + structure
-	entity := longestThemeTerm(theme)
-	if entity == "" {
-		entity = strings.TrimSpace(column)
-	}
-	if entity == "" {
-		entity = "这件事"
-	}
-	switch {
-	case familyColumn(blob):
-		lead := entity
-		if !strings.Contains(lead, "家") {
-			lead = "家里"
-		}
-		return "晚饭后" + lead + "的老人先走这一段，家人把拐杖放在顺手的位置"
-	case faqColumn(blob):
-		return concreteLead(entity, theme, blob) + "这一步，先看哪里？"
-	default:
-		subject := specificSubject(theme)
-		if !usableSubject(subject, theme, blob) {
-			subject = concreteLead(entity, theme, blob)
-		}
-		if !usableSubject(subject, theme, blob) {
-			subject = "这件事"
-		}
-		return subject
-	}
-}
-
-func usableSubject(subject, theme, blob string) bool {
-	if subject == "" || ComparisonFrame(subject) || VagueTitle(subject) || TemplateLeak(subject) || weakLabelOnly(subject) {
-		return false
-	}
-	if weakAccount(theme+" "+blob) && !hasTrade(subject) {
-		return false
-	}
-	return true
-}
-
-func hasTrade(text string) bool {
-	for _, word := range tradeWords {
-		if strings.Contains(text, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func concreteLead(entity, theme, blob string) string {
-	if concrete := ConcreteTopic(theme + " " + blob); concrete != "" && !TemplateLeak(concrete) && !weakLabelOnly(concrete) {
-		return concrete
-	}
-	entity = strings.TrimSpace(entity)
-	if entity != "" && !TemplateLeak(entity) && !weakLabelOnly(entity) && !genericTheme(entity) {
-		return entity
-	}
-	if weakAccount(theme + " " + blob) {
-		return "综合布线"
-	}
-	if entity == "" {
-		return "这件事"
-	}
-	return entity
-}
-
-// VagueTitle reports a column label plus an empty angle, such as 施工坑点：更稳妥的做法.
-// A title that still names the subject, such as 综合布线六类线测试失败常见原因, is not vague.
+// VagueTitle reports a label with no subject left once empty angles are removed.
 func VagueTitle(title string) bool {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return true
 	}
 	cleaned := title
-	for _, phrase := range append(append([]string{"施工坑点", "先看失败点"}, genericAngles...), templateWords...) {
+	for _, phrase := range genericAngles {
 		cleaned = strings.ReplaceAll(cleaned, phrase, "")
 	}
 	cleaned = strings.Trim(cleaned, "：:，, 、？? ")
 	return utf8.RuneCountInString(cleaned) < 4
-}
-
-func specificSubject(theme string) string {
-	parts := themeTerms(theme)
-	if len(parts) == 0 {
-		return ""
-	}
-	for i := 0; i < len(parts); i++ {
-		for j := i + 1; j < len(parts); j++ {
-			if utf8.RuneCountInString(parts[j]) > utf8.RuneCountInString(parts[i]) {
-				parts[i], parts[j] = parts[j], parts[i]
-			}
-		}
-	}
-	var b strings.Builder
-	for _, part := range parts {
-		if utf8.RuneCountInString(b.String()+part) > 24 {
-			break
-		}
-		b.WriteString(part)
-		if utf8.RuneCountInString(b.String()) >= 12 {
-			break
-		}
-	}
-	return b.String()
-}
-
-func matchesColumn(title, column, positioning, structure string) bool {
-	blob := column + positioning + structure
-	switch {
-	case familyColumn(blob):
-		return familyScene(title)
-	case faqColumn(blob):
-		return strings.Contains(title, "？") || strings.Contains(title, "?")
-	default:
-		return true
-	}
-}
-
-func familyScene(title string) bool {
-	hasFamily := false
-	for _, word := range []string{"家", "老人", "孩子", "爸", "妈", "爷", "奶", "娃"} {
-		if strings.Contains(title, word) {
-			hasFamily = true
-			break
-		}
-	}
-	if !hasFamily {
-		return false
-	}
-	for _, word := range []string{"把", "先", "用", "放", "打开", "关上", "量", "擦", "挪"} {
-		if strings.Contains(title, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func onTheme(title, theme string) bool {
-	terms := themeTerms(theme)
-	if len(terms) == 0 {
-		return true
-	}
-	for _, term := range terms {
-		if strings.Contains(title, term) {
-			return true
-		}
-	}
-	return weakAccount(theme) && hasTrade(title)
-}
-
-func longestThemeTerm(theme string) string {
-	best := ""
-	for _, term := range themeTerms(theme) {
-		if utf8.RuneCountInString(term) > utf8.RuneCountInString(best) {
-			best = term
-		}
-	}
-	return best
-}
-
-func themeTerms(theme string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, part := range strings.FieldsFunc(theme, func(r rune) bool {
-		switch r {
-		case ' ', '，', '。', '、', '\n', '；', ';', ',', '：', ':', '？', '?', '！', '的', '了', '和', '与', '把', '用':
-			return true
-		default:
-			return false
-		}
-	}) {
-		part = strings.TrimSpace(part)
-		n := utf8.RuneCountInString(part)
-		if n < 2 || n > 12 || seen[part] || genericTheme(part) || ComparisonFrame(part) {
-			continue
-		}
-		seen[part] = true
-		out = append(out, part)
-	}
-	return out
-}
-
-func subjectTerm(text string) string {
-	best := ""
-	for _, term := range themeTerms(text) {
-		if instructionalTerm(term) {
-			continue
-		}
-		if utf8.RuneCountInString(term) > utf8.RuneCountInString(best) {
-			best = term
-		}
-	}
-	return best
-}
-
-func instructionalTerm(text string) bool {
-	for _, word := range []string{"步骤", "照着", "拆成", "讲清", "可以", "定位", "栏目"} {
-		if strings.Contains(text, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func genericTheme(text string) bool {
-	switch text {
-	case "知识", "问题", "具体", "问答", "栏目", "定位", "分享", "经验", "一个", "做法", "今天", "常见", "怎么", "如何", "读者", "自己", "什么", "进行", "通过", "可以", "不要", "我们", "这个", "重点", "几条", "清楚", "讲清", "以及", "或者":
-		return true
-	default:
-		return false
-	}
 }

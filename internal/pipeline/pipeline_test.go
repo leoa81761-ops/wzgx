@@ -1440,7 +1440,11 @@ func runTask(t *testing.T, st *store.Store, deps Deps, user *model.User, account
 		if task != nil {
 			reason = task.FailureReason
 		}
-		t.Fatalf("article %s task %s err %v", status, reason, err)
+		note := ""
+		if article != nil {
+			note = article.DeliveryNote
+		}
+		t.Fatalf("article %s task %s note %s err %v", status, reason, note, err)
 	}
 	return article.TopicTag
 }
@@ -1861,8 +1865,12 @@ func TestFetchResearchSearchesWhenFewerThanThree(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		var req map[string]any
 		_ = json.Unmarshal(raw, &req)
-		if stageOf(req) == "来源判断" {
+		switch stageOf(req) {
+		case "来源判断":
 			writeSourceJudge(w, req)
+			return
+		case "检索词":
+			writeChoice(w, map[string]any{"queries": []any{"综合布线验收", "综合布线验收 现场", "综合布线验收 说明"}})
 			return
 		}
 		researchCalls++

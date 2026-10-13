@@ -70,27 +70,30 @@ func TestDivergeSkipsRepeatedAnglesAndMotifs(t *testing.T) {
 	}
 }
 
-func TestFitTitleFollowsTheColumnAndDropsTheComparison(t *testing.T) {
+func TestFitTitleDoesNotInventASharedSentence(t *testing.T) {
 	theme := "弱电 智能化 综合布线"
-	off := FitTitle("代理机构信息登记", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme)
-	if strings.Contains(off, "代理") || strings.Contains(off, "两种做法") || !strings.Contains(off, "？") || (!strings.Contains(off, "综合布线") && !strings.Contains(off, "弱电")) {
-		t.Fatal(off)
-	}
-	framed := FitTitle("综合布线的两种做法", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme)
-	if strings.Contains(framed, "两种做法") || !strings.Contains(framed, "？") {
-		t.Fatal(framed)
-	}
 	kept := FitTitle("综合布线验收时检修口留在哪？", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme)
 	if kept != "综合布线验收时检修口留在哪？" {
 		t.Fatal(kept)
 	}
-	leaked := FitTitle("动态速递", "工程圈快报", "用几条行业消息讲清和读者的关系", "news", "弱电 智能化")
-	if strings.Contains(leaked, "动态速递") || strings.Contains(leaked, "速递") || !strings.Contains(leaked, "综合布线") {
-		t.Fatal(leaked)
+	framed := FitTitle("综合布线的两种做法", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme)
+	if framed != "" {
+		t.Fatal(framed)
 	}
-	family := FitTitle("代理机构信息登记", "家长里短", "用家里的一件小事讲一个能照做的提醒", "custom", "家庭 家长里短")
-	if strings.Contains(family, "代理") || !strings.Contains(family, "家") || !strings.Contains(family, "把") {
-		t.Fatal(family)
+	vague := FitTitle("施工坑点：更稳妥的做法", "避坑辟谣", "", "custom", theme)
+	if vague != "" {
+		t.Fatal(vague)
+	}
+	for _, title := range []string{
+		FitTitle("代理机构信息登记", "知识FAQ", "用问答把一个具体问题讲清楚", "qa", theme),
+		FitTitle("动态速递", "工程圈快报", "用几条行业消息讲清和读者的关系", "news", "弱电 智能化"),
+		FitTitle("代理机构信息登记", "家长里短", "用家里的一件小事讲一个能照做的提醒", "custom", "家庭 家长里短"),
+	} {
+		for _, banned := range []string{"测到一半", "不知道先查哪一段", "拐杖", "晚饭后"} {
+			if strings.Contains(title, banned) {
+				t.Fatal(title)
+			}
+		}
 	}
 	angles := AnglesFor("知识FAQ", "用问答把一个具体问题讲清楚", "qa", "对比两种常见做法")
 	for _, angle := range angles {
@@ -127,20 +130,12 @@ func TestVetoSkipsTagAndCalendarAdvances(t *testing.T) {
 	}
 }
 
-func TestReaderPainIsNotTheSameFailureAngle(t *testing.T) {
-	grandma := ReaderPain("奶奶的一天", "晚饭后只做一件家务", "custom", "奶奶不当家 家庭", "奶奶的口气", "我在家见过", "奶奶不当家")
-	wiring := ReaderPain("方案拆解", "把一个方案拆成可以照着做的步骤", "steps", "弱电智能化 综合布线", "务实", "先看现场", "弱电陈工")
-	if GenericAngle(grandma) || GenericAngle(wiring) || strings.Contains(grandma, "先看失败点") || strings.Contains(wiring, "先看失败点") {
-		t.Fatal(grandma, wiring)
-	}
-	if grandma == wiring || !strings.Contains(grandma, "奶奶") || !strings.Contains(wiring, "弱电") {
-		t.Fatal(grandma, wiring)
-	}
-	if !GenericAngle("先看失败点") || !GenericAngle("监控掉线：先看失败点") || !GenericAngle("先把手边这一件说完") {
+func TestGenericAngleIsNotATitle(t *testing.T) {
+	if !GenericAngle("先看失败点") || !GenericAngle("监控掉线：先看失败点") {
 		t.Fatal("generic angle slipped through")
 	}
-	if strings.Contains(grandma, "先把手边") || strings.Contains(wiring, "先把手边") || strings.Contains(grandma, "灶台") || strings.Contains(grandma, "黏") {
-		t.Fatal(grandma, wiring)
+	if FitTitle("先看失败点", "方案拆解", "", "steps", "弱电") != "" {
+		t.Fatal("a generic angle must not become the title")
 	}
 	angles := AnglesFor("方案拆解", "把一个方案拆成可以照着做的步骤", "steps", "先看失败点")
 	for _, angle := range angles {

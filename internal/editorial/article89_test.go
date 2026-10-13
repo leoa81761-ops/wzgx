@@ -7,6 +7,47 @@ import (
 	"github.com/leoa81761-ops/wzgx/internal/render"
 )
 
+func TestFinishTextFiltersFAQAnswersAndTableCells(t *testing.T) {
+	draft := map[string]any{
+		"title": "面板松了先看哪颗螺丝",
+		"sections": []any{map[string]any{
+			"heading": "",
+			"paragraphs": []any{
+				"进场时先把图纸摊开。",
+				"先看左上那颗。",
+			},
+			"qa": []any{
+				map[string]any{"question": "面板松了先看哪颗螺丝？", "answer": "答：先看左上那颗。超过一半先停下。"},
+				map[string]any{"question": "面板松了先看哪颗螺丝？", "answer": "这一条是重复的。"},
+				map[string]any{"question": "标签掉了怎么补？", "answer": "按图纸上的编号重写。两轮以内不要收工。"},
+			},
+			"table": map[string]any{
+				"headers": []any{"项目", "说明"},
+				"rows":    []any{[]any{"线序", "按568B。超过一半要重测。"}},
+			},
+		}},
+	}
+	out := FinishText(draft)
+	section := sectionsOf(out)[0]
+	if textOf(section["heading"]) == "" {
+		t.Fatal("first section needs a heading")
+	}
+	if len(anyList(section["qa"])) != 2 {
+		t.Fatal(section["qa"])
+	}
+	blob := dump(out)
+	if strings.Contains(blob, "答：") || strings.Contains(blob, "超过一半") || strings.Contains(blob, "两轮以内") || strings.Contains(blob, "这一条是重复的") {
+		t.Fatal(blob)
+	}
+	if !strings.Contains(blob, "按568B") || !strings.Contains(blob, "进场时先把图纸摊开") {
+		t.Fatal(blob)
+	}
+	paras := anyList(section["paragraphs"])
+	if len(paras) != 1 {
+		t.Fatal(paras)
+	}
+}
+
 func TestArticle89SceneOnceIntroBeforeFAQAndAnswerPrefix(t *testing.T) {
 	draft := map[string]any{"sections": []any{
 		map[string]any{

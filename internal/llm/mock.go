@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/leoa81761-ops/wzgx/internal/catalog"
@@ -90,7 +91,7 @@ func columnRule(payload map[string]any) string {
 	case "steps", "step-by-step", "breakdown", "拆解":
 		b.WriteString("栏目是步骤：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。")
 	case "qa", "q&a", "faq", "问答":
-		b.WriteString("栏目是问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。")
+		b.WriteString("栏目是问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。开头不要复述任何一条答案。第一小节要有标题。")
 	}
 	return b.String()
 }
@@ -217,7 +218,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		if asString(payload["writing_mode"]) == "experience" {
 			system = "你是公众号编辑。这篇是经验分享，没有可引用的外部来源。请按这个账号的 direction、tone、signatures 和栏目结构重写成一篇完整稿。" +
 				"不要写外部机构、标准、新闻或网址，不要使用 [n]。现场的数量、工具和场景要写具体，不要用温馨、默契这类空话，也不要单独甩一句没有数字和工具的提示，也不要为了凑篇幅重复。" +
-				"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。" +
+				"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。开头不要复述任何一条答案。第一小节要有标题。" +
 				"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 				"news 或快报：没有可核对的新闻时不要编造日期和 [n]，按栏目定位写成经验分享。" +
 				"每一段只写 3 到 4 句，不要把很多句挤成一大段，也不要让相邻段重复同一句话。" +
@@ -228,7 +229,7 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 		system = "你是公众号编辑。正文的栏目结构没对上，请按 column_structure 重写成一篇完整稿。" +
 			"不要删掉已有段落、列表和表格，不要把表格压成一段话，不要增加大纲里没有的步骤。每一节里的序号从 1 编到这一节的最后一项，不要接着上一节，也不要用第几节当序号。只改每个区块里的句子，表格和列表的结构保持原样。" +
 			"news 或快报：每一段都要有可以核对的日期，至少一处 [n] 引用，而且不能每段都用同一个日期词开头。" +
-			"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。" +
+			"qa 或问答：开头先写 2 到 3 句场景，再至少五对。问句放进 qa.question 并以问号结尾，答案放进 qa.answer，写成能照做的几句，不要写成单独一行的「答：」；答案里不要再出现问号。开头不要复述任何一条答案。第一小节要有标题。" +
 			"steps 或拆解：每一段都要有序号，例如「1. 」或「第一步」，不要留下没有序号的段落。" +
 			"不要在句首机械地加「近日」，不要补空泛的「答：」，不要给没有来源的句子加 [1]。" +
 			"保留已有事实和 sources，不要新造机构、标准号和网址。" + namedSourceRule + markerRule +
@@ -274,9 +275,15 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"不得使用「震惊」「不转不是」「稳赚不赔」等标题党或承诺性用语，也不得写药物剂量、诊断、偏方或收益承诺。" +
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "选题" {
-			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。" +
-				"题目必须同时用上 column_positioning、tone 和 signatures。具体细节必须来自 subtopic 本身，不要另编一个题目里没有的场景，也不要换成「先看失败点」这种每个号都能套的空角度。" +
-				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。题目要具体到对象和问题，例如「综合布线六类线测试失败常见原因」，不要写成「施工坑点：更稳妥的做法」这种栏目名加空角度。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。奶奶号只写这一件家务。"
+			system += "根据 account_name、direction、keywords、tone、signatures、audience、taboos、column、column_positioning、recent_titles 来写。season_hint 和 trend_hint 如果有，可以当作季节或热点的提示，没有就不要编。" +
+				"candidates 写五个彼此不同的题。title 必须和其中一条 title 完全相同。不要再写 recent_titles 里已经有的事。rejected_title 不要再交回来。" +
+				"每个题都要能看出是这个账号、这个栏目的读者卡在哪一件事上。不要写可以套到任何账号上的句子，也不要套「两种做法」或「对比两种」。"
+		}
+		if stageLabel == "选题判断" {
+			system += "从 candidates 里选一个 winner。winner 必须和某一条 title 完全相同。按三件事选：像不像这个账号的人设，读者的具体麻烦清不清楚，这个标题能不能写成一篇。不要改字，不要新写一个标题。"
+		}
+		if stageLabel == "检索词" {
+			system += "queries 写三条检索词，只从已经选定的标题和它提到的人或物里来。不要把 direction 或栏目名切成连续的几个字，也不要搜和这篇无关的词。"
 		}
 		if stageLabel == "大纲" {
 			system += "points 里每一节给出 word_budget，各节 word_budget 相加必须等于 word_target。正文会按这个预算一节一节写满。小节标题要写成具体的事，不要写成「更稳妥的做法」。"
@@ -369,18 +376,58 @@ func MockForStage(stage string, payload map[string]any) map[string]any {
 		if len([]rune(full)) > 64 {
 			full = string([]rune(full)[:64])
 		}
-		return map[string]any{"title": full, "angle": payload["angle"]}
+		name := asString(payload["account_name"])
+		column := asString(payload["column"])
+		cands := []any{map[string]any{"title": full, "angle": angle, "pain": title}}
+		for i := 2; i <= 5; i++ {
+			extra := full
+			if name != "" || column != "" {
+				extra = strings.TrimSpace(name + " " + column + " " + title)
+			}
+			extra = strings.TrimSpace(extra + " " + strconv.Itoa(i))
+			if len([]rune(extra)) > 64 {
+				extra = string([]rune(extra)[:64])
+			}
+			cands = append(cands, map[string]any{"title": extra, "angle": angle, "pain": title})
+		}
+		return map[string]any{"title": full, "angle": angle, "candidates": cands}
+	case "选题判断":
+		winner := ""
+		for _, item := range anySlice(payload["candidates"]) {
+			row, _ := item.(map[string]any)
+			if row == nil {
+				winner = strings.TrimSpace(asString(item))
+			} else {
+				winner = strings.TrimSpace(asString(row["title"]))
+			}
+			if winner != "" {
+				break
+			}
+		}
+		if winner == "" {
+			winner = asString(payload["title"])
+		}
+		return map[string]any{"winner": winner}
+	case "检索词":
+		topic := asString(payload["topic_title"])
+		if topic == "" {
+			topic = asString(payload["subtopic"])
+		}
+		return map[string]any{"queries": []any{topic, topic + " 现场", topic + " 步骤"}}
 	case "大纲":
-		sub := asString(payload["subtopic"])
-		if sub == "" {
-			sub = "这件事"
+		label := asString(payload["topic_title"])
+		if label == "" {
+			label = asString(payload["subtopic"])
+		}
+		if label == "" {
+			label = "这件事"
 		}
 		return map[string]any{
-			"hook": "先从「" + sub + "」里一个具体场景说起。",
+			"hook": "先从「" + label + "」里一个具体场景说起。",
 			"points": []any{
-				map[string]any{"heading": "先看清眼前的问题", "intent": "用一个很小的场景说明读者为什么会卡住", "need_table": false},
-				map[string]any{"heading": "一个今天就能做的做法", "intent": "给出可以立刻执行的步骤", "need_table": true},
-				map[string]any{"heading": "少踩一个常见坑", "intent": "提醒一个容易做错的地方", "need_table": false},
+				map[string]any{"heading": label + "要看清的问题", "intent": label, "need_table": false},
+				map[string]any{"heading": label + "今天能做的一步", "intent": label, "need_table": true},
+				map[string]any{"heading": label + "少踩的一个坑", "intent": label, "need_table": false},
 			},
 			"closing": "选一个最小的步骤，做完再决定要不要继续。",
 		}
@@ -621,10 +668,14 @@ func mockStructured(payload map[string]any) map[string]any {
 	case "news", "news-brief", "快报":
 		section["paragraphs"] = []any{"2024年10月12日，综合布线验收有一条公开说明。[1]", "10月11日，另一条记录写的是现场编号。[1]"}
 	case "qa", "q&a", "faq", "问答":
-		section["paragraphs"] = []any{
-			"验收要先看哪一项？答：先对照图纸核对编号。",
-			"材料清单放在哪一步？答：放在进场之前核对。",
-			"编号对不上怎么办？答：先停下再对照图纸。",
+		section["heading"] = "验收要先看哪一项"
+		section["paragraphs"] = []any{"进场时先把图纸摊开，再对照现场的编号。"}
+		section["qa"] = []any{
+			map[string]any{"question": "验收要先看哪一项？", "answer": "先对照图纸核对编号。"},
+			map[string]any{"question": "材料清单放在哪一步？", "answer": "放在进场之前核对。"},
+			map[string]any{"question": "编号对不上怎么办？", "answer": "先停下再对照图纸。"},
+			map[string]any{"question": "图纸和现场不一致时先改哪边？", "answer": "先改现场标记，再回头改图纸。"},
+			map[string]any{"question": "收工前还要留什么？", "answer": "留下一份签过名的编号清单。"},
 		}
 	case "steps", "step-by-step", "breakdown", "拆解":
 		section["paragraphs"] = []any{"1. 先看现场。", "2. 再核对编号。"}

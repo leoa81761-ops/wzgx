@@ -54,10 +54,10 @@ func TestSentenceDropRefillsOnceThenHolds(t *testing.T) {
 	var refillCalls int
 	sections := []string{"先看图纸", "再测通断", "记下读数"}
 	bodyFor := func(heading string) string {
-		switch heading {
-		case "再测通断":
+		switch {
+		case strings.Contains(heading, "再测通断"):
 			return "误码率8%。时延超过20毫秒。三分之一要复测。间隔5米抽查。偏差有4倍。再核对线序编号。"
-		case "记下读数":
+		case strings.Contains(heading, "记下读数"):
 			return "丢包率4%。抖动超过9毫秒。将近半数要返工。两端留8米。误差有6倍。最后记下现场读数。"
 		default:
 			return "掉线率15%。衰减超过3 dB。一半以上要重测。留出30米。损耗有2倍。先对照这一处图纸。"
@@ -78,9 +78,9 @@ func TestSentenceDropRefillsOnceThenHolds(t *testing.T) {
 			writeChoice(w, map[string]any{
 				"hook": "开头",
 				"points": []any{
-					map[string]any{"heading": sections[0], "intent": "说明"},
-					map[string]any{"heading": sections[1], "intent": "说明"},
-					map[string]any{"heading": sections[2], "intent": "说明"},
+					map[string]any{"heading": "监控画面" + sections[0], "intent": "说明监控画面"},
+					map[string]any{"heading": "监控画面" + sections[1], "intent": "说明监控画面"},
+					map[string]any{"heading": "监控画面" + sections[2], "intent": "说明监控画面"},
 				},
 				"closing": "结束",
 			})

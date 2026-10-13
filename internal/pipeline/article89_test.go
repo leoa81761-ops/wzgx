@@ -145,7 +145,7 @@ func TestArticle90TopicTableAndSourceReasons(t *testing.T) {
 		payload := payloadOf(req)
 		switch stageOf(req) {
 		case "选题":
-			writeChoice(w, map[string]any{"title": "动态速递", "angle": "动态速递"})
+			writeChoice(w, map[string]any{"title": "综合布线的线序", "angle": "先核对线序"})
 		case "大纲":
 			writeChoice(w, map[string]any{"hook": "开头", "points": []any{
 				map[string]any{"heading": "综合布线的线序", "intent": "说明线序"},
@@ -157,20 +157,20 @@ func TestArticle90TopicTableAndSourceReasons(t *testing.T) {
 				heading = "综合布线的线序"
 			}
 			writeChoice(w, map[string]any{
-				"title": "动态速递", "summary": "摘要",
+				"title": "综合布线的线序", "summary": "摘要",
 				"sections": []any{map[string]any{
 					"heading": heading,
 					"paragraphs": []any{
 						"先把线序摊在桌上。两轮以内改完，一般就过了。",
-						"| 项目 | 说明 | | --- | --- | | 线序 | 按568B |",
+						"| 项目 | 说明 | | --- | --- | | 线序 | 按568B。超过一半要重测。 |",
 					},
 					"list": []any{},
-					"qa":   []any{map[string]any{"question": "还要看什么？", "answer": "答：先看橙白。"}},
+					"qa":   []any{map[string]any{"question": "还要看什么？", "answer": "答：先看橙白。超过一半先停下。"}},
 				}},
 				"closing": "结束", "sources": []any{},
 			})
 		case "标题":
-			writeChoice(w, map[string]any{"titles": []any{map[string]any{"title": "动态速递"}}})
+			writeChoice(w, map[string]any{"titles": []any{map[string]any{"title": "综合布线的线序"}}})
 		default:
 			echoDraft(w, payload, map[string]any{
 				"title": "综合布线的线序", "summary": "摘要",
@@ -210,17 +210,14 @@ func TestArticle90TopicTableAndSourceReasons(t *testing.T) {
 	if err != nil || article == nil {
 		t.Fatal(err)
 	}
-	if article.Status != "in_draft" || strings.Contains(article.Title, "动态速递") || strings.Contains(article.Title, "速递") || !strings.Contains(article.Title, "综合布线") {
+	if article.Status != "in_draft" || article.Title != "综合布线的线序" || strings.Contains(article.Title, "测到一半") {
 		t.Fatalf("status %s title %s note %s", article.Status, article.Title, article.DeliveryNote)
-	}
-	if strings.Contains(article.Subtopic, "动态速递") || strings.Contains(article.Subtopic, "速递") {
-		t.Fatal(article.Subtopic)
 	}
 	html := article.BodyHTML
 	if !strings.Contains(html, "<table") || !strings.Contains(html, "<td") || !strings.Contains(html, "按568B") || strings.Contains(html, "| 项目 |") {
 		t.Fatal(html)
 	}
-	if strings.Contains(html, "两轮以内") || strings.Contains(html, "答：") {
+	if strings.Contains(html, "两轮以内") || strings.Contains(html, "答：") || strings.Contains(html, "超过一半") {
 		t.Fatal(html)
 	}
 
