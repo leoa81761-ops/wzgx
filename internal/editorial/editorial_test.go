@@ -689,6 +689,22 @@ func TestArticle74And75Blocks(t *testing.T) {
 	}
 }
 
+func TestKeepOneSubjectDropsTheOtherChores(t *testing.T) {
+	draft := map[string]any{
+		"title": "奶奶晚饭后先把灶台擦一遍",
+		"sections": []any{map[string]any{"paragraphs": []any{
+			"晚饭后先把灶台擦一遍，锅还温着。",
+			"窗台的绿植该浇花了，花盆托盘有水。",
+			"书架上的灰尘用干抹布带一下。",
+		}}},
+	}
+	out := KeepOneSubject(draft)
+	text := dump(out)
+	if strings.Contains(text, "绿植") || strings.Contains(text, "灰尘") || !strings.Contains(text, "灶台") {
+		t.Fatal(text)
+	}
+}
+
 func dump(draft map[string]any) string {
 	buf, err := json.Marshal(draft)
 	if err != nil {

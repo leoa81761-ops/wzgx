@@ -106,10 +106,18 @@ func motifRule(payload map[string]any) string {
 }
 
 func voiceRule(payload map[string]any) string {
-	if !technicalVoice(payload) {
-		return ""
+	var b strings.Builder
+	name := asString(payload["account_name"])
+	tone := asString(payload["tone"])
+	if strings.Contains(name+tone+asString(payload["direction"]), "奶奶") {
+		b.WriteString("这个号用奶奶的口气。只讲 reader_pain 这一件家里的事，用「我在家见过」这种亲历，不要写成通用教程，也不要换到另一件家务。")
+	} else if strings.TrimSpace(tone) != "" || strings.TrimSpace(asString(payload["signatures"])) != "" {
+		b.WriteString("用 tone、signatures 和 account_name 里这个号自己的口气写，不要换成别的号的说法。")
 	}
-	return "技术号可以用第一人称写现场里反复见到的规律，例如「我在现场见过这类情况」。这是经验模式，不是某一天编出来的事件，也不要写成某个有名有姓的人的原话。"
+	if technicalVoice(payload) {
+		b.WriteString("技术号可以用第一人称写现场里反复见到的规律，例如「我在现场见过这类情况」。这是经验模式，不是某一天编出来的事件，也不要写成某个有名有姓的人的原话。")
+	}
+	return b.String()
 }
 
 func technicalVoice(payload map[string]any) bool {
@@ -269,14 +277,16 @@ func StageMessages(stageLabel string, payload map[string]any) []map[string]strin
 			"免费或无来源时 sources 必须是空数组。"
 		if stageLabel == "选题" {
 			system += "recent_titles 和 recent_topics 是这个账号最近写过的标题和主题。不要再选同一件事，同一栏目里换个说法也不要。已经写过环形、星形，就不要再写环状、星状或同一组拓扑对比。rejected_title 是刚被否掉的题，不要再交回来。" +
-				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。题目要具体到对象和问题，例如「综合布线六类线测试失败常见原因」，不要写成「施工坑点：更稳妥的做法」这种栏目名加空角度。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。"
+				"题目必须同时用上 column_positioning、tone、signatures 和 reader_pain。reader_pain 是这篇唯一的读者麻烦，不要换成「先看失败点」这种每个号都能套的空角度。" +
+				"题目必须跟着栏目定位走，不要套「两种做法」或「对比两种」。题目要具体到对象和问题，例如「综合布线六类线测试失败常见原因」，不要写成「施工坑点：更稳妥的做法」这种栏目名加空角度。知识FAQ 写成这个账号主题里的一个具体问题，弱电号就问弱电现场的问题。家长里短写成一件家里的事，再带一个能照做的提醒。和账号主题无关的题不要选，例如弱电号不要写代理机构信息登记。奶奶号只写这一件家务。"
 		}
 		if stageLabel == "大纲" {
 			system += "points 里每一节给出 word_budget，各节 word_budget 相加必须等于 word_target。正文会按这个预算一节一节写满。小节标题要写成具体的事，不要写成「更稳妥的做法」。"
 		}
 		if stageLabel == "正文" || stageLabel == "审核" {
 			system += lengthInstruction(stageLabel, payload) + evidenceRule(payload) + anecdoteRule + namedSourceRule + voiceRule(payload) + sceneRule + tabooRule(payload) + columnRule(payload)
-			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。"
+			system += "不要把正文改写成 recent_titles 或 recent_topics 里已经写过的那件事。" +
+				"全文只写 reader_pain 这一件事，不要换到另一件家务、另一台设备或另一个场景。"
 		}
 		system += readerRule + motifRule(payload)
 		if stageLabel == "审核" {

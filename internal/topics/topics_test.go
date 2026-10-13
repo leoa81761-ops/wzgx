@@ -122,3 +122,23 @@ func TestVetoSkipsTagAndCalendarAdvances(t *testing.T) {
 		}
 	}
 }
+
+func TestReaderPainIsNotTheSameFailureAngle(t *testing.T) {
+	grandma := ReaderPain("奶奶的一天", "晚饭后只做一件家务", "custom", "奶奶不当家 家庭", "奶奶的口气", "我在家见过", "奶奶不当家")
+	wiring := ReaderPain("方案拆解", "把一个方案拆成可以照着做的步骤", "steps", "弱电智能化 综合布线", "务实", "先看现场", "弱电陈工")
+	if GenericAngle(grandma) || GenericAngle(wiring) || strings.Contains(grandma, "先看失败点") || strings.Contains(wiring, "先看失败点") {
+		t.Fatal(grandma, wiring)
+	}
+	if grandma == wiring || !strings.Contains(grandma, "奶奶") || !strings.Contains(wiring, "弱电") {
+		t.Fatal(grandma, wiring)
+	}
+	if !GenericAngle("先看失败点") || !GenericAngle("监控掉线：先看失败点") {
+		t.Fatal("generic angle slipped through")
+	}
+	angles := AnglesFor("方案拆解", "把一个方案拆成可以照着做的步骤", "steps", "先看失败点")
+	for _, angle := range angles {
+		if strings.Contains(angle, "先看失败点") || angle == "把失败原因写具体" {
+			t.Fatal(angles)
+		}
+	}
+}

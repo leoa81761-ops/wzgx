@@ -1,6 +1,24 @@
 package persona
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestGrandmaVoiceComesFromTheAccountName(t *testing.T) {
+	home := SuggestNamed("奶奶不当家", "家庭生活", "family")
+	site := SuggestNamed("弱电陈工", "弱电智能化", "elv")
+	if !strings.Contains(home.Tone, "奶奶") || !strings.Contains(home.Signatures, "我在家见过") {
+		t.Fatal(home)
+	}
+	if strings.Contains(site.Tone, "奶奶") || strings.Contains(site.Signatures, "我在家见过") {
+		t.Fatal(site)
+	}
+	kept := Fill(Profile{Tone: "我改过的语气"}, home)
+	if kept.Tone != "我改过的语气" || kept.Signatures != home.Signatures {
+		t.Fatal(kept)
+	}
+}
 
 func TestSuggestDiffersByDirection(t *testing.T) {
 	elv := Suggest("弱电智能化", "elv")
