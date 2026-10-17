@@ -6,7 +6,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gonghao/internal/account"
+	"gonghao/internal/audit"
 	"gonghao/internal/auth"
+	"gonghao/internal/crypto"
 	"gonghao/internal/config"
 	"gonghao/internal/server"
 )
@@ -19,6 +22,14 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	} else if created {
 		log.Info("bootstrap super admin created")
 	}
-	auth.NewHandlers(authSvc, cfg.CookieSecure).Register(srv)
+	ah := auth.NewHandlers(authSvc, cfg.CookieSecure)
+	ah.Register(srv)
+
+	box, err := crypto.NewBox(cfg.MasterKey)
+	if err != nil {
+		return err
+	}
+	aud := audit.PG{DB: pool}
+	account.New(pool, box, aud).Register(srv, ah)
 	return nil
 }
