@@ -17,7 +17,7 @@ func (p *Pipeline) ResearchProbe(ctx context.Context, userID int64, tier, topic,
 		trace(Step{Stage: stage, Attempts: r.Attempts})
 		return r, err
 	}
-	ev := p.research(ctx, Job{UserID: userID}, topic, query, load, chat, trace)
+	ev := p.research(ctx, Job{UserID: userID}, topic, query, nil, load, chat, trace)
 	return ev, steps
 }
 

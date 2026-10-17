@@ -161,6 +161,7 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	// ⓪ for news-type columns, look for recent concrete events first so the topic is a real one.
 	// If none turn up, the topic falls back to a practical non-news one instead of inventing news.
 	topicKind := ""
+	var scanEvents []Evidence // become facts for a news topic
 	if wc.NeedsNews {
 		topicKind = "practical"
 		if scfgs, err := load("research"); err == nil {
@@ -183,6 +184,7 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 						l += "（" + e.Date + "）"
 					}
 					lines = append(lines, l)
+					scanEvents = append(scanEvents, e)
 				}
 				trace(Step{Stage: "scan", Note: fmt.Sprintf("%d events", len(lines))})
 				if len(lines) > 0 {
@@ -198,49 +200,33 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 		}
 	}
 
-	// ① topic
-	cfgs, err := load("topic")
-	if err != nil {
-		return res, fmt.Errorf("选题：%w", err)
-	}
+	// ① topic, ② research. A news topic with no facts at all is not written: the run falls back
+	// to a practical non-news topic.
 	var topic struct{ Topic, Angle, SearchQuery string }
-	var rejected []string
-	for try := 0; try < 3; try++ {
-		r, err := chat("topic", cfgs, topicSystem, topicUser(wc, j.TopicHint, rejected))
-		if err != nil {
-			return res, fmt.Errorf("选题：%w", err)
-		}
-		var t struct {
-			Topic       string `json:"topic"`
-			Angle       string `json:"angle"`
-			SearchQuery string `json:"search_query"`
-		}
-		if decodeJSON(r.Text, &t) != nil {
-			rejected = append(rejected, "（上次回复不是 JSON）")
-			continue
-		}
-		if why := badTopic(t.Topic, wc); why != "" {
-			rejected = append(rejected, t.Topic+"（"+why+"）")
-			trace(Step{Stage: "topic", Note: "rejected: " + t.Topic + " — " + why})
-			continue
-		}
-		topic.Topic, topic.Angle, topic.SearchQuery = strings.TrimSpace(t.Topic), t.Angle, t.SearchQuery
-		break
-	}
-	if topic.Topic == "" {
-		return res, errors.New("选题：三次都没有选出具体题目")
-	}
-	wc.Practical = topicKind == "practical"
-	if topic.SearchQuery == "" {
-		topic.SearchQuery = topic.Topic
-	}
-
-	// ② research (optional: only when a research route exists / the user has Tavily)
 	var ev []Evidence
-	if wc.Research {
-		ev = p.research(ctx, j, topic.Topic, topic.SearchQuery, load, chat, trace)
-	} else {
-		trace(Step{Stage: "research", Note: "off for this article type"})
+	for round := 0; ; round++ {
+		var err error
+		topic, err = p.pickTopic(wc, j.TopicHint, load, chat, trace)
+		if err != nil {
+			return res, err
+		}
+		wc.Practical = topicKind == "practical"
+		ev = nil
+		var seed []Evidence
+		if topicKind == "news" {
+			seed = scanEvents // the scan's event lines (source, title, date) count as facts
+		}
+		if wc.Research {
+			ev = p.research(ctx, j, topic.Topic, topic.SearchQuery, seed, load, chat, trace)
+		} else {
+			ev = p.research(ctx, j, "", "", seed, nil, nil, trace)
+			trace(Step{Stage: "research", Note: "off for this article type"})
+		}
+		if topicKind != "news" || len(ev) > 0 || round > 0 {
+			break
+		}
+		trace(Step{Stage: "research", Note: "news topic with no facts; practical non-news topic instead"})
+		topicKind, wc.Recentnews, scanEvents = "practical", "", nil
 	}
 
 	// ③ write
@@ -338,7 +324,7 @@ func badTopic(t string, w writingContext) string {
 	return ""
 }
 
-func (p *Pipeline) research(ctx context.Context, j Job, topic, query string,
+func (p *Pipeline) research(ctx context.Context, j Job, topic, query string, seed []Evidence,
 	load func(string) ([]gateway.Config, error),
 	chat func(string, []gateway.Config, string, string) (gateway.Result, error),
 	trace func(Step)) []Evidence {
@@ -356,6 +342,12 @@ func (p *Pipeline) research(ctx context.Context, j Job, topic, query string,
 		classify(&e)
 		e.N = len(ev) + 1
 		ev = append(ev, e)
+	}
+	for _, e := range seed {
+		add(e)
+	}
+	if load == nil { // research off: only the seed
+		return ev
 	}
 	if cfgs, err := load("research"); err == nil {
 		// one normal search, then one shorter rescue search if nothing usable came back
@@ -553,4 +545,45 @@ func scanQueries(w writingContext, now time.Time) []string {
 	kw = strings.NewReplacer("、", " ", "，", " ", ",", " ").Replace(kw)
 	month := fmt.Sprintf("%d年%d月", now.Year(), int(now.Month()))
 	return []string{joinNonEmpty(" ", month, kw, w.ColumnNote), joinNonEmpty(" ", month, kw, "新闻")}
+}
+
+func (p *Pipeline) pickTopic(wc writingContext, hint string,
+	load func(string) ([]gateway.Config, error),
+	chat func(string, []gateway.Config, string, string) (gateway.Result, error),
+	trace func(Step)) (topic struct{ Topic, Angle, SearchQuery string }, _ error) {
+	cfgs, err := load("topic")
+	if err != nil {
+		return topic, fmt.Errorf("选题：%w", err)
+	}
+	var rejected []string
+	for try := 0; try < 3; try++ {
+		r, err := chat("topic", cfgs, topicSystem, topicUser(wc, hint, rejected))
+		if err != nil {
+			return topic, fmt.Errorf("选题：%w", err)
+		}
+		var t struct {
+			Topic       string `json:"topic"`
+			Angle       string `json:"angle"`
+			SearchQuery string `json:"search_query"`
+		}
+		if decodeJSON(r.Text, &t) != nil {
+			rejected = append(rejected, "（上次回复不是 JSON）")
+			continue
+		}
+		if why := badTopic(t.Topic, wc); why != "" {
+			rejected = append(rejected, t.Topic+"（"+why+"）")
+			trace(Step{Stage: "topic", Note: "rejected: " + t.Topic + " — " + why})
+			continue
+		}
+		topic.Topic, topic.Angle, topic.SearchQuery = strings.TrimSpace(t.Topic), t.Angle, t.SearchQuery
+		break
+	}
+	if topic.Topic == "" {
+		return topic, errors.New("选题：三次都没有选出具体题目")
+	}
+	if topic.SearchQuery == "" {
+		topic.SearchQuery = topic.Topic
+	}
+
+	return topic, nil
 }

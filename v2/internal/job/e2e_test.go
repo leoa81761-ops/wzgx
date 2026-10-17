@@ -428,6 +428,9 @@ func TestNewsFallbackAndResearchOff(t *testing.T) {
 	if !strings.Contains(tu, "某市发布智慧社区建设通知（某市住建局｜2026-10-10）") || strings.Contains(tu, "不写新闻") {
 		t.Fatalf("topic prompt with events: %s", tu)
 	}
+	if _, wu := e.fm.last("write"); !strings.Contains(wu, "某市发布智慧社区建设通知") {
+		t.Fatalf("scan event must reach the writer as a fact: %s", wu)
+	}
 	_, j, _ = do(t, e.srv, "GET", fmt.Sprintf("/api/jobs/%v", m["job_id"]), user, nil)
 	_, a, _ = do(t, e.srv, "GET", fmt.Sprintf("/api/articles/%v", j["article_id"]), user, nil)
 	if a["topic_kind"] != "news" {
