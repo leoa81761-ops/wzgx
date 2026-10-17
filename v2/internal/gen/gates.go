@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -37,6 +38,9 @@ func Gate(a render.Article, finish string, sensitive []string) string {
 	if bodyChars == 0 {
 		return "空：没有正文"
 	}
+	if why := structureProblem(a.Blocks); why != "" {
+		return why
+	}
 	if last := lastTextBlock(a.Blocks); last != nil && last.Type == "p" {
 		t := strings.TrimSpace(last.Text)
 		r := []rune(t)
@@ -64,4 +68,36 @@ func lastTextBlock(bs []render.Block) *render.Block {
 		}
 	}
 	return nil
+}
+
+// structureProblem blocks (never edits) an article with a block type the renderer cannot show,
+// a content block with nothing in it, or a heading with no content before the next heading or the end.
+func structureProblem(bs []render.Block) string {
+	for i, b := range bs {
+		if !render.Known(b.Type) {
+			return "结构：无法识别的段落类型「" + b.Type + "」"
+		}
+		empty := false
+		switch b.Type {
+		case "h2", "p", "quote":
+			empty = strings.TrimSpace(b.Text) == ""
+		case "list":
+			empty = len(b.Items) == 0
+		case "table":
+			empty = len(b.Rows) == 0
+		}
+		if empty {
+			return fmt.Sprintf("结构：第 %d 段是空的", i+1)
+		}
+		if b.Type == "h2" {
+			j := i + 1
+			for j < len(bs) && bs[j].Type == "image" {
+				j++
+			}
+			if j == len(bs) || bs[j].Type == "h2" {
+				return "空小节：「" + strings.TrimSpace(b.Text) + "」下面没有内容"
+			}
+		}
+	}
+	return ""
 }
