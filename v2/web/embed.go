@@ -1,5 +1,5 @@
 // Package web embeds the built frontend (npm run build → dist/) into the Go binary.
-// dist/.gitkeep is tracked (and copied from public/ on every build) so a fresh checkout compiles.
+// dist/robots.txt is tracked (and copied from public/ on every build) so a fresh checkout compiles.
 package web
 
 import (
