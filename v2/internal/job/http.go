@@ -1,0 +1,172 @@
+package job
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"gonghao/internal/auth"
+	"gonghao/internal/render"
+	"gonghao/internal/server"
+)
+
+func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
+	user := func(f http.HandlerFunc) http.Handler { return h.Require(auth.UserOnly, f) }
+	anyR := func(f http.HandlerFunc) http.Handler { return h.Require(auth.AnyRole, f) }
+	staff := func(f http.HandlerFunc) http.Handler { return h.Require(auth.StaffOnly, f) }
+	srv.Handle("POST /api/accounts/{id}/generate", user(s.hGenerate))
+	srv.Handle("GET /api/jobs/{id}", anyR(s.hJob))
+	srv.Handle("GET /api/articles", anyR(s.hArticles))
+	srv.Handle("GET /api/articles/{id}", anyR(s.hArticle))
+	srv.Handle("GET /api/articles/{id}/preview", anyR(s.hPreview))
+	srv.Handle("PUT /api/admin/users/{uid}/daily-quota", staff(s.hQuota))
+}
+
+func pid(r *http.Request, k string) int64 { n, _ := strconv.ParseInt(r.PathValue(k), 10, 64); return n }
+func actor(r *http.Request) auth.User     { u, _ := auth.FromContext(r.Context()); return u }
+
+func fail(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		server.WriteError(w, 404, "不存在")
+	case errors.Is(err, ErrForbidden):
+		server.WriteError(w, 403, err.Error())
+	case errors.Is(err, ErrQuota):
+		server.WriteError(w, 429, err.Error())
+	default:
+		server.WriteError(w, 500, "服务器错误")
+	}
+}
+
+func (s *Service) hGenerate(w http.ResponseWriter, r *http.Request) {
+	var in EnqueueInput
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+			server.WriteError(w, 400, "请求格式不正确")
+			return
+		}
+	}
+	id, err := s.Enqueue(r.Context(), actor(r), pid(r, "id"), in, r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 202, map[string]any{"job_id": id, "dry_run": true})
+}
+
+// owner filter: users see their own rows; staff see all.
+func ownerClause(u auth.User, col string, argN int) (string, []any) {
+	if u.Role.IsStaff() {
+		return "TRUE", nil
+	}
+	return col + "=$" + strconv.Itoa(argN), []any{u.ID}
+}
+
+func (s *Service) hJob(w http.ResponseWriter, r *http.Request) {
+	cl, args := ownerClause(actor(r), "user_id", 2)
+	var out struct {
+		ID         int64           `json:"id"`
+		Status     string          `json:"status"`
+		Failure    string          `json:"failure"`
+		Trace      json.RawMessage `json:"trace"`
+		ArticleID  *int64          `json:"article_id"`
+		FinishedAt *time.Time      `json:"finished_at"`
+	}
+	err := s.DB.QueryRow(r.Context(), `SELECT j.id, j.status, j.failure, j.trace, (SELECT max(id) FROM article WHERE job_id=j.id), j.finished_at
+		FROM job j WHERE j.id=$1 AND `+cl, append([]any{pid(r, "id")}, args...)...).
+		Scan(&out.ID, &out.Status, &out.Failure, &out.Trace, &out.ArticleID, &out.FinishedAt)
+	if err != nil {
+		fail(w, ErrNotFound)
+		return
+	}
+	server.WriteJSON(w, 200, out)
+}
+
+type articleRow struct {
+	ID          int64           `json:"id"`
+	AccountID   int64           `json:"account_id"`
+	ColumnID    *int64          `json:"column_id"`
+	Title       string          `json:"title"`
+	Topic       string          `json:"topic"`
+	Summary     string          `json:"summary"`
+	Status      string          `json:"status"`
+	BlockReason string          `json:"block_reason"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Body        json.RawMessage `json:"body,omitempty"`
+	HTML        string          `json:"html,omitempty"`
+}
+
+func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
+	cl, args := ownerClause(actor(r), "user_id", 1)
+	rows, err := s.DB.Query(r.Context(), `SELECT id, account_id, column_id, title, topic, summary, status, block_reason, created_at
+		FROM article WHERE `+cl+` ORDER BY id DESC LIMIT 100`, args...)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []articleRow{}
+	for rows.Next() {
+		var a articleRow
+		if err := rows.Scan(&a.ID, &a.AccountID, &a.ColumnID, &a.Title, &a.Topic, &a.Summary, &a.Status, &a.BlockReason, &a.CreatedAt); err != nil {
+			fail(w, err)
+			return
+		}
+		out = append(out, a)
+	}
+	server.WriteJSON(w, 200, out)
+}
+
+func (s *Service) article(r *http.Request) (articleRow, error) {
+	cl, args := ownerClause(actor(r), "user_id", 2)
+	var a articleRow
+	err := s.DB.QueryRow(r.Context(), `SELECT id, account_id, column_id, title, topic, summary, status, block_reason, created_at, body_json, html
+		FROM article WHERE id=$1 AND `+cl, append([]any{pid(r, "id")}, args...)...).
+		Scan(&a.ID, &a.AccountID, &a.ColumnID, &a.Title, &a.Topic, &a.Summary, &a.Status, &a.BlockReason, &a.CreatedAt, &a.Body, &a.HTML)
+	if err != nil {
+		return a, ErrNotFound
+	}
+	return a, nil
+}
+
+func (s *Service) hArticle(w http.ResponseWriter, r *http.Request) {
+	a, err := s.article(r)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 200, a)
+}
+
+// hPreview renders the stored HTML in a phone-width page, exactly as it would be pushed.
+func (s *Service) hPreview(w http.ResponseWriter, r *http.Request) {
+	a, err := s.article(r)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src * data:; style-src 'unsafe-inline'")
+	w.Write([]byte(render.PreviewPage(a.Title, a.HTML)))
+}
+
+func (s *Service) hQuota(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		DailyQuota int `json:"daily_quota"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		server.WriteError(w, 400, "请求格式不正确")
+		return
+	}
+	if err := s.SetDailyQuota(r.Context(), actor(r), pid(r, "uid"), in.DailyQuota); err != nil {
+		if err.Error() == "额度不正确" {
+			server.WriteError(w, 400, err.Error())
+			return
+		}
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 200, map[string]bool{"ok": true})
+}

@@ -19,6 +19,8 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("POST /api/accounts", user(s.hBind))
 	srv.Handle("GET /api/accounts", user(s.hList))
 	srv.Handle("GET /api/article-types", any(s.hListTypes))
+	srv.Handle("PUT /api/me/tavily", user(s.hTavily))
+	srv.Handle("GET /api/me/tavily", user(s.hTavilyGet))
 	for _, p := range []struct {
 		prefix string
 		wrap   func(http.HandlerFunc) http.Handler

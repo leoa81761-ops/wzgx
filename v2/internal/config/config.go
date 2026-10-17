@@ -12,12 +12,14 @@ import (
 )
 
 type Config struct {
-	Addr         string        // listen address, V2_ADDR (default :8090)
-	DatabaseURL  string        // V2_DATABASE_URL
-	MasterKey    string        // V2_MASTER_KEY, encrypts third-party credentials
-	SessionTTL   time.Duration // V2_SESSION_TTL (default 720h)
-	CookieSecure bool          // V2_COOKIE_SECURE (default true)
-	WebDir       string        // V2_WEB_DIR, built frontend (default ./web/dist)
+	Addr            string        // listen address, V2_ADDR (default :8090)
+	DatabaseURL     string        // V2_DATABASE_URL
+	MasterKey       string        // V2_MASTER_KEY, encrypts third-party credentials
+	SessionTTL      time.Duration // V2_SESSION_TTL (default 720h)
+	CookieSecure    bool          // V2_COOKIE_SECURE (default true)
+	WebDir          string        // V2_WEB_DIR, built frontend (default ./web/dist)
+	DefaultCoverURL string        // V2_DEFAULT_COVER_URL, image slots use it until image generation lands
+	WorkerOff       bool          // V2_WORKER_OFF=true disables the job worker in this process
 
 	// Optional first super admin, created only when no super admin exists.
 	BootstrapAdminEmail    string // V2_BOOTSTRAP_ADMIN_EMAIL
@@ -34,6 +36,8 @@ func load(get func(string) string) (Config, error) {
 		SessionTTL:             720 * time.Hour,
 		CookieSecure:           true,
 		WebDir:                 or(get("V2_WEB_DIR"), "./web/dist"),
+		DefaultCoverURL:        get("V2_DEFAULT_COVER_URL"),
+		WorkerOff:              get("V2_WORKER_OFF") == "true",
 		BootstrapAdminEmail:    get("V2_BOOTSTRAP_ADMIN_EMAIL"),
 		BootstrapAdminPassword: get("V2_BOOTSTRAP_ADMIN_PASSWORD"),
 	}

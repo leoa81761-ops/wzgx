@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -12,6 +13,9 @@ import (
 	"gonghao/internal/config"
 	"gonghao/internal/crypto"
 	"gonghao/internal/gateway"
+	"gonghao/internal/gen"
+	"gonghao/internal/job"
+	"gonghao/internal/search"
 	"gonghao/internal/server"
 	"gonghao/internal/svccfg"
 )
@@ -35,5 +39,12 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	account.New(pool, box, aud).Register(srv, ah)
 	gw := gateway.New(gateway.PGRecorder{DB: pool, Log: log})
 	(&svccfg.Service{DB: pool, Box: box, Audit: aud, GW: gw}).Register(srv, ah)
+
+	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{}, DefaultImageURL: cfg.DefaultCoverURL, Log: log}
+	jobs := &job.Service{DB: pool, Runner: pipe, Audit: aud, Log: log}
+	jobs.Register(srv, ah)
+	if !cfg.WorkerOff {
+		go jobs.Work(ctx, 15*time.Second)
+	}
 	return nil
 }
