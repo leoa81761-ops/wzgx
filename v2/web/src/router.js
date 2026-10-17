@@ -32,7 +32,7 @@ export const router = createRouter({
         { path: 'types', component: A('Types') },
         { path: 'configs', component: A('Configs') },
         { path: 'routes', component: A('Routes') },
-        { path: 'operators', component: A('Operators') },
+        { path: 'operators', component: A('Operators'), meta: { superAdmin: true } },
         { path: 'sensitive', component: A('Sensitive') },
         { path: 'audit', component: A('Audit') },
       ],
@@ -49,5 +49,7 @@ router.beforeEach(async (to) => {
   const want = to.matched.find((r) => r.meta.role)?.meta.role
   if (want === 'user' && isStaff(me)) return '/admin'
   if (want === 'staff' && !isStaff(me)) return '/'
+  // operator pages are for the super admin only; operators who open the URL go back to the console home
+  if (to.matched.some((r) => r.meta.superAdmin) && me.role !== 'super_admin') return { path: '/admin/users', query: { denied: '1' } }
   return true
 })

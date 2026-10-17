@@ -52,6 +52,7 @@ func New(db *pgxpool.Pool, box Sealer, a audit.Logger) *Service {
 type Account struct {
 	ID          int64           `json:"id"`
 	UserID      int64           `json:"user_id"`
+	OwnerEmail  string          `json:"owner_email"`
 	Name        string          `json:"name"`
 	AppID       string          `json:"app_id"`
 	SecretMask  string          `json:"secret_mask"`
@@ -73,6 +74,14 @@ type BindInput struct {
 
 var appIDRe = regexp.MustCompile(`^wx[0-9a-f]{16}$`)
 
+// WeChat AppSecrets are 32 letters and digits.
+var appSecretRe = regexp.MustCompile(`^[0-9A-Za-z]{32}$`)
+
+const (
+	msgAppID     = "AppID 格式不对：应为 wx 开头、共 18 位（wx 加 16 位数字和小写字母），在公众号后台「设置与开发 → 基本配置」里复制"
+	msgAppSecret = "AppSecret 格式不对：应为 32 位字母和数字，在公众号后台「设置与开发 → 基本配置」里复制（不要带空格）"
+)
+
 func (in *BindInput) normalize() error {
 	in.Name = strings.TrimSpace(in.Name)
 	in.AppID = strings.TrimSpace(in.AppID)
@@ -84,10 +93,10 @@ func (in *BindInput) normalize() error {
 		return errors.New("请填写公众号名称（64 字以内）")
 	}
 	if !appIDRe.MatchString(in.AppID) {
-		return errors.New("AppID 格式不正确")
+		return errors.New(msgAppID)
 	}
-	if len(in.AppSecret) < 16 || len(in.AppSecret) > 128 {
-		return errors.New("AppSecret 格式不正确")
+	if !appSecretRe.MatchString(in.AppSecret) {
+		return errors.New(msgAppSecret)
 	}
 	if in.SubjectType != "personal" && in.SubjectType != "enterprise" {
 		return errors.New("主体类型不正确")
@@ -95,11 +104,11 @@ func (in *BindInput) normalize() error {
 	return nil
 }
 
-const accCols = `id, user_id, name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, check_report, created_at`
+const accCols = `id, user_id, (SELECT u.email FROM users u WHERE u.id = wx_account.user_id), name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, check_report, created_at`
 
 func scanAcc(r pgx.Row) (Account, error) {
 	var a Account
-	err := r.Scan(&a.ID, &a.UserID, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CheckReport, &a.CreatedAt)
+	err := r.Scan(&a.ID, &a.UserID, &a.OwnerEmail, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CheckReport, &a.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -241,8 +250,8 @@ func (s *Service) Update(ctx context.Context, actor auth.User, id int64, p Accou
 	}
 	if p.AppSecret != nil {
 		sec := strings.TrimSpace(*p.AppSecret)
-		if len(sec) < 16 || len(sec) > 128 {
-			return a, errors.New("AppSecret 格式不正确")
+		if !appSecretRe.MatchString(sec) {
+			return a, errors.New(msgAppSecret)
 		}
 		sealed, err := s.Box.Seal(sec)
 		if err != nil {

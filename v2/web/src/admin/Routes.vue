@@ -1,6 +1,7 @@
 <template>
   <h1>环节路由</h1>
-  <p class="muted">每个写作环节用哪个模型配置：第一个是主用，后面的依次备用。</p>
+  <p class="muted">每个写作环节用哪个模型配置：第一个是主用，后面的依次备用。这里的设置对所有套餐生效。</p>
+  <p v-if="loaded && !anyRoute" class="hint">还没有设置任何环节的模型，文章写不出来。</p>
   <div v-if="msg" class="msg" :class="{ ok }">{{ msg }}</div>
   <table>
     <tr><th>环节</th><th>使用的配置（按顺序）</th><th v-if="isRoot"></th></tr>
@@ -14,7 +15,7 @@
         </div>
         <button v-if="isRoot && configs.length" @click="routes[s].push(configs[0].id)">添加</button>
       </td>
-      <td v-if="isRoot"><button class="primary" @click="save(s)">保存</button></td>
+      <td v-if="isRoot" class="act"><button class="primary" @click="save(s)">保存</button></td>
     </tr>
   </table>
 </template>
@@ -24,13 +25,15 @@ import { get, put } from '../api.js'
 import { session } from '../store.js'
 const stageNames = { topic: '选题', research: '检索资料', write: '写作', review: '自查' }
 const isRoot = computed(() => session.me?.role === 'super_admin')
+const loaded = ref(false), anyRoute = computed(() => stages.value.some((s) => routes[s]?.length))
 const stages = ref([]), routes = reactive({}), configs = ref([]), msg = ref(''), ok = ref(false)
 const say = (m, good = false) => { msg.value = m; ok.value = good }
 async function load() {
   const r = await get('/api/admin/routes'); configs.value = await get('/api/admin/configs')
   stages.value = r.stages
-  for (const s of r.stages) routes[s] = [...((r.routes || []).find((x) => x.stage === s && !x.tier)?.config_ids || [])]
+  loaded.value = true
+  for (const s of r.stages) routes[s] = [...((r.routes || []).find((x) => x.stage === s && (!x.tier || x.tier === '*'))?.config_ids || [])]
 }
-async function save(s) { try { await put(`/api/admin/routes/${s}`, { config_ids: routes[s] }); say('已保存', true) } catch (e) { say(e.message) } }
+async function save(s) { try { await put(`/api/admin/routes/${s}`, { tier: '*', config_ids: routes[s] }); say('已保存', true) } catch (e) { say(e.message) } }
 onMounted(() => load().catch((e) => say(e.message)))
 </script>

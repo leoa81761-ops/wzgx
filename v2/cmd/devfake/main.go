@@ -8,11 +8,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	jpg "image/jpeg"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -20,11 +25,22 @@ import (
 	"time"
 )
 
-var jpeg = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
+// jpeg is a real 900×500 cover (soft green gradient) so previews and uploads look like a picture.
+var jpeg = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 900, 500))
+	for y := 0; y < 500; y++ {
+		for x := 0; x < 900; x++ {
+			img.Set(x, y, color.RGBA{uint8(200 - y/10), uint8(230 - x/30), uint8(215 - y/12), 255})
+		}
+	}
+	var b bytes.Buffer
+	jpg.Encode(&b, img, &jpg.Options{Quality: 80})
+	return b.Bytes()
+}()
 
 type fake struct {
 	mu     sync.Mutex
-	n      int
+	topic  string // last topic handed out; the next write uses it as the title (single-user local tool)
 	tokens int
 	drafts int
 }
@@ -89,22 +105,34 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fake) model(w http.ResponseWriter, r *http.Request, stage string) {
 	io.Copy(io.Discard, r.Body)
-	f.mu.Lock()
-	f.n++
-	n := f.n
-	f.mu.Unlock()
+	// one shared counter used to number titles, so topic/research/write calls of one article skipped
+	// numbers and a restart repeated them; label by time instead
+	stamp := time.Now().Format("01-02 15:04:05")
 	text := ""
 	switch stage {
 	case "topic":
-		text = fmt.Sprintf(`{"topic":"演示选题 %d：家里的台灯怎么选才护眼","angle":"从日常使用说起","search_query":"台灯 照度 标准"}`, n)
+		// the pipeline refuses a topic it already used for the account, so rotate through a few
+		ts := []string{"家里的台灯怎么选才护眼", "冰箱里的剩菜放几天", "老人手机字太小怎么调", "雨天衣服怎么晾干得快", "厨房下水道有味怎么办", "孩子写作业坐姿怎么纠正"}
+		pick := ts[rand.IntN(len(ts))]
+		t := pick + "（" + stamp + "）"
+		f.mu.Lock()
+		f.topic = pick
+		f.mu.Unlock()
+		text = `{"topic":"` + t + `","angle":"从日常使用说起","search_query":"生活 小窍门"}`
 	case "research":
 		text = "- 学习桌面照度不低于 300 lx（来源：建筑照明设计标准｜GB 50034-2024｜2024-03-01）\n- 台灯放在写字手的对侧，减少阴影（来源：演示资料｜｜2026-09-01）"
 	case "write":
-		text = fmt.Sprintf(`{"title":"演示文章 %d：台灯怎么选才护眼","summary":"这是本地演示服务写的假文章，用来走一遍页面。",
+		f.mu.Lock()
+		title := f.topic
+		f.mu.Unlock()
+		if title == "" {
+			title = "台灯怎么选才护眼"
+		}
+		text = fmt.Sprintf(`{"title":"%s（演示 %s）","summary":"这是本地演示服务写的假文章，用来走一遍页面。",
 "blocks":[{"type":"p","text":"这是一篇本地演示文章，内容是假模型生成的，只用来看页面效果。"},
 {"type":"h2","text":"先看亮度"},{"type":"p","text":"学习桌面照度不低于 300 lx[1]。"},
 {"type":"h2","text":"再看位置"},{"type":"list","items":["放在写字手的对侧","灯罩不透光","离桌面 40 厘米左右"]},
-{"type":"p","text":"选好台灯，孩子写作业也舒服些。"}]}`, n)
+{"type":"p","text":"选好台灯，孩子写作业也舒服些。"}]}`, title, stamp)
 	case "review":
 		text = `{"pass":true,"problems":[]}`
 	default:

@@ -6,13 +6,13 @@
     <tr><th>名称</th><th>标识</th><th>说明（给写作模型看）</th><th>需要近期动态</th><th>检索资料</th><th>启用</th><th>排序</th><th></th></tr>
     <tr v-for="t in list" :key="t.id || 'new'">
       <td><input v-model.trim="t.name" /></td>
-      <td style="width:120px"><input v-model.trim="t.key" :disabled="!!t.id" placeholder="英文小写" /></td>
-      <td><input v-model="t.description" /></td>
+      <td style="width:110px"><input v-model.trim="t.key" :disabled="!!t.id" placeholder="英文小写" /></td>
+      <td style="min-width:260px"><textarea v-model="t.description" rows="2" style="min-height:0;resize:vertical"></textarea></td>
       <td><input type="checkbox" v-model="t.needs_news" /></td>
       <td><input type="checkbox" v-model="t.research" /></td>
       <td><input type="checkbox" v-model="t.enabled" /></td>
-      <td style="width:70px"><input type="number" v-model.number="t.sort" /></td>
-      <td><button @click="save(t)">保存</button></td>
+      <td style="width:90px"><input type="number" v-model.number="t.sort" style="min-width:72px" /></td>
+      <td class="act"><button @click="save(t)">保存</button></td>
     </tr>
   </table>
   <button style="margin-top:10px" @click="list.push({ name: '', key: '', description: '', needs_news: false, research: true, enabled: true, sort: 0 })">新增类型</button>

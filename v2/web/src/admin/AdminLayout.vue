@@ -12,15 +12,15 @@
       <router-link to="/admin/audit">操作日志</router-link>
       <div class="foot">{{ session.me?.email }}<br />{{ isRoot ? '超级管理员' : '运营' }}<br /><a href="#" @click.prevent="logout">退出</a></div>
     </nav>
-    <main class="main"><router-view /></main>
+    <main class="main"><div v-if="route.query.denied" class="msg">只有超级管理员可以打开那个页面。</div><router-view /></main>
   </div>
 </template>
 <script setup>
 import { computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { post } from '../api.js'
 import { session } from '../store.js'
 const isRoot = computed(() => session.me?.role === 'super_admin')
-const router = useRouter()
+const router = useRouter(), route = useRoute()
 async function logout() { await post('/api/auth/logout').catch(() => {}); session.me = null; router.push('/login') }
 </script>

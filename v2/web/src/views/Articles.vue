@@ -4,11 +4,12 @@
   <div class="split">
     <div class="list">
       <table v-if="list.length">
-        <tr><th>标题</th><th>状态</th><th>时间</th></tr>
+        <tr><th>标题</th><th>公众号</th><th>状态</th><th>时间</th></tr>
         <tr v-for="a in list" :key="a.id" @click="open(a.id)" style="cursor:pointer" :style="{ background: cur?.id === a.id ? '#f0f7f4' : '' }">
           <td>{{ a.title || a.topic || '（无标题）' }} <span v-if="a.topic_kind === 'practical'" class="tag">实用题</span></td>
-          <td><span class="tag" :class="a.status">{{ statusText[a.status] || a.status }}</span></td>
-          <td class="muted">{{ fmtTime(a.created_at) }}</td>
+          <td class="nowrap">{{ a.account_name || '—' }}</td>
+          <td class="nowrap"><span class="tag" :class="a.status">{{ statusText[a.status] || a.status }}</span></td>
+          <td class="muted nowrap">{{ fmtTime(a.created_at) }}</td>
         </tr>
       </table>
       <p v-else class="muted">还没有文章。到「写作计划」点「现在写一篇」。</p>
@@ -16,6 +17,7 @@
     <div v-if="cur">
       <div class="card" style="width:390px">
         <b>{{ cur.title }}</b>
+        <div class="muted" v-if="curAccount">{{ curAccount }}</div>
         <p class="muted" v-if="cur.summary">{{ cur.summary }}</p>
         <div v-if="cur.status === 'blocked'" class="msg">没有通过检查：{{ cur.block_reason }}</div>
         <div v-if="cur.status === 'pushed'" class="msg ok">已在公众号草稿箱，可以去公众号后台检查后发表。</div>
@@ -34,11 +36,12 @@
   </div>
 </template>
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { get, post, fmtTime, statusText } from '../api.js'
 const list = ref([]), cur = ref(null), err = ref(''), pushErr = ref(''), confirming = ref(false), busy = ref(false)
 const route = useRoute()
+const curAccount = computed(() => list.value.find((a) => a.id === cur.value?.id)?.account_name || '')
 async function load() { list.value = await get('/api/articles') }
 async function open(id) { pushErr.value = ''; cur.value = await get(`/api/articles/${id}`) }
 async function push() {

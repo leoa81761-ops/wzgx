@@ -237,7 +237,7 @@ func Render(a Article, o Options) Output {
 // PreviewPage wraps rendered HTML in a phone-width page for local preview.
 func PreviewPage(title, body string) string {
 	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
-		`<title>` + html.EscapeString(title) + `</title></head><body style="margin:0;background:#eee;">` +
+		`<title>` + html.EscapeString(title) + `</title></head><body style="margin:0;background:#fff;">` +
 		`<div style="max-width:420px;margin:0 auto;background:#fff;padding:20px 16px;">` +
 		`<h1 style="font-size:22px;line-height:1.4;margin:0 0 20px;color:#111;">` + html.EscapeString(title) + `</h1>` + body + `</div></body></html>`
 }

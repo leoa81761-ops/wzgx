@@ -4,13 +4,13 @@
   <p class="muted" v-else>密钥只写不读：保存后只显示前后几位；留空表示不修改。接口需兼容 OpenAI（或选 Anthropic 协议）。</p>
   <div v-if="msg" class="msg" :class="{ ok }">{{ msg }}</div>
   <table>
-    <tr><th>名称</th><th>模型</th><th>推理强度</th><th>密钥</th><th>超时（首字/空闲/总）</th><th>启用</th><th></th></tr>
+    <tr><th>名称</th><th>模型</th><th>推理强度</th><th>密钥</th><th>超时（首字/空闲/总）</th><th>启用</th><th class="act"></th></tr>
     <tr v-for="c in list" :key="c.id">
       <td>{{ c.name }}<div class="muted">{{ c.protocol }} · {{ c.base_url }}</div></td>
       <td>{{ c.model }}</td><td>{{ c.reasoning_effort || '—' }}</td><td class="muted">{{ c.has_key ? c.key_mask : '未设置' }}</td>
       <td class="muted">{{ c.first_byte_timeout_s }}s / {{ c.idle_timeout_s }}s / {{ c.total_timeout_s }}s</td>
       <td>{{ c.enabled ? '是' : '否' }}</td>
-      <td class="row" v-if="isRoot"><button @click="edit(c)">编辑</button><button @click="test(c)" :disabled="busy">连接测试</button></td>
+      <td class="act"><div class="row" v-if="isRoot"><button @click="edit(c)">编辑</button><button @click="test(c)" :disabled="busy">连接测试</button></div></td>
     </tr>
   </table>
   <button v-if="isRoot" style="margin-top:10px" @click="edit(null)">新增配置</button>

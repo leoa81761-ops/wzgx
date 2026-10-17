@@ -117,6 +117,14 @@ func TestBindRules(t *testing.T) {
 	if code, _, _ := e.do("POST", "/api/accounts", u2, map[string]any{"name": "x", "app_id": "nope", "app_secret": "short"}); code != 400 {
 		t.Fatalf("validation: %d", code)
 	}
+	// a 31-character secret is refused with a message that says what is expected
+	if code, _, body := e.do("POST", "/api/accounts", u2, map[string]any{"name": "x", "app_id": "wx0123456789abcde9", "app_secret": "0123456789abcdef0123456789abcde"}); code != 400 || !strings.Contains(body, "32 位") {
+		t.Fatalf("secret length message: %d %s", code, body)
+	}
+	// staff listing names the owner by email
+	if _, _, body := e.do("GET", "/api/admin/accounts", root, nil); !strings.Contains(body, `"owner_email":"u1@example.com"`) {
+		t.Fatalf("owner email missing: %s", body)
+	}
 	// staff raises allowance -> second bind works
 	var u1id int64
 	e.pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email='u1@example.com'`).Scan(&u1id)

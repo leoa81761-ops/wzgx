@@ -99,6 +99,7 @@ func (s *Service) hJob(w http.ResponseWriter, r *http.Request) {
 type articleRow struct {
 	ID          int64           `json:"id"`
 	AccountID   int64           `json:"account_id"`
+	AccountName string          `json:"account_name"`
 	ColumnID    *int64          `json:"column_id"`
 	Title       string          `json:"title"`
 	Topic       string          `json:"topic"`
@@ -113,7 +114,7 @@ type articleRow struct {
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
 	cl, args := ownerClause(actor(r), "user_id", 1)
-	rows, err := s.DB.Query(r.Context(), `SELECT id, account_id, column_id, title, topic, topic_kind, summary, status, block_reason, created_at
+	rows, err := s.DB.Query(r.Context(), `SELECT id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = article.account_id), column_id, title, topic, topic_kind, summary, status, block_reason, created_at
 		FROM article WHERE `+cl+` ORDER BY id DESC LIMIT 100`, args...)
 	if err != nil {
 		fail(w, err)
@@ -123,7 +124,7 @@ func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
 	out := []articleRow{}
 	for rows.Next() {
 		var a articleRow
-		if err := rows.Scan(&a.ID, &a.AccountID, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason, &a.CreatedAt); err != nil {
 			fail(w, err)
 			return
 		}

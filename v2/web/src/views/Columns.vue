@@ -8,7 +8,7 @@
       <td style="width:110px"><input v-model.number="c.length_hint" type="number" min="0" placeholder="不限" /></td>
       <td style="width:80px"><input v-model.number="c.weight" type="number" min="1" /></td>
       <td><input type="checkbox" v-model="c.enabled" /></td>
-      <td class="row"><button @click="save(c)">保存</button><button class="danger" @click="remove(c)">删除</button></td>
+      <td class="act"><div class="row"><button @click="save(c)">保存</button><button class="danger" @click="remove(c)">删除</button></div></td>
     </tr>
   </table>
   <p v-else class="muted">还没有栏目。每个栏目选一种文章类型；篇幅参考只是给写作的提示，不会强制。</p>
