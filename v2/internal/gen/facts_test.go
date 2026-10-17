@@ -38,6 +38,10 @@ func TestParseFacts(t *testing.T) {
 	if l := ParseFacts("- 综合布线选型应结合环境干扰场强度｜标准号：GB 50311-2016｜2016-08-26"); len(l) != 1 || l[0].DocNumber != "GB 50311-2016" {
 		t.Fatalf("labels %+v", l)
 	}
+	if u := ParseFacts("- GB50339等｜建筑设备监控系统施工质量验收执行智能建筑工程质量验收规范（来源：《建筑设备监控系统施工技术方案》｜2024-01-02"); len(u) != 1 ||
+		u[0].Title != "《建筑设备监控系统施工技术方案》" || u[0].Snippet != "建筑设备监控系统施工质量验收执行智能建筑工程质量验收规范" || u[0].Date != "2024-01-02" {
+		t.Fatalf("unclosed bracket %+v", u)
+	}
 	if ParseFacts("未检索到可靠来源") != nil || ParseFacts("") != nil {
 		t.Fatal("nothing found")
 	}

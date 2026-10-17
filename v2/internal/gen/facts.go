@@ -8,7 +8,7 @@ import (
 var (
 	bulletRe = regexp.MustCompile(`^\s*(?:[-*•·]|\d{1,2}[.、)）])\s*`)
 	// "fact（来源：a｜b｜c）" — full- or half-width brackets, 来源/出处, ｜ or | or ， separators
-	srcRe   = regexp.MustCompile(`[（(]\s*(?:来源|出处|据)\s*[:：]\s*([^）)]*)[）)]\s*[。.]?\s*$`)
+	srcRe   = regexp.MustCompile(`[（(]\s*(?:来源|出处|据)\s*[:：]\s*([^）)]*)[）)]?\s*[。.]?\s*$`) // closing bracket may be missing
 	dateRe  = regexp.MustCompile(`(20\d{2})\s*[-年./]\s*(\d{1,2})(?:\s*[-月./]\s*(\d{1,2})日?)?`)
 	urlRe   = regexp.MustCompile(`https?://\S+`)
 	labelRe = regexp.MustCompile(`^(?:来源|出处|标准号|文号|发布日期|日期|标题)\s*[:：]\s*`)
@@ -66,6 +66,20 @@ func ParseFacts(text string) []Evidence {
 		if m := srcRe.FindStringSubmatchIndex(l); m != nil {
 			parts = splitBars(l[m[2]:m[3]])
 			l = strings.TrimSpace(l[:m[0]])
+			if bars := splitBars(l); len(bars) > 1 { // "GB 50339｜fact（来源：…）": keep the longest part as the fact
+				long := 0
+				for i, b := range bars {
+					if len([]rune(b)) > len([]rune(bars[long])) {
+						long = i
+					}
+				}
+				l = strings.TrimSpace(bars[long])
+				for i, b := range bars {
+					if i != long {
+						parts = append(parts, b)
+					}
+				}
+			}
 		} else if bars := splitBars(l); len(bars) > 1 {
 			// "标题｜文号｜日期" without the 来源 bracket: the first part is both the fact and the title
 			l, parts, first = strings.TrimSpace(bars[0]), bars, -1

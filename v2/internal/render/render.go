@@ -216,6 +216,9 @@ func Render(a Article, o Options) Output {
 			if s.DocNumber != "" && !strings.Contains(line, s.DocNumber) {
 				line = s.DocNumber + " " + line
 			}
+			if r := []rune(line); len(r) > 60 {
+				line = string(r[:60]) + "…"
+			}
 			if s.Issuer != "" {
 				line += "（" + s.Issuer + "）"
 			}
