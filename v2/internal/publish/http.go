@@ -15,7 +15,7 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("POST /api/articles/{id}/push", h.Require(auth.UserOnly, http.HandlerFunc(s.hPush)))
 }
 
-func id(r *http.Request) int64 { n, _ := strconv.ParseInt(r.PathValue("id"), 10, 64); return n }
+func id(r *http.Request) int64      { n, _ := strconv.ParseInt(r.PathValue("id"), 10, 64); return n }
 func who(r *http.Request) auth.User { u, _ := auth.FromContext(r.Context()); return u }
 
 func (s *Service) hCheck(w http.ResponseWriter, r *http.Request) {
