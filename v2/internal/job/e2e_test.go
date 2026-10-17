@@ -264,6 +264,13 @@ func TestEndToEnd(t *testing.T) {
 	if effort != "high" {
 		t.Fatal("reasoning effort from config")
 	}
+	e.fm.mu.Lock()
+	_, rf := e.fm.reqs["research"][0]["response_format"]
+	_, wf := e.fm.reqs["write"][0]["response_format"]
+	e.fm.mu.Unlock()
+	if rf || !wf {
+		t.Fatal("search model must not get JSON mode (it skips searching); writer must")
+	}
 
 	// preview
 	req := httptest.NewRequest("GET", fmt.Sprintf("/api/articles/%d/preview", artID), nil)

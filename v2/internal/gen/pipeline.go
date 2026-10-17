@@ -146,7 +146,9 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	}
 	load := func(stage string) ([]gateway.Config, error) { return gateway.LoadStage(ctx, p.DB, p.Box, stage, tier) }
 	chat := func(stage string, cfgs []gateway.Config, sys, user string) (gateway.Result, error) {
-		r, err := p.GW.Chat(ctx, cfgs, gateway.Request{Stage: stage, JobID: j.ID, JSON: true,
+		// Search models answer from live search; JSON mode makes them skip searching, so research
+		// asks for JSON in the prompt only and also uses the returned citations.
+		r, err := p.GW.Chat(ctx, cfgs, gateway.Request{Stage: stage, JobID: j.ID, JSON: stage != "research" && stage != "scan",
 			Messages: []gateway.Message{{Role: "system", Content: sys}, {Role: "user", Content: user}}}, left())
 		var fe *gateway.FailedError
 		if errors.As(err, &fe) {
@@ -154,6 +156,19 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 		}
 		trace(Step{Stage: stage, Attempts: r.Attempts})
 		return r, err
+	}
+
+	// ⓪ for news-type columns, look for recent concrete events first so the topic is a real one
+	if wc.NeedsNews {
+		if scfgs, err := load("research"); err == nil {
+			q := wc.ColumnName + " " + wc.ColumnNote + " " + wc.Profile["账号定位"]
+			if r, err := chat("scan", scfgs, scanSystem, "范围："+q+"\n今天："+wc.Today); err == nil {
+				wc.Recentnews = strings.TrimSpace(r.Text)
+				if len(r.Citations) > 0 {
+					wc.Recentnews += "\n来源：" + strings.Join(r.Citations[:min(len(r.Citations), 8)], " ")
+				}
+			}
+		}
 	}
 
 	// ① topic

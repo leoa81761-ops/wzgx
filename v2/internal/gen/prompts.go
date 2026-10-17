@@ -12,6 +12,8 @@ const topicSystem = `你为微信公众号选定下一篇文章的具体题目�
 
 const researchSystem = `你是资料检索员。围绕给定题目检索近期、可靠的中文资料。只输出 JSON：{"facts":[{"claim":"要点","title":"来源标题","url":"链接","date":"YYYY-MM-DD","kind":"national_standard|gov_document|other","doc_number":"文号或标准号","issuer":"发布机关"}]}。kind 只有国家标准、政府或工信部等部门发布的正式文件才算官方依据，其他一律 other。`
 
+const scanSystem = `你是资料检索员。检索给定范围内最近 30 天发生的具体事件（政策、标准、招投标、产品、项目），列出 5 条，每条一行：日期｜事件｜来源网址。只列能找到来源的真实事件。`
+
 const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。只有引用标记为【官方依据】的资料时才在句末标注 [编号]，其他资料不标注。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
 
 const reviewSystem = `你审校一篇公众号文章：只检查事实错误、前后矛盾、没写完、违反用户设置之处。没有问题输出 {"pass":true}；有问题输出 {"pass":false,"problems":["问题"],"article":{与原文相同结构的完整修订稿}}。只输出 JSON。`
@@ -26,6 +28,7 @@ type writingContext struct {
 	LengthHint  *int
 	NeedsNews   bool
 	Recent      []string
+	Recentnews  string // what a live search found recently, for news-type columns
 	Today       string
 }
 
@@ -55,6 +58,9 @@ func topicUser(w writingContext, hint string, rejected []string) string {
 	fmt.Fprintf(&b, "今天：%s\n", w.Today)
 	if w.NeedsNews {
 		b.WriteString("这个类型需要一件最近发生的具体事情。\n")
+		if w.Recentnews != "" {
+			b.WriteString("近期检索到的动态（从中选一件）：\n" + w.Recentnews + "\n")
+		}
 	}
 	if hint != "" {
 		fmt.Fprintf(&b, "用户指定的方向：%s\n", hint)
