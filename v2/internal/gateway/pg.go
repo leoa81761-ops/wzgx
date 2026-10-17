@@ -12,7 +12,9 @@ import (
 )
 
 // Opener decrypts stored credentials (crypto.Box satisfies it).
-type Opener interface{ Open(sealed string) (string, error) }
+type Opener interface {
+	Open(sealed string) (string, error)
+}
 
 // LoadStage returns the enabled text/search configs routed to a stage, primary first.
 // A tier-specific route wins over the '*' route.

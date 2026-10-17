@@ -12,12 +12,12 @@ import (
 )
 
 type Config struct {
-	Addr        string        // listen address, V2_ADDR (default :8090)
-	DatabaseURL string        // V2_DATABASE_URL
-	MasterKey   string        // V2_MASTER_KEY, encrypts third-party credentials
-	SessionTTL  time.Duration // V2_SESSION_TTL (default 720h)
-	CookieSecure bool         // V2_COOKIE_SECURE (default true)
-	WebDir      string        // V2_WEB_DIR, built frontend (default ./web/dist)
+	Addr         string        // listen address, V2_ADDR (default :8090)
+	DatabaseURL  string        // V2_DATABASE_URL
+	MasterKey    string        // V2_MASTER_KEY, encrypts third-party credentials
+	SessionTTL   time.Duration // V2_SESSION_TTL (default 720h)
+	CookieSecure bool          // V2_COOKIE_SECURE (default true)
+	WebDir       string        // V2_WEB_DIR, built frontend (default ./web/dist)
 
 	// Optional first super admin, created only when no super admin exists.
 	BootstrapAdminEmail    string // V2_BOOTSTRAP_ADMIN_EMAIL

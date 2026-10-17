@@ -15,7 +15,9 @@ import (
 )
 
 // Pinger reports database health.
-type Pinger interface{ Ping(ctx context.Context) error }
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
 
 type Server struct {
 	mux    *http.ServeMux

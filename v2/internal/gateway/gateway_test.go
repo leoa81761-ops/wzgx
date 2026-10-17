@@ -67,8 +67,10 @@ const finish = `data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{
 const done = "data: [DONE]"
 
 func okStep(text string) func(http.ResponseWriter, *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) { r2 := []rune(text)
-		sse(w, content(string(r2[:len(r2)/2])), content(string(r2[len(r2)/2:])), finish, done) }
+	return func(w http.ResponseWriter, r *http.Request) {
+		r2 := []rune(text)
+		sse(w, content(string(r2[:len(r2)/2])), content(string(r2[len(r2)/2:])), finish, done)
+	}
 }
 func emptyStep(w http.ResponseWriter, r *http.Request) { sse(w, finish, done) }
 func statusStep(code int) func(http.ResponseWriter, *http.Request) {

@@ -23,7 +23,9 @@ func FromContext(ctx context.Context) (User, bool) {
 }
 
 // WithUser is exported for tests in other packages.
-func WithUser(ctx context.Context, u User) context.Context { return context.WithValue(ctx, ctxKey{}, u) }
+func WithUser(ctx context.Context, u User) context.Context {
+	return context.WithValue(ctx, ctxKey{}, u)
+}
 
 type Handlers struct {
 	svc          *Service
@@ -93,9 +95,9 @@ func clientIP(r *http.Request) string {
 
 func (h *Handlers) register(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Email, Password, Name          string
-		TermsVersion   string `json:"terms_version"`
-		PrivacyVersion string `json:"privacy_version"`
+		Email, Password, Name string
+		TermsVersion          string `json:"terms_version"`
+		PrivacyVersion        string `json:"privacy_version"`
 	}
 	if !decode(w, r, &in) {
 		return
