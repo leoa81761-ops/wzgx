@@ -48,6 +48,22 @@ type Job struct {
 	ColumnID              *int64
 	TopicHint             string
 	DryRun                bool
+	// Topic is fixed (given by the user, or a proposal the user approved): no topic stage, no scan.
+	Topic     string
+	TopicKind string     // news | practical, from an approved proposal; "" for a user-given topic
+	Seed      []Evidence // the scan's events behind an approved news proposal
+	Rejected  []string   // topics the user turned down for this job
+	Confirm   bool       // stop after the topic stage and return a Proposal for the user to decide
+}
+
+// Proposal is the topic a confirm-mode job waits on.
+type Proposal struct {
+	Topic       string     `json:"topic"`
+	Angle       string     `json:"angle,omitempty"`
+	SearchQuery string     `json:"search_query,omitempty"`
+	Kind        string     `json:"kind,omitempty"`
+	ColumnID    int64      `json:"column_id"` // the column picked for this run, kept when the job resumes
+	Events      []Evidence `json:"events,omitempty"`
 }
 
 type Evidence struct {
@@ -117,6 +133,7 @@ type Result struct {
 	Status      string // ready | blocked
 	BlockReason string
 	Trace       []Step
+	Proposal    *Proposal // set when the job stops for topic confirmation
 }
 
 var ErrNoColumn = errors.New("这个公众号还没有可用的栏目")
@@ -162,7 +179,16 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	// If none turn up, the topic falls back to a practical non-news one instead of inventing news.
 	topicKind := ""
 	var scanEvents []Evidence // become facts for a news topic
-	if wc.NeedsNews {
+	fixed := strings.TrimSpace(j.Topic) != ""
+	if fixed {
+		topicKind, scanEvents = j.TopicKind, j.Seed
+		if topicKind == "news" {
+			for _, e := range scanEvents {
+				wc.Recentnews = joinNonEmpty("\n", wc.Recentnews, "- "+e.Snippet)
+			}
+		}
+		trace(Step{Stage: "topic", Note: "fixed topic: " + j.Topic})
+	} else if wc.NeedsNews {
 		topicKind = "practical"
 		if scfgs, err := load("research"); err == nil {
 			// the sharp query first; if it brings back no event, one short query (month + keywords + 新闻)
@@ -206,9 +232,22 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	var ev []Evidence
 	for round := 0; ; round++ {
 		var err error
-		topic, err = p.pickTopic(wc, j.TopicHint, load, chat, trace)
-		if err != nil {
+		if fixed && round == 0 {
+			topic.Topic, topic.SearchQuery = strings.TrimSpace(j.Topic), strings.TrimSpace(j.Topic)
+			if j.TopicKind != "" && len(j.Seed) == 0 && topicKind == "news" {
+				topicKind = "practical"
+			}
+		} else if topic, err = p.pickTopic(wc, j.TopicHint, j.Rejected, load, chat, trace); err != nil {
 			return res, err
+		}
+		if j.Confirm && !fixed {
+			pr := &Proposal{Topic: topic.Topic, Angle: topic.Angle, SearchQuery: topic.SearchQuery, Kind: topicKind, ColumnID: colID}
+			if topicKind == "news" {
+				pr.Events = scanEvents
+			}
+			res.Proposal = pr
+			trace(Step{Stage: "topic", Note: "waiting for the user to confirm the topic"})
+			return res, nil
 		}
 		wc.Practical = topicKind == "practical"
 		ev = nil
@@ -223,6 +262,11 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 			trace(Step{Stage: "research", Note: "off for this article type"})
 		}
 		if topicKind != "news" || len(ev) > 0 || round > 0 {
+			break
+		}
+		if fixed { // the user chose this topic: keep it, write it as a practical piece
+			topicKind, wc.Recentnews, scanEvents = "practical", "", nil
+			wc.Practical = true
 			break
 		}
 		trace(Step{Stage: "research", Note: "news topic with no facts; practical non-news topic instead"})
@@ -547,7 +591,7 @@ func scanQueries(w writingContext, now time.Time) []string {
 	return []string{joinNonEmpty(" ", month, kw, w.ColumnNote), joinNonEmpty(" ", month, kw, "新闻")}
 }
 
-func (p *Pipeline) pickTopic(wc writingContext, hint string,
+func (p *Pipeline) pickTopic(wc writingContext, hint string, prior []string,
 	load func(string) ([]gateway.Config, error),
 	chat func(string, []gateway.Config, string, string) (gateway.Result, error),
 	trace func(Step)) (topic struct{ Topic, Angle, SearchQuery string }, _ error) {
@@ -555,7 +599,10 @@ func (p *Pipeline) pickTopic(wc writingContext, hint string,
 	if err != nil {
 		return topic, fmt.Errorf("选题：%w", err)
 	}
-	var rejected []string
+	rejected := []string{}
+	for _, t := range prior {
+		rejected = append(rejected, t+"（用户没有采用）")
+	}
 	for try := 0; try < 3; try++ {
 		r, err := chat("topic", cfgs, topicSystem, topicUser(wc, hint, rejected))
 		if err != nil {

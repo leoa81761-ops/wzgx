@@ -207,3 +207,22 @@ func (c *Client) do(ctx context.Context, method, u, ctype string, body io.Reader
 	}
 	return nil
 }
+
+// DraftItem is one article of a draft as WeChat returns it.
+type DraftItem struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+// GetDraft reads a draft back (draft/get). A draft that was published or deleted answers 40007.
+func (c *Client) GetDraft(ctx context.Context, token, mediaID string) ([]DraftItem, error) {
+	body, _ := json.Marshal(map[string]string{"media_id": mediaID})
+	var out struct {
+		APIError
+		NewsItem []DraftItem `json:"news_item"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/draft/get?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return nil, err
+	}
+	return out.NewsItem, nil
+}

@@ -21,10 +21,12 @@ type fakeWX struct {
 	tokens  int
 	drafts  []map[string]any
 	uploads []string
+	edited  map[string]string // media_id -> content the "user" changed it to
+	gone    map[string]bool   // media_id -> published or deleted
 }
 
 func newFakeWX(t *testing.T) *fakeWX {
-	f := &fakeWX{secret: "0123456789abcdef0123456789abcdef"}
+	f := &fakeWX{secret: "0123456789abcdef0123456789abcdef", edited: map[string]string{}, gone: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -69,6 +71,23 @@ func newFakeWX(t *testing.T) *fakeWX {
 			json.NewDecoder(r.Body).Decode(&in)
 			f.drafts = append(f.drafts, in)
 			fmt.Fprintf(w, `{"media_id":"DRAFT%d"}`, len(f.drafts))
+		case "/cgi-bin/draft/get":
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			id := in["media_id"]
+			var n int
+			fmt.Sscanf(id, "DRAFT%d", &n)
+			if f.gone[id] || n < 1 || n > len(f.drafts) {
+				fmt.Fprint(w, `{"errcode":40007,"errmsg":"invalid media_id"}`)
+				return
+			}
+			a := f.drafts[n-1]["articles"].([]any)[0].(map[string]any)
+			content := a["content"].(string)
+			if c, ok := f.edited[id]; ok {
+				content = c
+			}
+			b, _ := json.Marshal(map[string]any{"news_item": []any{map[string]any{"title": a["title"], "content": content}}})
+			w.Write(b)
 		default:
 			http.NotFound(w, r)
 		}

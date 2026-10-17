@@ -96,6 +96,7 @@ type env struct {
 	fm   *fakeModel
 	pool *pgxpool.Pool
 	wx   *fakeWX
+	pub  *publish.Service
 }
 
 func do(t *testing.T, srv http.Handler, method, path, tok string, body any) (int, map[string]any, string) {
@@ -161,7 +162,8 @@ func setup(t *testing.T) (*env, string, string, int64, int64) {
 	js := &job.Service{DB: pool, Runner: pipe, Audit: aud}
 	js.Register(srv, h)
 	wx := newFakeWX(t)
-	(&publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: wx.srv.URL}, Fetch: &http.Client{Transport: imageTransport{}}}).Register(srv, h)
+	pub := &publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: wx.srv.URL}, Fetch: &http.Client{Transport: imageTransport{}}}
+	pub.Register(srv, h)
 
 	as.Bootstrap(ctx, "root@example.com", "rootpass1")
 	_, root, _ := as.Login(ctx, "root@example.com", "rootpass1", "", "")
@@ -194,7 +196,7 @@ func setup(t *testing.T) (*env, string, string, int64, int64) {
 	if code, m, _ := do(t, srv, "PUT", "/api/me/tavily", user, map[string]any{"key": "tvly-user-key-123456"}); code != 200 || m["mask"] == "" {
 		t.Fatal("tavily key")
 	}
-	e := &env{t: t, srv: srv, auth: as, jobs: js, fm: fm, pool: pool, wx: wx}
+	e := &env{t: t, srv: srv, auth: as, jobs: js, fm: fm, pool: pool, wx: wx, pub: pub}
 	return e, root, user, accID, colID
 }
 

@@ -21,6 +21,7 @@ type Config struct {
 	DefaultCoverURL string        // V2_DEFAULT_COVER_URL, image slots use it until image generation lands
 	WorkerOff       bool          // V2_WORKER_OFF=true disables the job worker in this process
 	ServerIP        string        // V2_SERVER_IP, this server's outbound IP, shown as the WeChat IP-whitelist hint
+	ReadBackAfter   time.Duration // V2_READBACK_AFTER, first draft read-back after a push (default 2h; local walk-throughs use a minute)
 	TavilyBase      string        // V2_TAVILY_BASE, Tavily API base URL (default https://api.tavily.com; local tests use a fake)
 	WeChatBase      string        // V2_WECHAT_BASE, WeChat API base URL (default https://api.weixin.qq.com; local tests use a fake)
 
@@ -53,6 +54,13 @@ func load(get func(string) string) (Config, error) {
 			return c, fmt.Errorf("V2_SESSION_TTL: invalid duration %q", v)
 		}
 		c.SessionTTL = d
+	}
+	if v := get("V2_READBACK_AFTER"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("V2_READBACK_AFTER: invalid duration %q", v)
+		}
+		c.ReadBackAfter = d
 	}
 	if v := get("V2_COOKIE_SECURE"); v != "" {
 		b, err := strconv.ParseBool(v)

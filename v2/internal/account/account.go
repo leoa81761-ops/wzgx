@@ -50,18 +50,21 @@ func New(db *pgxpool.Pool, box Sealer, a audit.Logger) *Service {
 }
 
 type Account struct {
-	ID          int64           `json:"id"`
-	UserID      int64           `json:"user_id"`
-	OwnerEmail  string          `json:"owner_email"`
-	Name        string          `json:"name"`
-	AppID       string          `json:"app_id"`
-	SecretMask  string          `json:"secret_mask"`
-	SubjectType string          `json:"subject_type"`
-	Verified    bool            `json:"verified"`
-	BindStatus  string          `json:"bind_status"`
-	CheckedAt   *time.Time      `json:"checked_at"`
-	CheckReport json.RawMessage `json:"check_report"` // last bind check: ok, errcode, message, hint
-	CreatedAt   time.Time       `json:"created_at"`
+	ID           int64           `json:"id"`
+	UserID       int64           `json:"user_id"`
+	OwnerEmail   string          `json:"owner_email"`
+	Paused       bool            `json:"paused"`
+	PausedReason string          `json:"paused_reason"` // user | auto
+	ConfirmTopic bool            `json:"confirm_topic"` // topic confirmation mode
+	Name         string          `json:"name"`
+	AppID        string          `json:"app_id"`
+	SecretMask   string          `json:"secret_mask"`
+	SubjectType  string          `json:"subject_type"`
+	Verified     bool            `json:"verified"`
+	BindStatus   string          `json:"bind_status"`
+	CheckedAt    *time.Time      `json:"checked_at"`
+	CheckReport  json.RawMessage `json:"check_report"` // last bind check: ok, errcode, message, hint
+	CreatedAt    time.Time       `json:"created_at"`
 }
 
 type BindInput struct {
@@ -104,11 +107,11 @@ func (in *BindInput) normalize() error {
 	return nil
 }
 
-const accCols = `id, user_id, (SELECT u.email FROM users u WHERE u.id = wx_account.user_id), name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, check_report, created_at`
+const accCols = `id, user_id, (SELECT u.email FROM users u WHERE u.id = wx_account.user_id), name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, check_report, created_at, paused, paused_reason, confirm_topic`
 
 func scanAcc(r pgx.Row) (Account, error) {
 	var a Account
-	err := r.Scan(&a.ID, &a.UserID, &a.OwnerEmail, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CheckReport, &a.CreatedAt)
+	err := r.Scan(&a.ID, &a.UserID, &a.OwnerEmail, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CheckReport, &a.CreatedAt, &a.Paused, &a.PausedReason, &a.ConfirmTopic)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrNotFound
 	}

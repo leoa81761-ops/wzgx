@@ -28,6 +28,13 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("GET /api/admin/sensitive-words", staff(s.hSensitive))
 	srv.Handle("PUT /api/admin/sensitive-words", staff(s.hSaveSensitive))
 	srv.Handle("GET /api/site", anyR(s.hSite))
+	srv.Handle("PUT /api/accounts/{id}/controls", user(s.hControls))
+	srv.Handle("GET /api/me/topics", user(s.hPendingTopics))
+	srv.Handle("POST /api/jobs/{id}/topic", user(s.hDecideTopic))
+	srv.Handle("PUT /api/articles/{id}/feedback", user(s.hFeedback))
+	srv.Handle("GET /api/admin/feedback", staff(s.hAdminFeedback))
+	srv.Handle("GET /api/admin/settings", staff(s.hGetSettings))
+	srv.Handle("PUT /api/admin/settings", staff(s.hSaveSettings))
 	srv.Handle("GET /api/accounts/{id}/plans", user(s.hPlans))
 	srv.Handle("POST /api/accounts/{id}/plans", user(s.hSavePlan))
 	srv.Handle("PUT /api/accounts/{id}/plans/{pid}", user(s.hSavePlan))
@@ -97,25 +104,40 @@ func (s *Service) hJob(w http.ResponseWriter, r *http.Request) {
 }
 
 type articleRow struct {
-	ID          int64           `json:"id"`
-	AccountID   int64           `json:"account_id"`
-	AccountName string          `json:"account_name"`
-	ColumnID    *int64          `json:"column_id"`
-	Title       string          `json:"title"`
-	Topic       string          `json:"topic"`
-	TopicKind   *string         `json:"topic_kind"` // news | practical (news-type columns only)
-	Summary     string          `json:"summary"`
-	Status      string          `json:"status"`
-	BlockReason string          `json:"block_reason"`
-	CreatedAt   time.Time       `json:"created_at"`
-	Body        json.RawMessage `json:"body,omitempty"`
-	HTML        string          `json:"html,omitempty"`
+	ID           int64           `json:"id"`
+	AccountID    int64           `json:"account_id"`
+	AccountName  string          `json:"account_name"`
+	ColumnID     *int64          `json:"column_id"`
+	Title        string          `json:"title"`
+	Topic        string          `json:"topic"`
+	TopicKind    *string         `json:"topic_kind"` // news | practical (news-type columns only)
+	Summary      string          `json:"summary"`
+	Status       string          `json:"status"`
+	BlockReason  string          `json:"block_reason"`
+	CreatedAt    time.Time       `json:"created_at"`
+	PushedAt     *time.Time      `json:"pushed_at"`
+	Readback     string          `json:"readback_status"` // '' | unedited | edited | gone | error
+	ChangeRatio  *float64        `json:"change_ratio"`
+	ReadbackAt   *time.Time      `json:"readback_at"`
+	ReadbackNote string          `json:"readback_note"`
+	Rating       *int            `json:"rating"` // the user's feedback: 1 / -1
+	Note         *string         `json:"feedback_note"`
+	Body         json.RawMessage `json:"body,omitempty"`
+	HTML         string          `json:"html,omitempty"`
+}
+
+const artCols = `id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = article.account_id), column_id, title, topic, topic_kind,
+	summary, status, block_reason, created_at, pushed_at, readback_status, change_ratio, readback_at, readback_note,
+	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id)`
+
+func (a *articleRow) fields() []any {
+	return []any{&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason,
+		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note}
 }
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
 	cl, args := ownerClause(actor(r), "user_id", 1)
-	rows, err := s.DB.Query(r.Context(), `SELECT id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = article.account_id), column_id, title, topic, topic_kind, summary, status, block_reason, created_at
-		FROM article WHERE `+cl+` ORDER BY id DESC LIMIT 100`, args...)
+	rows, err := s.DB.Query(r.Context(), `SELECT `+artCols+` FROM article WHERE `+cl+` ORDER BY id DESC LIMIT 100`, args...)
 	if err != nil {
 		fail(w, err)
 		return
@@ -124,7 +146,7 @@ func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
 	out := []articleRow{}
 	for rows.Next() {
 		var a articleRow
-		if err := rows.Scan(&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason, &a.CreatedAt); err != nil {
+		if err := rows.Scan(a.fields()...); err != nil {
 			fail(w, err)
 			return
 		}
@@ -136,9 +158,9 @@ func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
 func (s *Service) article(r *http.Request) (articleRow, error) {
 	cl, args := ownerClause(actor(r), "user_id", 2)
 	var a articleRow
-	err := s.DB.QueryRow(r.Context(), `SELECT id, account_id, column_id, title, topic, topic_kind, summary, status, block_reason, created_at, body_json, html
+	err := s.DB.QueryRow(r.Context(), `SELECT `+artCols+`, body_json, html
 		FROM article WHERE id=$1 AND `+cl, append([]any{pid(r, "id")}, args...)...).
-		Scan(&a.ID, &a.AccountID, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason, &a.CreatedAt, &a.Body, &a.HTML)
+		Scan(append(a.fields(), &a.Body, &a.HTML)...)
 	if err != nil {
 		return a, ErrNotFound
 	}

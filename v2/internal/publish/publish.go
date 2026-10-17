@@ -35,6 +35,10 @@ type Service struct {
 	Audit    audit.Logger
 	Fetch    *http.Client // downloads article images for upload; default 15s timeout
 	ServerIP string       // V2_SERVER_IP, named in the IP-whitelist hint
+
+	ReadBackAfter time.Duration // first draft read-back this long after a push (default 2h)
+	ReadBackEvery time.Duration // then at most this often, for 7 days (default 12h)
+	Now           func() time.Time
 }
 
 type account struct {
@@ -130,7 +134,7 @@ func (s *Service) Push(ctx context.Context, actor auth.User, articleID int64) (s
 	if a.bindStatus != "bound" {
 		return "", fmt.Errorf("%w：公众号已解绑", ErrState)
 	}
-	mediaID, err := s.push(ctx, a, title, summary, html)
+	mediaID, pushed, err := s.push(ctx, a, title, summary, html)
 	if err != nil {
 		msg := err.Error()
 		var ae *wechat.APIError
@@ -141,18 +145,19 @@ func (s *Service) Push(ctx context.Context, actor auth.User, articleID int64) (s
 		s.Audit.Log(ctx, actor.ID, "article.push_failed", fmt.Sprint(articleID), map[string]any{"account_id": a.id})
 		return "", errors.New(msg)
 	}
-	if _, err := s.DB.Exec(ctx, `UPDATE article SET status='pushed', draft_media_id=$2, push_error='', pushed_at=now(), updated_at=now() WHERE id=$1`,
-		articleID, mediaID); err != nil {
+	if _, err := s.DB.Exec(ctx, `UPDATE article SET status='pushed', draft_media_id=$2, pushed_content=$3, push_error='', pushed_at=now(),
+		readback_status='', readback_at=NULL, change_ratio=NULL, readback_note='', updated_at=now() WHERE id=$1`,
+		articleID, mediaID, pushed); err != nil {
 		return "", err
 	}
 	s.Audit.Log(ctx, actor.ID, "article.push", fmt.Sprint(articleID), map[string]any{"account_id": a.id, "media_id": mediaID})
 	return mediaID, nil
 }
 
-func (s *Service) push(ctx context.Context, a account, title, summary, html string) (string, error) {
+func (s *Service) push(ctx context.Context, a account, title, summary, html string) (mediaID, content string, err error) {
 	tok, err := s.token(ctx, a, false)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var thumb []byte
 	var thumbName string
@@ -164,34 +169,35 @@ func (s *Service) push(ctx context.Context, a account, title, summary, html stri
 		}
 		img, name, err := s.download(ctx, src)
 		if err != nil {
-			return "", fmt.Errorf("下载文中图片失败：%w", err)
+			return "", "", fmt.Errorf("下载文中图片失败：%w", err)
 		}
 		if thumb == nil {
 			thumb, thumbName = img, name
 		}
 		u, err := s.withRetry(ctx, a, &tok, func(t string) (string, error) { return s.WX.UploadContentImage(ctx, t, name, img) })
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		uploaded[src] = u
 	}
 	if thumb == nil {
-		return "", errors.New("文章没有图片，无法设置封面")
+		return "", "", errors.New("文章没有图片，无法设置封面")
 	}
 	for src, u := range uploaded {
 		html = strings.ReplaceAll(html, `src="`+src+`"`, `src="`+u+`"`)
 	}
 	thumbID, err := s.withRetry(ctx, a, &tok, func(t string) (string, error) { return s.WX.UploadThumb(ctx, t, thumbName, thumb) })
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	digest := []rune(strings.TrimSpace(summary))
 	if len(digest) > 120 {
 		digest = digest[:120]
 	}
-	return s.withRetry(ctx, a, &tok, func(t string) (string, error) {
+	mediaID, err = s.withRetry(ctx, a, &tok, func(t string) (string, error) {
 		return s.WX.AddDraft(ctx, t, wechat.Draft{Title: title, Digest: string(digest), Content: html, ThumbMediaID: thumbID})
 	})
+	return mediaID, html, err
 }
 
 // withRetry refreshes the token once when WeChat says it is invalid or expired.
