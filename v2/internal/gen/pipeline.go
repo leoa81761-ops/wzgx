@@ -147,7 +147,7 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	load := func(stage string) ([]gateway.Config, error) { return gateway.LoadStage(ctx, p.DB, p.Box, stage, tier) }
 	chat := func(stage string, cfgs []gateway.Config, sys, user string) (gateway.Result, error) {
 		// Search models answer from live search; JSON mode makes them skip searching, so research
-		// asks for JSON in the prompt only and also uses the returned citations.
+		// and scan ask for plain-text lines (see ParseFacts) without JSON mode.
 		r, err := p.GW.Chat(ctx, cfgs, gateway.Request{Stage: stage, JobID: j.ID, JSON: stage != "research" && stage != "scan",
 			Messages: []gateway.Message{{Role: "system", Content: sys}, {Role: "user", Content: user}}}, left())
 		var fe *gateway.FailedError
@@ -325,21 +325,24 @@ func (p *Pipeline) research(ctx context.Context, j Job, topic, query string,
 		ev = append(ev, e)
 	}
 	if cfgs, err := load("research"); err == nil {
-		r, err := chat("research", cfgs, researchSystem, "题目："+topic+"\n检索关键词："+query+"\n今天："+p.now().Format("2006-01-02"))
-		if err == nil {
-			var f struct {
-				Facts []struct {
-					Claim, Title, URL, Date, Kind, Issuer string
-					DocNumber                             string `json:"doc_number"`
-				} `json:"facts"`
+		// one normal search, then one shorter rescue search if nothing usable came back
+		for _, q := range []string{query, topic} {
+			r, err := chat("research", cfgs, researchSystem, "题目："+topic+"\n检索词："+q+"\n今天："+p.now().Format("2006-01-02"))
+			if err != nil {
+				continue
 			}
-			if decodeJSON(r.Text, &f) == nil {
-				for _, x := range f.Facts {
-					add(Evidence{Title: x.Title, URL: x.URL, Snippet: x.Claim, Date: x.Date, Kind: x.Kind, Issuer: x.Issuer, DocNumber: x.DocNumber, From: "search"})
-				}
+			facts := ParseFacts(r.Text)
+			for _, f := range facts {
+				add(f)
 			}
-			for _, u := range r.Citations {
-				add(Evidence{URL: u, From: "search"})
+			note := fmt.Sprintf("%d facts, %d citations", len(facts), len(r.Citations))
+			if len(facts) == 0 {
+				rs := []rune(strings.TrimSpace(r.Text))
+				note += "; reply: " + string(rs[:min(len(rs), 120)])
+			}
+			trace(Step{Stage: "research", Note: note})
+			if len(facts) > 0 {
+				break
 			}
 		}
 	} else {
