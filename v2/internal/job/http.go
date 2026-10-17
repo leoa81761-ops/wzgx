@@ -22,6 +22,10 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("GET /api/articles/{id}", anyR(s.hArticle))
 	srv.Handle("GET /api/articles/{id}/preview", anyR(s.hPreview))
 	srv.Handle("PUT /api/admin/users/{uid}/daily-quota", staff(s.hQuota))
+	srv.Handle("GET /api/accounts/{id}/plans", user(s.hPlans))
+	srv.Handle("POST /api/accounts/{id}/plans", user(s.hSavePlan))
+	srv.Handle("PUT /api/accounts/{id}/plans/{pid}", user(s.hSavePlan))
+	srv.Handle("DELETE /api/accounts/{id}/plans/{pid}", user(s.hDeletePlan))
 }
 
 func pid(r *http.Request, k string) int64 { n, _ := strconv.ParseInt(r.PathValue(k), 10, 64); return n }
@@ -35,6 +39,8 @@ func fail(w http.ResponseWriter, err error) {
 		server.WriteError(w, 403, err.Error())
 	case errors.Is(err, ErrQuota):
 		server.WriteError(w, 429, err.Error())
+	case errors.As(err, new(ErrInvalid)):
+		server.WriteError(w, 400, err.Error())
 	default:
 		server.WriteError(w, 500, "服务器错误")
 	}
@@ -170,4 +176,36 @@ func (s *Service) hQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	server.WriteJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Service) hPlans(w http.ResponseWriter, r *http.Request) {
+	ps, err := s.ListPlans(r.Context(), actor(r), pid(r, "id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 200, ps)
+}
+
+func (s *Service) hSavePlan(w http.ResponseWriter, r *http.Request) {
+	var p Plan
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&p); err != nil {
+		server.WriteError(w, 400, "请求格式不正确")
+		return
+	}
+	p.ID = pid(r, "pid")
+	out, err := s.SavePlan(r.Context(), actor(r), pid(r, "id"), p)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 200, out)
+}
+
+func (s *Service) hDeletePlan(w http.ResponseWriter, r *http.Request) {
+	if err := s.DeletePlan(r.Context(), actor(r), pid(r, "id"), pid(r, "pid")); err != nil {
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 200, map[string]any{"ok": true})
 }

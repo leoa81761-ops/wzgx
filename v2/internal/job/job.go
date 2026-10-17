@@ -180,6 +180,9 @@ func (s *Service) Work(ctx context.Context, every time.Duration) {
 		if _, err := s.Recover(ctx); err != nil && s.Log != nil {
 			s.Log.Warn("recover", "err", err)
 		}
+		if _, err := s.Schedule(ctx); err != nil && s.Log != nil {
+			s.Log.Warn("schedule", "err", err)
+		}
 		for {
 			ran, err := s.RunOnce(ctx)
 			if err != nil && s.Log != nil {
