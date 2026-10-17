@@ -33,6 +33,7 @@ curl -fs -b "$JAR" "$B/api/me/today" | grep -q '"daily_quota"' || fail today
 curl -fs -b "$JAR" "$B/api/accounts" >/dev/null || fail accounts
 curl -fs -b "$JAR" "$B/api/articles" >/dev/null || fail articles
 curl -fs -b "$JAR" "$B/api/site" | grep -q '203.0.113.7' || fail "server ip hint"
+[ "$(curl -fs -b "$JAR" "$B/api/me/topics")" = '[]' ] || fail "pending topics"
 curl -fs "$B/terms" | grep -q '<div id="app">' || fail "terms page"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$B/api/admin/sensitive-words")" = 403 ] || fail "user kept out of sensitive words"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$B/api/admin/users")" = 403 ] || fail "user kept out of admin"
@@ -42,5 +43,8 @@ curl -fs -b "$JAR" "$B/api/admin/users" | grep -q 'u@smoke.local' || fail "admin
 curl -fs -b "$JAR" "$B/api/admin/audit" >/dev/null || fail audit
 curl -fs -b "$JAR" -X PUT -H 'Content-Type: application/json' -d '{"words":[" 甲词 ","乙词","甲词",""]}' "$B/api/admin/sensitive-words" >/dev/null || fail "save sensitive words"
 [ "$(curl -fs -b "$JAR" "$B/api/admin/sensitive-words")" = '{"words":["乙词","甲词"]}' ] || fail "sensitive words round trip"
+curl -fs -b "$JAR" -X PUT -H 'Content-Type: application/json' -d '{"auto_pause_after":3}' "$B/api/admin/settings" >/dev/null || fail "save settings"
+curl -fs -b "$JAR" "$B/api/admin/settings" | grep -q '"auto_pause_after":3' || fail "settings round trip"
+curl -fs -b "$JAR" "$B/api/admin/feedback" >/dev/null || fail "admin feedback"
 curl -fs -b "$JAR" "$B/api/admin/routes" | grep -q '"stages"' || fail routes
 echo "SMOKE OK"

@@ -6,7 +6,7 @@
     <tr><th class="nowrap">名称</th><th class="nowrap">AppID</th><th class="nowrap">所属用户</th><th class="nowrap">状态</th><th class="nowrap">接口检查</th><th class="act"></th></tr>
     <tr v-for="a in list" :key="a.id">
       <td>{{ a.name }}</td><td class="muted">{{ a.app_id }}</td><td class="muted">{{ a.owner_email || `用户 ${a.user_id}` }}</td>
-      <td class="nowrap">{{ a.bind_status === 'bound' ? '已绑定' : '已解绑' }}</td>
+      <td class="nowrap">{{ a.bind_status === 'bound' ? (a.paused ? (a.paused_reason === 'auto' ? '自动暂停' : '已暂停') : '已绑定') : '已解绑' }}<span v-if="a.confirm_topic" class="muted"> · 选题确认</span></td>
       <td><CheckResult :report="a.check_report" :at="a.checked_at" /></td>
       <td class="act"><router-link :to="`/admin/accounts/${a.id}`">编辑参数</router-link></td>
     </tr>

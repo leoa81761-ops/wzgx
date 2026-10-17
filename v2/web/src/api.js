@@ -31,5 +31,5 @@ export function fmtTime(t) {
 }
 
 export const statusText = { ready: '可推送', blocked: '未通过检查', pushed: '已进草稿箱', draft: '草稿', failed: '失败' }
-export const jobText = { queued: '排队中', running: '写作中', done: '完成', failed: '失败', cancelled: '已取消' }
+export const jobText = { queued: '排队中', running: '写作中', awaiting_topic: '等你确认选题', done: '完成', failed: '失败', cancelled: '已取消' }
 export const weekNames = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日']

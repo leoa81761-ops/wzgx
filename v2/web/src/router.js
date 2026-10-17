@@ -34,6 +34,8 @@ export const router = createRouter({
         { path: 'routes', component: A('Routes') },
         { path: 'operators', component: A('Operators'), meta: { superAdmin: true } },
         { path: 'sensitive', component: A('Sensitive') },
+        { path: 'feedback', component: A('Feedback') },
+        { path: 'settings', component: A('Settings') },
         { path: 'audit', component: A('Audit') },
       ],
     },

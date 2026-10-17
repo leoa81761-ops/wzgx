@@ -26,6 +26,8 @@ import (
 )
 
 // jpeg is a real 900×500 cover (soft green gradient) so previews and uploads look like a picture.
+var started = time.Now().Unix()
+
 var jpeg = func() []byte {
 	img := image.NewRGBA(image.Rect(0, 0, 900, 500))
 	for y := 0; y < 500; y++ {
@@ -43,6 +45,12 @@ type fake struct {
 	topic  string // last topic handed out; the next write uses it as the title (single-user local tool)
 	tokens int
 	drafts int
+	saved  map[string]draft // media_id -> what was put in the draft box (memory only)
+}
+
+type draft struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
 }
 
 func main() {
@@ -52,7 +60,7 @@ func main() {
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		log.Fatal("devfake listens on loopback only")
 	}
-	f := &fake{}
+	f := &fake{saved: map[string]draft{}}
 	log.Printf("devfake on http://%s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, f))
 }
@@ -86,13 +94,52 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		fmt.Fprint(w, `{"media_id":"FAKETHUMB","url":"http://mmbiz.qpic.cn/devfake/thumb"}`)
 	case p == "/cgi-bin/draft/add":
-		io.Copy(io.Discard, r.Body)
+		var in struct {
+			Articles []draft `json:"articles"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
 		f.drafts++
-		n := f.drafts
+		id := fmt.Sprintf("FAKEDRAFT-%d-%d", started, f.drafts) // unique across restarts, so old drafts read back as gone
+		if len(in.Articles) > 0 {
+			f.saved[id] = in.Articles[0]
+		}
 		f.mu.Unlock()
-		log.Printf("draft/add #%d received (kept in memory only)", n)
-		fmt.Fprintf(w, `{"media_id":"FAKEDRAFT%d"}`, n)
+		log.Printf("draft/add %s received (kept in memory only)", id)
+		fmt.Fprintf(w, `{"media_id":%q}`, id)
+	case p == "/cgi-bin/draft/get":
+		var in struct {
+			MediaID string `json:"media_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		d, ok := f.saved[in.MediaID]
+		f.mu.Unlock()
+		if !ok {
+			fmt.Fprint(w, `{"errcode":40007,"errmsg":"invalid media_id"}`)
+			return
+		}
+		b, _ := json.Marshal(map[string]any{"news_item": []map[string]string{{"title": d.Title, "content": d.Content}}})
+		w.Write(b)
+	case p == "/dev/edit", p == "/dev/delete": // walk-through helpers: pretend the user edited or published a draft
+		id := r.URL.Query().Get("media_id")
+		f.mu.Lock()
+		if id == "" { // the latest draft
+			id = fmt.Sprintf("FAKEDRAFT-%d-%d", started, f.drafts)
+		}
+		d, ok := f.saved[id]
+		if ok && p == "/dev/edit" {
+			d.Content += "<p>这一段是在公众号后台手动加上的，用来演示「改过」。</p>"
+			f.saved[id] = d
+		} else if ok {
+			delete(f.saved, id)
+		}
+		f.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintln(w, "ok", p, id)
 	case p == "/search": // Tavily
 		io.Copy(io.Discard, r.Body)
 		fmt.Fprint(w, `{"results":[{"title":"建筑照明设计标准","url":"https://www.mohurd.gov.cn/devfake","content":"学习桌面照度不低于 300 lx。","published_date":"2026-09-01"}]}`)

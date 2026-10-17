@@ -1,6 +1,7 @@
 <template>
   <h1>首页</h1>
   <div v-if="err" class="msg">{{ err }}</div>
+  <TopicConfirm />
   <div class="grid" v-if="t">
     <div class="stat"><span class="muted">今日已写</span><b>{{ t.used_today }}<small v-if="!t.quota_exempt" class="muted"> / {{ t.daily_quota }}</small></b>
       <span class="muted">{{ t.quota_exempt ? '不限额度' : '每日额度' }}</span></div>
@@ -23,6 +24,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { get, fmtTime, statusText } from '../api.js'
+import TopicConfirm from './TopicConfirm.vue'
 const t = ref(null), arts = ref([]), err = ref('')
 onMounted(async () => {
   try { t.value = await get('/api/me/today'); arts.value = (await get('/api/articles')).slice(0, 8) } catch (e) { err.value = e.message }
