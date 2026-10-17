@@ -31,12 +31,13 @@ type Runner interface {
 }
 
 type Service struct {
-	DB     *pgxpool.Pool
-	Runner Runner
-	Audit  audit.Logger
-	Log    *slog.Logger
-	Now    func() time.Time
-	Lease  time.Duration // default 30 min
+	DB       *pgxpool.Pool
+	Runner   Runner
+	Audit    audit.Logger
+	Log      *slog.Logger
+	Now      func() time.Time
+	Lease    time.Duration // default 30 min
+	ServerIP string        // outbound IP users add to the WeChat IP whitelist (V2_SERVER_IP); shown on the bind screen
 }
 
 func (s *Service) now() time.Time {

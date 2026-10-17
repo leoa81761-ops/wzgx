@@ -13,6 +13,8 @@
   <div class="card" style="margin-top:16px">
     <h2 style="margin-top:0">绑定公众号</h2>
     <p class="muted">在公众号后台「设置与开发 → 基本配置」里找到 AppID 和 AppSecret。AppSecret 只保存加密后的内容，之后只显示前后几位。</p>
+    <p v-if="serverIP" class="hint">还要在同一页的「IP 白名单」里加上本平台的服务器 IP：<b class="mono">{{ serverIP }}</b>，否则微信会拒绝调用。</p>
+    <p v-else class="muted">还要在同一页的「IP 白名单」里加上本平台的服务器 IP（请联系客服获取）。</p>
     <form @submit.prevent="bind">
       <div class="two">
         <label class="f"><span>公众号名称</span><input v-model.trim="f.name" required /></label>
@@ -30,7 +32,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { get, post } from '../api.js'
 import CheckResult from './CheckResult.vue'
-const list = ref([]), err = ref(''), busy = ref(false)
+const list = ref([]), err = ref(''), busy = ref(false), serverIP = ref('')
 const f = reactive({ name: '', app_id: '', app_secret: '', subject_type: 'personal', verified: false })
 const router = useRouter()
 async function load() { try { list.value = await get('/api/accounts') } catch (e) { err.value = e.message } }
@@ -42,5 +44,5 @@ async function bind() {
     router.push(`/accounts/${a.id}`)
   } catch (e) { err.value = e.message } finally { busy.value = false }
 }
-onMounted(load)
+onMounted(() => { load(); get('/api/site').then((s) => (serverIP.value = s.server_ip || '')).catch(() => {}) })
 </script>

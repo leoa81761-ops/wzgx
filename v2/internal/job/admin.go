@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gonghao/internal/server"
 )
@@ -105,4 +107,83 @@ func (s *Service) hAudit(w http.ResponseWriter, r *http.Request) {
 		out = append(out, x)
 	}
 	server.WriteJSON(w, 200, out)
+}
+
+// hSensitive (staff): the platform sensitive-word list used by the blocking gate.
+func (s *Service) hSensitive(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.DB.Query(r.Context(), `SELECT word FROM sensitive_word ORDER BY word`)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var x string
+		if err := rows.Scan(&x); err != nil {
+			fail(w, err)
+			return
+		}
+		out = append(out, x)
+	}
+	server.WriteJSON(w, 200, map[string]any{"words": out})
+}
+
+// hSaveSensitive (staff): replaces the whole list. Words are trimmed, de-duplicated, 1–50 characters.
+func (s *Service) hSaveSensitive(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Words []string `json:"words"`
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		server.WriteError(w, 400, "格式不对")
+		return
+	}
+	seen := map[string]bool{}
+	var words []string
+	for _, x := range in.Words {
+		x = strings.TrimSpace(x)
+		if x == "" || seen[x] {
+			continue
+		}
+		if n := utf8.RuneCountInString(x); n > 50 {
+			server.WriteError(w, 400, "每个词不超过 50 个字："+string([]rune(x)[:10])+"…")
+			return
+		}
+		seen[x] = true
+		words = append(words, x)
+	}
+	if len(words) > 5000 {
+		server.WriteError(w, 400, "最多 5000 个词")
+		return
+	}
+	u := actor(r)
+	tx, err := s.DB.Begin(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var before int
+	tx.QueryRow(r.Context(), `SELECT count(*) FROM sensitive_word`).Scan(&before)
+	if _, err := tx.Exec(r.Context(), `DELETE FROM sensitive_word WHERE NOT (word = ANY($1))`, words); err != nil {
+		fail(w, err)
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `INSERT INTO sensitive_word (word, created_by) SELECT unnest($1::text[]), $2 ON CONFLICT DO NOTHING`, words, u.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		fail(w, err)
+		return
+	}
+	if s.Audit != nil {
+		s.Audit.Log(r.Context(), u.ID, "sensitive_words.save", "", map[string]any{"before": before, "after": len(words)})
+	}
+	server.WriteJSON(w, 200, map[string]any{"words": words})
+}
+
+// hSite: small facts the screens need, e.g. the server's outbound IP for the WeChat IP whitelist.
+func (s *Service) hSite(w http.ResponseWriter, r *http.Request) {
+	server.WriteJSON(w, 200, map[string]any{"server_ip": s.ServerIP})
 }

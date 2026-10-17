@@ -9,6 +9,8 @@ export const router = createRouter({
   routes: [
     { path: '/login', component: U('Login'), meta: { public: true } },
     { path: '/register', component: U('Register'), meta: { public: true } },
+    { path: '/terms', component: U('Terms'), meta: { public: true } },
+    { path: '/privacy', component: U('Privacy'), meta: { public: true } },
     {
       path: '/', component: U('UserLayout'), meta: { role: 'user' },
       children: [
@@ -31,6 +33,7 @@ export const router = createRouter({
         { path: 'configs', component: A('Configs') },
         { path: 'routes', component: A('Routes') },
         { path: 'operators', component: A('Operators') },
+        { path: 'sensitive', component: A('Sensitive') },
         { path: 'audit', component: A('Audit') },
       ],
     },

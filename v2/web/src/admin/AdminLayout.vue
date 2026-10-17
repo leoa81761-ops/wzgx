@@ -8,6 +8,7 @@
       <router-link to="/admin/configs">模型配置</router-link>
       <router-link to="/admin/routes">环节路由</router-link>
       <router-link v-if="isRoot" to="/admin/operators">运营人员</router-link>
+      <router-link to="/admin/sensitive">敏感词</router-link>
       <router-link to="/admin/audit">操作日志</router-link>
       <div class="foot">{{ session.me?.email }}<br />{{ isRoot ? '超级管理员' : '运营' }}<br /><a href="#" @click.prevent="logout">退出</a></div>
     </nav>

@@ -41,3 +41,8 @@ th { font-size: 13px; color: var(--muted); font-weight: 500; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; }
 .modal { background: #fff; border-radius: 8px; padding: 20px; max-width: 420px; }
+.hint { background: #fff8e6; border: 1px solid #f0d58c; border-radius: 6px; padding: 8px 12px; }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; user-select: all; }
+.doc { max-width: 720px; margin: 32px auto; line-height: 1.75; }
+.doc h2 { font-size: 16px; margin: 20px 0 6px; }
+.doc ul { padding-left: 20px; }
