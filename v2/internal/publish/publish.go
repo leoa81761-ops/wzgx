@@ -29,11 +29,12 @@ var (
 )
 
 type Service struct {
-	DB    *pgxpool.Pool
-	Box   *crypto.Box
-	WX    *wechat.Client
-	Audit audit.Logger
-	Fetch *http.Client // downloads article images for upload; default 15s timeout
+	DB       *pgxpool.Pool
+	Box      *crypto.Box
+	WX       *wechat.Client
+	Audit    audit.Logger
+	Fetch    *http.Client // downloads article images for upload; default 15s timeout
+	ServerIP string       // V2_SERVER_IP, named in the IP-whitelist hint
 }
 
 type account struct {
@@ -85,6 +86,9 @@ func (s *Service) Check(ctx context.Context, actor auth.User, accountID int64) (
 		var ae *wechat.APIError
 		if errors.As(err, &ae) {
 			rep.Code, rep.Hint = ae.Code, ae.Hint()
+			if ae.Code == 40164 && s.ServerIP != "" {
+				rep.Hint += "：" + s.ServerIP
+			}
 		}
 	}
 	if _, err := s.DB.Exec(ctx, `UPDATE wx_account SET check_report=$2, checked_at=now(), updated_at=now() WHERE id=$1`, a.id, rep); err != nil {

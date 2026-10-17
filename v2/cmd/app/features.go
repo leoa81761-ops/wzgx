@@ -42,10 +42,10 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	gw := gateway.New(gateway.PGRecorder{DB: pool, Log: log})
 	(&svccfg.Service{DB: pool, Box: box, Audit: aud, GW: gw}).Register(srv, ah)
 
-	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{}, DefaultImageURL: cfg.DefaultCoverURL, Log: log}
+	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{BaseURL: cfg.TavilyBase}, DefaultImageURL: cfg.DefaultCoverURL, Log: log}
 	jobs := &job.Service{DB: pool, Runner: pipe, Audit: aud, Log: log, ServerIP: cfg.ServerIP}
 	jobs.Register(srv, ah)
-	(&publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: cfg.WeChatBase}}).Register(srv, ah)
+	(&publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: cfg.WeChatBase}, ServerIP: cfg.ServerIP}).Register(srv, ah)
 	if !cfg.WorkerOff {
 		go jobs.Work(ctx, 15*time.Second)
 	}

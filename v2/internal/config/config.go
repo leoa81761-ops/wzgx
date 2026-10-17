@@ -21,6 +21,7 @@ type Config struct {
 	DefaultCoverURL string        // V2_DEFAULT_COVER_URL, image slots use it until image generation lands
 	WorkerOff       bool          // V2_WORKER_OFF=true disables the job worker in this process
 	ServerIP        string        // V2_SERVER_IP, this server's outbound IP, shown as the WeChat IP-whitelist hint
+	TavilyBase      string        // V2_TAVILY_BASE, Tavily API base URL (default https://api.tavily.com; local tests use a fake)
 	WeChatBase      string        // V2_WECHAT_BASE, WeChat API base URL (default https://api.weixin.qq.com; local tests use a fake)
 
 	// Optional first super admin, created only when no super admin exists.
@@ -42,6 +43,7 @@ func load(get func(string) string) (Config, error) {
 		WorkerOff:              get("V2_WORKER_OFF") == "true",
 		ServerIP:               get("V2_SERVER_IP"),
 		WeChatBase:             get("V2_WECHAT_BASE"),
+		TavilyBase:             get("V2_TAVILY_BASE"),
 		BootstrapAdminEmail:    get("V2_BOOTSTRAP_ADMIN_EMAIL"),
 		BootstrapAdminPassword: get("V2_BOOTSTRAP_ADMIN_PASSWORD"),
 	}
