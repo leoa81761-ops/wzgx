@@ -109,8 +109,8 @@ func (in *Input) normalize() error {
 		in.Protocol = "openai"
 	}
 	if isModelKind(in.Kind) {
-		if in.Protocol != "openai" {
-			return ValidationError("模型配置目前只支持 OpenAI 兼容接口")
+		if in.Protocol != "openai" && in.Protocol != "anthropic" {
+			return ValidationError("模型配置只支持 openai 或 anthropic 接口")
 		}
 		u, err := url.Parse(in.BaseURL)
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -371,9 +371,9 @@ func (s *Service) TestConnection(ctx context.Context, actor auth.User, id int64)
 	var kind, keyCipher string
 	var params []byte
 	var fb, idle, total int
-	err := s.DB.QueryRow(ctx, `SELECT id, kind, name, base_url, key_cipher, model, reasoning_effort, params,
+	err := s.DB.QueryRow(ctx, `SELECT id, kind, name, protocol, base_url, key_cipher, model, reasoning_effort, params,
 		first_byte_timeout_s, idle_timeout_s, total_timeout_s FROM service_config WHERE id=$1`, id).
-		Scan(&c.ID, &kind, &c.Name, &c.BaseURL, &keyCipher, &c.Model, &c.ReasoningEffort, &params, &fb, &idle, &total)
+		Scan(&c.ID, &kind, &c.Name, &c.Protocol, &c.BaseURL, &keyCipher, &c.Model, &c.ReasoningEffort, &params, &fb, &idle, &total)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TestResult{}, ErrNotFound
 	}

@@ -141,13 +141,26 @@ func (g *Gateway) stream(parent context.Context, cfg Config, req Request, left t
 	if err != nil {
 		return fail(NetError, err)
 	}
-	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+	anth := cfg.Protocol == "anthropic"
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
+	if anth {
+		if body, err = anthropicBody(cfg, req); err != nil {
+			return fail(NetError, err)
+		}
+		endpoint = strings.TrimSuffix(strings.TrimRight(cfg.BaseURL, "/"), "/v1") + "/v1/messages"
+	}
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fail(NetError, err)
 	}
 	hr.Header.Set("Content-Type", "application/json")
 	hr.Header.Set("Accept", "text/event-stream")
-	if cfg.APIKey != "" {
+	if anth {
+		hr.Header.Set("anthropic-version", "2023-06-01")
+		if cfg.APIKey != "" {
+			hr.Header.Set("x-api-key", cfg.APIKey)
+		}
+	} else if cfg.APIKey != "" {
 		hr.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	}
 	resp, err := g.Client.Do(hr)
@@ -183,6 +196,30 @@ func (g *Gateway) stream(parent context.Context, cfg Config, req Request, left t
 				if string(data) == "[DONE]" {
 					done = true
 					break
+				}
+				if anth {
+					ev, perr := parseAnthropic(data)
+					if perr != nil {
+						return fail(StreamBroken, perr)
+					}
+					text.WriteString(ev.text)
+					if ev.model != "" {
+						res.Model = ev.model
+					}
+					if ev.finish != "" {
+						res.FinishReason = ev.finish
+					}
+					if ev.in > 0 {
+						res.TokensIn = ev.in
+					}
+					if ev.out > 0 {
+						res.TokensOut = ev.out
+					}
+					if ev.stop {
+						done = true
+						break
+					}
+					continue
 				}
 				var c chunk
 				if json.Unmarshal(data, &c) == nil {

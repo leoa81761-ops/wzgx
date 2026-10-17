@@ -24,7 +24,8 @@ import (
 type Config struct {
 	ID              int64
 	Name            string // display only
-	BaseURL         string // e.g. https://host/v1
+	Protocol        string // "openai" (chat/completions SSE, default) or "anthropic" (messages SSE)
+	BaseURL         string // openai: https://host/v1 ; anthropic: https://host (".../v1/messages" is appended)
 	APIKey          string // decrypted just before the call; never logged
 	Model           string
 	ReasoningEffort string         // "" = not sent

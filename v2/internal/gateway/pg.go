@@ -34,10 +34,10 @@ func LoadStage(ctx context.Context, db *pgxpool.Pool, box Opener, stage, tier st
 		var keyCipher string
 		var params []byte
 		var fb, idle, total int
-		err := db.QueryRow(ctx, `SELECT id, name, base_url, key_cipher, model, reasoning_effort, params,
+		err := db.QueryRow(ctx, `SELECT id, name, protocol, base_url, key_cipher, model, reasoning_effort, params,
 			first_byte_timeout_s, idle_timeout_s, total_timeout_s FROM service_config
 			WHERE id=$1 AND enabled AND kind IN ('text','search')`, id).
-			Scan(&c.ID, &c.Name, &c.BaseURL, &keyCipher, &c.Model, &c.ReasoningEffort, &params, &fb, &idle, &total)
+			Scan(&c.ID, &c.Name, &c.Protocol, &c.BaseURL, &keyCipher, &c.Model, &c.ReasoningEffort, &params, &fb, &idle, &total)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue // disabled or deleted: skip silently in routing, admin sees it in the route editor
 		}
