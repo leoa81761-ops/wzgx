@@ -15,9 +15,11 @@ import (
 	"gonghao/internal/gateway"
 	"gonghao/internal/gen"
 	"gonghao/internal/job"
+	"gonghao/internal/publish"
 	"gonghao/internal/search"
 	"gonghao/internal/server"
 	"gonghao/internal/svccfg"
+	"gonghao/internal/wechat"
 )
 
 // registerFeatures mounts feature packages.
@@ -43,6 +45,7 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{}, DefaultImageURL: cfg.DefaultCoverURL, Log: log}
 	jobs := &job.Service{DB: pool, Runner: pipe, Audit: aud, Log: log}
 	jobs.Register(srv, ah)
+	(&publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{}}).Register(srv, ah)
 	if !cfg.WorkerOff {
 		go jobs.Work(ctx, 15*time.Second)
 	}

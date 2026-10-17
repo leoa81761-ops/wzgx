@@ -22,10 +22,12 @@ import (
 	"gonghao/internal/gateway"
 	"gonghao/internal/gen"
 	"gonghao/internal/job"
+	"gonghao/internal/publish"
 	"gonghao/internal/search"
 	"gonghao/internal/server"
 	"gonghao/internal/svccfg"
 	"gonghao/internal/testdb"
+	"gonghao/internal/wechat"
 )
 
 // fakeModel serves /{stage}/v1/chat/completions, streaming scripted replies in small chunks.
@@ -93,6 +95,7 @@ type env struct {
 	jobs *job.Service
 	fm   *fakeModel
 	pool *pgxpool.Pool
+	wx   *fakeWX
 }
 
 func do(t *testing.T, srv http.Handler, method, path, tok string, body any) (int, map[string]any, string) {
@@ -157,6 +160,8 @@ func setup(t *testing.T) (*env, string, string, int64, int64) {
 	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{BaseURL: tv.URL}, DefaultImageURL: "https://cdn.example/cover.jpg"}
 	js := &job.Service{DB: pool, Runner: pipe, Audit: aud}
 	js.Register(srv, h)
+	wx := newFakeWX(t)
+	(&publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: wx.srv.URL}, Fetch: &http.Client{Transport: imageTransport{}}}).Register(srv, h)
 
 	as.Bootstrap(ctx, "root@example.com", "rootpass1")
 	_, root, _ := as.Login(ctx, "root@example.com", "rootpass1", "", "")
@@ -189,7 +194,7 @@ func setup(t *testing.T) (*env, string, string, int64, int64) {
 	if code, m, _ := do(t, srv, "PUT", "/api/me/tavily", user, map[string]any{"key": "tvly-user-key-123456"}); code != 200 || m["mask"] == "" {
 		t.Fatal("tavily key")
 	}
-	e := &env{t: t, srv: srv, auth: as, jobs: js, fm: fm, pool: pool}
+	e := &env{t: t, srv: srv, auth: as, jobs: js, fm: fm, pool: pool, wx: wx}
 	return e, root, user, accID, colID
 }
 
