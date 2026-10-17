@@ -1,0 +1,71 @@
+// Package config loads process configuration from environment variables.
+// Business settings (models, keys, quotas) live in the database and are edited
+// in the admin console; only bootstrapping values come from the environment.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+)
+
+type Config struct {
+	Addr        string        // listen address, V2_ADDR (default :8090)
+	DatabaseURL string        // V2_DATABASE_URL
+	MasterKey   string        // V2_MASTER_KEY, encrypts third-party credentials
+	SessionTTL  time.Duration // V2_SESSION_TTL (default 720h)
+	CookieSecure bool         // V2_COOKIE_SECURE (default true)
+	WebDir      string        // V2_WEB_DIR, built frontend (default ./web/dist)
+
+	// Optional first super admin, created only when no super admin exists.
+	BootstrapAdminEmail    string // V2_BOOTSTRAP_ADMIN_EMAIL
+	BootstrapAdminPassword string // V2_BOOTSTRAP_ADMIN_PASSWORD
+}
+
+func Load() (Config, error) { return load(os.Getenv) }
+
+func load(get func(string) string) (Config, error) {
+	c := Config{
+		Addr:                   or(get("V2_ADDR"), ":8090"),
+		DatabaseURL:            get("V2_DATABASE_URL"),
+		MasterKey:              get("V2_MASTER_KEY"),
+		SessionTTL:             720 * time.Hour,
+		CookieSecure:           true,
+		WebDir:                 or(get("V2_WEB_DIR"), "./web/dist"),
+		BootstrapAdminEmail:    get("V2_BOOTSTRAP_ADMIN_EMAIL"),
+		BootstrapAdminPassword: get("V2_BOOTSTRAP_ADMIN_PASSWORD"),
+	}
+	if v := get("V2_SESSION_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("V2_SESSION_TTL: invalid duration %q", v)
+		}
+		c.SessionTTL = d
+	}
+	if v := get("V2_COOKIE_SECURE"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return c, fmt.Errorf("V2_COOKIE_SECURE: %w", err)
+		}
+		c.CookieSecure = b
+	}
+	if c.DatabaseURL == "" {
+		return c, errors.New("V2_DATABASE_URL is required")
+	}
+	if len(c.MasterKey) < 32 {
+		return c, errors.New("V2_MASTER_KEY must be at least 32 characters")
+	}
+	if (c.BootstrapAdminEmail == "") != (c.BootstrapAdminPassword == "") {
+		return c, errors.New("V2_BOOTSTRAP_ADMIN_EMAIL and V2_BOOTSTRAP_ADMIN_PASSWORD must be set together")
+	}
+	return c, nil
+}
+
+func or(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
