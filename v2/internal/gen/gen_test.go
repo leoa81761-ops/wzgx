@@ -2,6 +2,7 @@ package gen
 
 import (
 	"testing"
+	"time"
 
 	"gonghao/internal/render"
 )
@@ -52,5 +53,16 @@ func TestGateSignatureWithoutPeriodIsFine(t *testing.T) {
 func TestJunkURL(t *testing.T) {
 	if !junkURL("https://www.douyin.com/v/1") || !junkURL("https://baike.baidu.com/item/x") || junkURL("https://www.nhc.gov.cn/a") {
 		t.Fatal("junk filter")
+	}
+}
+
+func TestScanQuery(t *testing.T) {
+	w := writingContext{Profile: map[string]string{"账号定位": "弱电与系统集成相关的最新标准和规范解读。关键词：系统集成、智能化"}, ColumnNote: "行业动态速递：政策标准、招投标"}
+	if q := scanQueries(w, time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)); q[0] != "2026年10月 系统集成 智能化 行业动态速递：政策标准、招投标" || q[1] != "2026年10月 系统集成 智能化 新闻" {
+		t.Fatal(q)
+	}
+	w.Profile["账号定位"] = "家庭生活/养老日常趣事"
+	if q := scanQueries(w, time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))[0]; q != "2026年3月 家庭生活/养老日常趣事 行业动态速递：政策标准、招投标" {
+		t.Fatal(q)
 	}
 }

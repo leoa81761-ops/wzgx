@@ -164,8 +164,12 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	if wc.NeedsNews {
 		topicKind = "practical"
 		if scfgs, err := load("research"); err == nil {
-			q := wc.ColumnName + " " + wc.ColumnNote + " " + wc.Profile["账号定位"]
-			if r, err := chat("scan", scfgs, scanSystem, "范围："+q+"\n今天："+wc.Today); err == nil {
+			// the sharp query first; if it brings back no event, one short query (month + keywords + 新闻)
+			for _, q := range scanQueries(wc, p.now()) {
+				r, err := chat("scan", scfgs, scanSystem, q+"\n今天："+wc.Today)
+				if err != nil {
+					continue
+				}
 				events := ParseFacts(r.Text)
 				var lines []string
 				for _, e := range events {
@@ -180,8 +184,11 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 					}
 					lines = append(lines, l)
 				}
-				wc.Recentnews = strings.Join(lines, "\n")
 				trace(Step{Stage: "scan", Note: fmt.Sprintf("%d events", len(lines))})
+				if len(lines) > 0 {
+					wc.Recentnews = strings.Join(lines, "\n")
+					break
+				}
 			}
 		}
 		if wc.Recentnews != "" {
@@ -533,4 +540,17 @@ func joinNonEmpty(sep string, parts ...string) string {
 		}
 	}
 	return strings.Join(out, sep)
+}
+
+// scanQueries builds the news pre-scan requests in Chinese. The first: month and year, the account's
+// industry keywords ("关键词：…" in the positioning text, else the whole positioning), and the column
+// note. The second, used only if the first finds nothing: month and year, keywords, 新闻.
+func scanQueries(w writingContext, now time.Time) []string {
+	kw := strings.TrimSpace(w.Profile["账号定位"])
+	if _, after, ok := strings.Cut(kw, "关键词"); ok {
+		kw = strings.Trim(after, "：: ，,。")
+	}
+	kw = strings.NewReplacer("、", " ", "，", " ", ",", " ").Replace(kw)
+	month := fmt.Sprintf("%d年%d月", now.Year(), int(now.Month()))
+	return []string{joinNonEmpty(" ", month, kw, w.ColumnNote), joinNonEmpty(" ", month, kw, "新闻")}
 }

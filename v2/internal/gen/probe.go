@@ -20,3 +20,13 @@ func (p *Pipeline) ResearchProbe(ctx context.Context, userID int64, tier, topic,
 	ev := p.research(ctx, Job{UserID: userID}, topic, query, load, chat, trace)
 	return ev, steps
 }
+
+// ScanProbe sends one pre-scan request with the given user message, for comparing query variants.
+func (p *Pipeline) ScanProbe(ctx context.Context, tier, user string) ([]Evidence, gateway.Result, error) {
+	cfgs, err := gateway.LoadStage(ctx, p.DB, p.Box, "research", tier)
+	if err != nil {
+		return nil, gateway.Result{}, err
+	}
+	r, err := p.GW.Chat(ctx, cfgs, gateway.Request{Stage: "scan", Messages: []gateway.Message{{Role: "system", Content: scanSystem}, {Role: "user", Content: user}}}, 0)
+	return ParseFacts(r.Text), r, err
+}

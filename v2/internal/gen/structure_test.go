@@ -25,8 +25,8 @@ func TestBlockVariantsAndEmptySections(t *testing.T) {
 		t.Fatalf("valid article blocked: %s", g)
 	}
 	cases := map[string]string{
-		`[{"type":"h2","text":"引言"},{"type":"h2","text":"正文"},{"type":"p","text":"内容。"}]`: "空小节：「引言」",
-		`[{"type":"p","text":"内容。"},{"type":"h2","text":"结尾"}]`:                            "空小节：「结尾」",
+		`[{"type":"h2","text":"引言"},{"type":"h2","text":"正文"},{"type":"p","text":"内容。"}]`:    "空小节：「引言」",
+		`[{"type":"p","text":"内容。"},{"type":"h2","text":"结尾"}]`:                              "空小节：「结尾」",
 		`[{"type":"p","text":"内容。"},{"type":"callout","text":"x"},{"type":"p","text":"完。"}]`: "无法识别",
 		`[{"type":"p","text":"内容。"},{"type":"list","items":[]},{"type":"p","text":"完。"}]`:    "是空的",
 	}

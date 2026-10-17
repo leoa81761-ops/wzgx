@@ -392,8 +392,8 @@ func TestNewsFallbackAndResearchOff(t *testing.T) {
 	e.fm.mu.Lock()
 	n := len(e.fm.reqs["research"])
 	e.fm.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("only the pre-scan should search (research off), got %d calls", n)
+	if n != 2 {
+		t.Fatalf("only the two pre-scan queries should search (research off), got %d calls", n)
 	}
 	_, j, jb := do(t, e.srv, "GET", fmt.Sprintf("/api/jobs/%v", m["job_id"]), user, nil)
 	if !strings.Contains(jb, "off for this article type") || !strings.Contains(jb, "practical non-news topic") {
