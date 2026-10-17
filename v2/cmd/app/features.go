@@ -11,7 +11,9 @@ import (
 	"gonghao/internal/auth"
 	"gonghao/internal/config"
 	"gonghao/internal/crypto"
+	"gonghao/internal/gateway"
 	"gonghao/internal/server"
+	"gonghao/internal/svccfg"
 )
 
 // registerFeatures mounts feature packages.
@@ -31,5 +33,7 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	}
 	aud := audit.PG{DB: pool}
 	account.New(pool, box, aud).Register(srv, ah)
+	gw := gateway.New(gateway.PGRecorder{DB: pool, Log: log})
+	(&svccfg.Service{DB: pool, Box: box, Audit: aud, GW: gw}).Register(srv, ah)
 	return nil
 }
