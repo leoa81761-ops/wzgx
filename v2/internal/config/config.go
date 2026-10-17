@@ -17,7 +17,7 @@ type Config struct {
 	MasterKey       string        // V2_MASTER_KEY, encrypts third-party credentials
 	SessionTTL      time.Duration // V2_SESSION_TTL (default 720h)
 	CookieSecure    bool          // V2_COOKIE_SECURE (default true)
-	WebDir          string        // V2_WEB_DIR, built frontend (default ./web/dist)
+	WebDir          string        // V2_WEB_DIR, built frontend on disk (default: the copy embedded in the binary)
 	DefaultCoverURL string        // V2_DEFAULT_COVER_URL, image slots use it until image generation lands
 	WorkerOff       bool          // V2_WORKER_OFF=true disables the job worker in this process
 
@@ -35,7 +35,7 @@ func load(get func(string) string) (Config, error) {
 		MasterKey:              get("V2_MASTER_KEY"),
 		SessionTTL:             720 * time.Hour,
 		CookieSecure:           true,
-		WebDir:                 or(get("V2_WEB_DIR"), "./web/dist"),
+		WebDir:                 get("V2_WEB_DIR"),
 		DefaultCoverURL:        get("V2_DEFAULT_COVER_URL"),
 		WorkerOff:              get("V2_WORKER_OFF") == "true",
 		BootstrapAdminEmail:    get("V2_BOOTSTRAP_ADMIN_EMAIL"),

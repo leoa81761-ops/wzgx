@@ -6,6 +6,7 @@ package account
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -49,16 +50,17 @@ func New(db *pgxpool.Pool, box Sealer, a audit.Logger) *Service {
 }
 
 type Account struct {
-	ID          int64      `json:"id"`
-	UserID      int64      `json:"user_id"`
-	Name        string     `json:"name"`
-	AppID       string     `json:"app_id"`
-	SecretMask  string     `json:"secret_mask"`
-	SubjectType string     `json:"subject_type"`
-	Verified    bool       `json:"verified"`
-	BindStatus  string     `json:"bind_status"`
-	CheckedAt   *time.Time `json:"checked_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          int64           `json:"id"`
+	UserID      int64           `json:"user_id"`
+	Name        string          `json:"name"`
+	AppID       string          `json:"app_id"`
+	SecretMask  string          `json:"secret_mask"`
+	SubjectType string          `json:"subject_type"`
+	Verified    bool            `json:"verified"`
+	BindStatus  string          `json:"bind_status"`
+	CheckedAt   *time.Time      `json:"checked_at"`
+	CheckReport json.RawMessage `json:"check_report"` // last bind check: ok, errcode, message, hint
+	CreatedAt   time.Time       `json:"created_at"`
 }
 
 type BindInput struct {
@@ -93,11 +95,11 @@ func (in *BindInput) normalize() error {
 	return nil
 }
 
-const accCols = `id, user_id, name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, created_at`
+const accCols = `id, user_id, name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, check_report, created_at`
 
 func scanAcc(r pgx.Row) (Account, error) {
 	var a Account
-	err := r.Scan(&a.ID, &a.UserID, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CreatedAt)
+	err := r.Scan(&a.ID, &a.UserID, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CheckReport, &a.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrNotFound
 	}

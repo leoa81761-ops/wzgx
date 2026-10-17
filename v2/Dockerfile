@@ -12,6 +12,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY web/embed.go ./web/embed.go
+COPY --from=web /web/dist ./web/dist
 ARG COMMIT=dev
 ARG BUILT_AT=
 RUN CGO_ENABLED=0 go build -trimpath \
@@ -21,7 +23,6 @@ RUN CGO_ENABLED=0 go build -trimpath \
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=go /out/app /app/app
-COPY --from=web /web/dist /app/web/dist
-ENV V2_ADDR=:8090 V2_WEB_DIR=/app/web/dist
+ENV V2_ADDR=:8090
 EXPOSE 8090
 ENTRYPOINT ["/app/app"]

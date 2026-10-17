@@ -1,5 +1,6 @@
 .env.v2
 web/node_modules/
-web/dist/
+web/dist/*
+!web/dist/.gitkeep
 /app
 /cmd/trial/

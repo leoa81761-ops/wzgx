@@ -4,10 +4,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
 
@@ -23,14 +24,15 @@ type Server struct {
 	mux    *http.ServeMux
 	db     Pinger
 	schema func(ctx context.Context) (int, error)
-	webDir string
+	web    fs.FS
 	log    *slog.Logger
 }
 
 type Options struct {
 	DB     Pinger
 	Schema func(ctx context.Context) (int, error) // applied schema version
-	WebDir string
+	WebDir string                                 // built frontend on disk; overrides Web when set
+	Web    fs.FS                                  // built frontend embedded in the binary
 	Log    *slog.Logger
 }
 
@@ -38,7 +40,11 @@ func New(o Options) *Server {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	s := &Server{mux: http.NewServeMux(), db: o.DB, schema: o.Schema, webDir: o.WebDir, log: o.Log}
+	web := o.Web
+	if o.WebDir != "" {
+		web = os.DirFS(o.WebDir)
+	}
+	s := &Server{mux: http.NewServeMux(), db: o.DB, schema: o.Schema, web: web, log: o.Log}
 	s.mux.HandleFunc("GET /api/health", s.health)
 	s.mux.HandleFunc("GET /api/version", s.version)
 	s.mux.HandleFunc("/", s.static)
@@ -94,23 +100,26 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if s.webDir == "" {
+	if s.web == nil {
 		http.NotFound(w, r)
 		return
 	}
-	clean := filepath.Clean("/" + r.URL.Path)
-	p := filepath.Join(s.webDir, clean)
-	if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-		http.ServeFile(w, r, p)
-		return
+	clean := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+	if clean != "" {
+		if fi, err := fs.Stat(s.web, clean); err == nil && !fi.IsDir() {
+			if strings.HasPrefix(clean, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable") // hashed names
+			}
+			http.ServeFileFS(w, r, s.web, clean)
+			return
+		}
 	}
-	index := filepath.Join(s.webDir, "index.html")
-	if _, err := os.Stat(index); err != nil {
+	if _, err := fs.Stat(s.web, "index.html"); err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeFile(w, r, index)
+	http.ServeFileFS(w, r, s.web, "index.html")
 }
 
 func WriteJSON(w http.ResponseWriter, code int, v any) {

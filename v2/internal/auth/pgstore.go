@@ -112,3 +112,8 @@ func (s *PGStore) Audit(ctx context.Context, actor *int64, action, target string
 	_, err := s.db.Exec(ctx, `INSERT INTO audit_log (actor_id, action, target, detail) VALUES ($1,$2,$3,$4)`, actor, action, target, b)
 	return err
 }
+
+func (s *PGStore) SetPassword(ctx context.Context, id int64, hash string) error {
+	_, err := s.db.Exec(ctx, `UPDATE users SET password_hash=$2, updated_at=now() WHERE id=$1`, id, hash)
+	return err
+}

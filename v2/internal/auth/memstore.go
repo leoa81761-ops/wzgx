@@ -149,3 +149,15 @@ func (m *MemStore) Audit(_ context.Context, _ *int64, action, target string, _ m
 	m.mu.Unlock()
 	return nil
 }
+
+func (m *MemStore) SetPassword(_ context.Context, id int64, hash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	u.PasswordHash = hash
+	m.users[id] = u
+	return nil
+}

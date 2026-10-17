@@ -69,6 +69,7 @@ type Store interface {
 	UserByID(ctx context.Context, id int64) (User, error)
 	ListStaff(ctx context.Context) ([]User, error)
 	SetStatus(ctx context.Context, id int64, status string) error
+	SetPassword(ctx context.Context, id int64, hash string) error
 	CountRole(ctx context.Context, r Role) (int, error)
 	CreateSession(ctx context.Context, s Session) error
 	SessionUser(ctx context.Context, tokenHash []byte, now time.Time) (User, error)

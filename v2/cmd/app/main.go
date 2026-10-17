@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"gonghao/web"
 	"log/slog"
 	"net/http"
 	"os"
@@ -52,6 +53,7 @@ func run(log *slog.Logger) error {
 			return n, err
 		},
 		WebDir: cfg.WebDir,
+		Web:    web.Dist(),
 		Log:    log,
 	})
 	if err := registerFeatures(ctx, srv, pool, cfg, log); err != nil {

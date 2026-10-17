@@ -67,6 +67,7 @@ func (h *Handlers) Register(s *server.Server) {
 	s.Handle("POST /api/auth/login", http.HandlerFunc(h.login))
 	s.Handle("POST /api/auth/logout", http.HandlerFunc(h.logout))
 	s.Handle("GET /api/auth/me", h.Require(AnyRole, http.HandlerFunc(h.me)))
+	s.Handle("POST /api/auth/password", h.Require(AnyRole, http.HandlerFunc(h.password)))
 	s.Handle("POST /api/admin/operators", h.Require(SuperAdminOnly, http.HandlerFunc(h.createOperator)))
 	s.Handle("GET /api/admin/operators", h.Require(SuperAdminOnly, http.HandlerFunc(h.listStaff)))
 	s.Handle("POST /api/admin/operators/{id}/status", h.Require(SuperAdminOnly, http.HandlerFunc(h.operatorStatus)))
@@ -200,4 +201,21 @@ func (h *Handlers) operatorStatus(w http.ResponseWriter, r *http.Request) {
 	default:
 		server.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
+}
+
+func (h *Handlers) password(w http.ResponseWriter, r *http.Request) {
+	u, _ := FromContext(r.Context())
+	var in struct {
+		Old string `json:"old_password"`
+		New string `json:"new_password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := h.svc.ChangePassword(r.Context(), u, in.Old, in.New); err != nil {
+		server.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", HttpOnly: true, Secure: h.cookieSecure, MaxAge: -1})
+	server.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

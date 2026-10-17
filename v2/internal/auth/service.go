@@ -256,3 +256,29 @@ func (l *limiter) fail(key string, now time.Time) {
 }
 
 func (l *limiter) reset(key string) { l.mu.Lock(); delete(l.fails, key); l.mu.Unlock() }
+
+// ChangePassword checks the current password, sets the new one and ends every session of the
+// user (they log in again with the new password).
+func (s *Service) ChangePassword(ctx context.Context, actor User, old, new string) error {
+	u, err := s.store.UserByID(ctx, actor.ID)
+	if err != nil {
+		return err
+	}
+	if !VerifyPassword(old, u.PasswordHash) {
+		return errors.New("当前密码不正确")
+	}
+	if err := checkPassword(new); err != nil {
+		return err
+	}
+	h, err := HashPassword(new)
+	if err != nil {
+		return err
+	}
+	if err := s.store.SetPassword(ctx, u.ID, h); err != nil {
+		return err
+	}
+	_ = s.store.DeleteUserSessions(ctx, u.ID)
+	id := u.ID
+	_ = s.store.Audit(ctx, &id, "auth.password", "", nil)
+	return nil
+}
