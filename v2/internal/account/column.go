@@ -20,6 +20,7 @@ type ArticleType struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	NeedsNews   bool      `json:"needs_news"`
+	Research    *bool     `json:"research"` // 是否检索资料; omitted = on for new types, unchanged on edit
 	Enabled     bool      `json:"enabled"`
 	Sort        int       `json:"sort"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -41,11 +42,11 @@ func (t *ArticleType) validate() error {
 	return nil
 }
 
-const typeCols = `id, key, name, description, needs_news, enabled, sort, created_at`
+const typeCols = `id, key, name, description, needs_news, research, enabled, sort, created_at`
 
 func scanType(r pgx.Row) (ArticleType, error) {
 	var t ArticleType
-	err := r.Scan(&t.ID, &t.Key, &t.Name, &t.Description, &t.NeedsNews, &t.Enabled, &t.Sort, &t.CreatedAt)
+	err := r.Scan(&t.ID, &t.Key, &t.Name, &t.Description, &t.NeedsNews, &t.Research, &t.Enabled, &t.Sort, &t.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ErrNotFound
 	}
@@ -84,11 +85,11 @@ func (s *Service) SaveType(ctx context.Context, actor auth.User, t ArticleType) 
 	var err error
 	var out ArticleType
 	if t.ID == 0 {
-		out, err = scanType(s.DB.QueryRow(ctx, `INSERT INTO article_type (key, name, description, needs_news, enabled, sort)
-			VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+typeCols, t.Key, t.Name, t.Description, t.NeedsNews, t.Enabled, t.Sort))
+		out, err = scanType(s.DB.QueryRow(ctx, `INSERT INTO article_type (key, name, description, needs_news, research, enabled, sort)
+			VALUES ($1,$2,$3,$4,COALESCE($7,TRUE),$5,$6) RETURNING `+typeCols, t.Key, t.Name, t.Description, t.NeedsNews, t.Enabled, t.Sort, t.Research))
 	} else {
-		out, err = scanType(s.DB.QueryRow(ctx, `UPDATE article_type SET key=$2, name=$3, description=$4, needs_news=$5, enabled=$6, sort=$7
-			WHERE id=$1 RETURNING `+typeCols, t.ID, t.Key, t.Name, t.Description, t.NeedsNews, t.Enabled, t.Sort))
+		out, err = scanType(s.DB.QueryRow(ctx, `UPDATE article_type SET key=$2, name=$3, description=$4, needs_news=$5, enabled=$6, sort=$7,
+			research=COALESCE($8, research) WHERE id=$1 RETURNING `+typeCols, t.ID, t.Key, t.Name, t.Description, t.NeedsNews, t.Enabled, t.Sort, t.Research))
 	}
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" {

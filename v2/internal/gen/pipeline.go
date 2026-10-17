@@ -158,16 +158,36 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 		return r, err
 	}
 
-	// ⓪ for news-type columns, look for recent concrete events first so the topic is a real one
+	// ⓪ for news-type columns, look for recent concrete events first so the topic is a real one.
+	// If none turn up, the topic falls back to a practical non-news one instead of inventing news.
+	topicKind := ""
 	if wc.NeedsNews {
+		topicKind = "practical"
 		if scfgs, err := load("research"); err == nil {
 			q := wc.ColumnName + " " + wc.ColumnNote + " " + wc.Profile["账号定位"]
 			if r, err := chat("scan", scfgs, scanSystem, "范围："+q+"\n今天："+wc.Today); err == nil {
-				wc.Recentnews = strings.TrimSpace(r.Text)
-				if len(r.Citations) > 0 {
-					wc.Recentnews += "\n来源：" + strings.Join(r.Citations[:min(len(r.Citations), 8)], " ")
+				events := ParseFacts(r.Text)
+				var lines []string
+				for _, e := range events {
+					if e.Title == "检索摘要" { // unstructured prose is not a concrete event
+						continue
+					}
+					l := "- " + e.Snippet
+					if src := joinNonEmpty("｜", e.Title, e.DocNumber, e.Date); src != "" && !strings.HasPrefix(e.Snippet, e.Title) {
+						l += "（" + src + "）"
+					} else if e.Date != "" {
+						l += "（" + e.Date + "）"
+					}
+					lines = append(lines, l)
 				}
+				wc.Recentnews = strings.Join(lines, "\n")
+				trace(Step{Stage: "scan", Note: fmt.Sprintf("%d events", len(lines))})
 			}
+		}
+		if wc.Recentnews != "" {
+			topicKind = "news"
+		} else {
+			trace(Step{Stage: "scan", Note: "no recent event found; practical non-news topic"})
 		}
 	}
 
@@ -208,7 +228,12 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	}
 
 	// ② research (optional: only when a research route exists / the user has Tavily)
-	ev := p.research(ctx, j, topic.Topic, topic.SearchQuery, load, chat, trace)
+	var ev []Evidence
+	if wc.Research {
+		ev = p.research(ctx, j, topic.Topic, topic.SearchQuery, load, chat, trace)
+	} else {
+		trace(Step{Stage: "research", Note: "off for this article type"})
+	}
 
 	// ③ write
 	wcfgs, err := load("write")
@@ -268,7 +293,7 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	if block != "" {
 		res.Status = "blocked"
 	}
-	res.ArticleID, err = p.save(ctx, j, colID, topic.Topic, art, out, res)
+	res.ArticleID, err = p.save(ctx, j, colID, topic.Topic, topicKind, art, out, res)
 	return res, err
 }
 
@@ -440,9 +465,9 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 			pick -= c.w
 		}
 	}
-	err = p.DB.QueryRow(ctx, `SELECT c.name, c.note, c.length_hint, t.name, t.description, t.needs_news
+	err = p.DB.QueryRow(ctx, `SELECT c.name, c.note, c.length_hint, t.name, t.description, t.needs_news, t.research
 		FROM account_column c JOIN article_type t ON t.id=c.article_type_id WHERE c.id=$1 AND c.account_id=$2`, colID, j.AccountID).
-		Scan(&w.ColumnName, &w.ColumnNote, &w.LengthHint, &w.TypeName, &w.TypeDesc, &w.NeedsNews)
+		Scan(&w.ColumnName, &w.ColumnNote, &w.LengthHint, &w.TypeName, &w.TypeDesc, &w.NeedsNews, &w.Research)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, "", 0, false, ErrNoColumn
 	}
@@ -464,7 +489,7 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	return w, tier, colID, review, nil
 }
 
-func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic string, a render.Article, out render.Output, res Result) (int64, error) {
+func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKind string, a render.Article, out render.Output, res Result) (int64, error) {
 	body, _ := json.Marshal(a)
 	alts := a.AltTitles
 	if alts == nil {
@@ -480,9 +505,9 @@ func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic string, a
 		jobID = j.ID
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic, topic_kind)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')) RETURNING id`,
+		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic, topicKind).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -497,4 +522,14 @@ func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic string, a
 		}
 	}
 	return id, tx.Commit(ctx)
+}
+
+func joinNonEmpty(sep string, parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, sep)
 }

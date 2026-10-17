@@ -248,10 +248,10 @@ func TestEndToEnd(t *testing.T) {
 	if strings.Contains(usr, "篇幅") || strings.Contains(usr+sys, "字数") {
 		t.Fatal("length hint without a setting")
 	}
-	if !strings.Contains(usr, "【官方依据】 建筑照明设计标准") || !strings.Contains(usr, "nhc.gov.cn") && !strings.Contains(usr, "近视防控") {
+	if !strings.Contains(usr, "官方依据（用到时句末标注编号）") || !strings.Contains(usr, "【官方依据】[1] 建筑照明设计标准") || !strings.Contains(usr, "nhc.gov.cn") && !strings.Contains(usr, "近视防控") {
 		t.Fatalf("evidence in prompt: %s", usr)
 	}
-	if strings.Contains(usr, "douyin") || strings.Contains(usr, "【官方依据】 某博客说法") {
+	if strings.Contains(usr, "douyin") || strings.Contains(usr, "【官方依据】[3]") {
 		t.Fatal("junk or fake-official evidence")
 	}
 	_, tu := e.fm.last("topic")
@@ -359,5 +359,75 @@ func TestGatesAndQuotaExemption(t *testing.T) {
 	e.fm.mu.Unlock()
 	if nw != 5+4 {
 		t.Fatalf("write calls=%d (empty reply should be tried 4 times)", nw)
+	}
+}
+
+func TestNewsFallbackAndResearchOff(t *testing.T) {
+	e, root, user, accID, _ := setup(t)
+	// a news type with research switched off
+	_, ty, tb := do(t, e.srv, "POST", "/api/admin/article-types", root, map[string]any{"key": "news_story", "name": "快报故事",
+		"needs_news": true, "research": false, "enabled": true})
+	if ty["research"] != false {
+		t.Fatalf("research flag: %s", tb)
+	}
+	// editing without the field keeps it off
+	_, ty2, _ := do(t, e.srv, "PUT", fmt.Sprintf("/api/admin/article-types/%v", ty["id"]), root, map[string]any{"key": "news_story", "name": "快报故事", "needs_news": true, "enabled": true})
+	if ty2["research"] != false {
+		t.Fatalf("edit reset research: %v", ty2)
+	}
+	_, c, _ := do(t, e.srv, "POST", fmt.Sprintf("/api/accounts/%d/columns", accID), user, map[string]any{"name": "快报", "article_type_id": ty["id"], "enabled": true})
+	e.fm.set("research", "", "**未检索到可靠来源**") // the pre-scan finds nothing
+	e.fm.set("topic", "", `{"topic":"冬天给老人房间加湿器怎么摆","angle":"实用","search_query":"加湿器 摆放"}`)
+	e.fm.set("write", "", article1)
+	e.fm.set("review", "", `{"pass":true}`)
+	_, m, b := do(t, e.srv, "POST", fmt.Sprintf("/api/accounts/%d/generate", accID), user, map[string]any{"column_id": c["id"]})
+	if m["job_id"] == nil {
+		t.Fatal(b)
+	}
+	e.run()
+	_, tu := e.fm.last("topic")
+	if !strings.Contains(tu, "这一篇不写新闻") || strings.Contains(tu, "近期检索到的动态") {
+		t.Fatalf("topic prompt without events: %s", tu)
+	}
+	e.fm.mu.Lock()
+	n := len(e.fm.reqs["research"])
+	e.fm.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("only the pre-scan should search (research off), got %d calls", n)
+	}
+	_, j, jb := do(t, e.srv, "GET", fmt.Sprintf("/api/jobs/%v", m["job_id"]), user, nil)
+	if !strings.Contains(jb, "off for this article type") || !strings.Contains(jb, "practical non-news topic") {
+		t.Fatalf("trace: %s", jb)
+	}
+	_, a, ab := do(t, e.srv, "GET", fmt.Sprintf("/api/articles/%v", j["article_id"]), user, nil)
+	if a["topic_kind"] != "practical" {
+		t.Fatalf("article kind: %s", ab)
+	}
+	_, wu := e.fm.last("write")
+	if strings.Contains(wu, "资料") {
+		t.Fatal("no material without research")
+	}
+
+	// with events found, the topic picks from them and the article is marked news
+	e.fm.set("research", "", "- 某市发布智慧社区建设通知（来源：某市住建局｜2026-10-10）")
+	e.fm.set("topic", "", `{"topic":"某市智慧社区建设通知对老旧小区意味着什么","angle":"解读","search_query":"智慧社区 通知"}`)
+	_, m, _ = do(t, e.srv, "POST", fmt.Sprintf("/api/accounts/%d/generate", accID), user, map[string]any{"column_id": c["id"]})
+	if m["job_id"] == nil {
+		// daily quota of 1 — lift it for this check
+		e.pool.Exec(context.Background(), `UPDATE users SET daily_quota=10`)
+		_, m, b = do(t, e.srv, "POST", fmt.Sprintf("/api/accounts/%d/generate", accID), user, map[string]any{"column_id": c["id"]})
+		if m["job_id"] == nil {
+			t.Fatal(b)
+		}
+	}
+	e.run()
+	_, tu = e.fm.last("topic")
+	if !strings.Contains(tu, "某市发布智慧社区建设通知（某市住建局｜2026-10-10）") || strings.Contains(tu, "不写新闻") {
+		t.Fatalf("topic prompt with events: %s", tu)
+	}
+	_, j, _ = do(t, e.srv, "GET", fmt.Sprintf("/api/jobs/%v", m["job_id"]), user, nil)
+	_, a, _ = do(t, e.srv, "GET", fmt.Sprintf("/api/articles/%v", j["article_id"]), user, nil)
+	if a["topic_kind"] != "news" {
+		t.Fatalf("kind %v", a["topic_kind"])
 	}
 }

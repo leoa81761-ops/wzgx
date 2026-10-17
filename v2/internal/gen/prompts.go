@@ -18,7 +18,7 @@ const scanSystem = `你是资料检索助手。请立刻联网搜索，先用中
 每条写一行，以「- 」开头：事件内容（来源：来源名称或文件标题｜文号，没有就省略｜日期）
 只有完全没有搜到时，才只写：未检索到可靠来源`
 
-const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。只有引用标记为【官方依据】的资料时才在句末标注 [编号]，其他资料不标注。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
+const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。用到标记为【官方依据】的资料（国家标准、政府部门正式文件）时，在该句末标注它的 [编号]；其他资料不标注编号。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
 
 const reviewSystem = `你审校一篇公众号文章：只检查事实错误、前后矛盾、没写完、违反用户设置之处。没有问题输出 {"pass":true}；有问题输出 {"pass":false,"problems":["问题"],"article":{与原文相同结构的完整修订稿}}。只输出 JSON。`
 
@@ -31,6 +31,7 @@ type writingContext struct {
 	ColumnNote  string
 	LengthHint  *int
 	NeedsNews   bool
+	Research    bool // article type setting 是否检索资料
 	Recent      []string
 	Recentnews  string // what a live search found recently, for news-type columns
 	Today       string
@@ -61,9 +62,10 @@ func topicUser(w writingContext, hint string, rejected []string) string {
 	b.WriteString(w.settings())
 	fmt.Fprintf(&b, "今天：%s\n", w.Today)
 	if w.NeedsNews {
-		b.WriteString("这个类型需要一件最近发生的具体事情。\n")
 		if w.Recentnews != "" {
-			b.WriteString("近期检索到的动态（从中选一件）：\n" + w.Recentnews + "\n")
+			b.WriteString("这个类型需要一件最近发生的具体事情。近期检索到的动态（只从中选一件，不要另编事件）：\n" + w.Recentnews + "\n")
+		} else {
+			b.WriteString("近期没有检索到可核实的具体动态。这一篇不写新闻：不要假设或编造任何近期事件、通知、招标或数据，在本栏目范围内选一个实用的非新闻题目。\n")
 		}
 	}
 	if hint != "" {
@@ -88,25 +90,29 @@ func writeUser(w writingContext, topic, angle string, ev []Evidence) string {
 	if angle != "" {
 		fmt.Fprintf(&b, "切入角度：%s\n", angle)
 	}
-	if len(ev) > 0 {
-		b.WriteString("\n资料：\n")
-		for _, e := range ev {
-			tag := ""
-			if e.Official() {
-				tag = "【官方依据】"
-			}
-			line := fmt.Sprintf("[%d]%s %s", e.N, tag, e.Title)
-			if e.DocNumber != "" {
-				line += "（" + e.DocNumber + "）"
-			}
-			if e.Date != "" {
-				line += " " + e.Date
-			}
-			if e.Snippet != "" {
-				line += "：" + e.Snippet
-			}
-			b.WriteString(line + "\n")
+	var official, other []string
+	for _, e := range ev {
+		line := fmt.Sprintf("[%d] %s", e.N, e.Title)
+		if e.DocNumber != "" && !strings.Contains(e.Title, e.DocNumber) {
+			line += "（" + e.DocNumber + "）"
 		}
+		if e.Date != "" {
+			line += " " + e.Date
+		}
+		if e.Snippet != "" && e.Snippet != e.Title {
+			line += "：" + e.Snippet
+		}
+		if e.Official() {
+			official = append(official, "【官方依据】"+line)
+		} else {
+			other = append(other, line)
+		}
+	}
+	if len(official) > 0 {
+		b.WriteString("\n官方依据（用到时句末标注编号）：\n" + strings.Join(official, "\n") + "\n")
+	}
+	if len(other) > 0 {
+		b.WriteString("\n其他资料（不标注编号）：\n" + strings.Join(other, "\n") + "\n")
 	}
 	return b.String()
 }
