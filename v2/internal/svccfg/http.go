@@ -19,6 +19,7 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("PUT /api/admin/configs/{id}", root(s.hSave))
 	srv.Handle("DELETE /api/admin/configs/{id}", root(s.hDelete))
 	srv.Handle("POST /api/admin/configs/{id}/test", root(s.hTest))
+	srv.Handle("PUT /api/admin/configs/{id}/pricing", root(s.hPricing))
 	srv.Handle("GET /api/admin/routes", staff(s.hRoutes))
 	srv.Handle("PUT /api/admin/routes/{stage}", root(s.hSaveRoute))
 	srv.Handle("DELETE /api/admin/routes/{stage}", root(s.hDeleteRoute))
@@ -101,4 +102,13 @@ func (s *Service) hSaveRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) hDeleteRoute(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, map[string]bool{"ok": true}, s.DeleteRoute(r.Context(), actor(r), r.PathValue("stage"), r.URL.Query().Get("tier")))
+}
+
+func (s *Service) hPricing(w http.ResponseWriter, r *http.Request) {
+	var p Pricing
+	if decode(w, r, &p) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		out, err := s.SavePricing(r.Context(), actor(r), id, p)
+		reply(w, 200, out, err)
+	}
 }

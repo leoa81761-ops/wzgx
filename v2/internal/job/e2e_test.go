@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,6 +37,7 @@ type fakeModel struct {
 	replies map[string][]string // stage -> queue; last one repeats
 	finish  map[string]string
 	reqs    map[string][]map[string]any
+	url     string
 }
 
 func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +70,7 @@ func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: %s\n\n", b)
 		fl.Flush()
 	}
-	fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":%q}],\"citations\":[\"https://www.douyin.com/video/1\"]}\n\ndata: [DONE]\n\n", fin)
+	fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":%q}],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":2000},\"citations\":[\"https://www.douyin.com/video/1\"]}\n\ndata: [DONE]\n\n", fin)
 }
 
 func (f *fakeModel) set(stage string, finish string, replies ...string) {
@@ -137,13 +139,14 @@ func setup(t *testing.T) (*env, string, string, int64, int64) {
 	h.Register(srv)
 	aud := audit.PG{DB: pool}
 	account.New(pool, box, aud).Register(srv, h)
-	gw := gateway.New(gateway.PGRecorder{DB: pool})
+	gw := gateway.New(gateway.PGRecorder{DB: pool, Log: slog.Default()})
 	gw.Sleep = func(context.Context, time.Duration) error { return nil }
 	gw.MinCall = time.Millisecond
 	(&svccfg.Service{DB: pool, Box: box, Audit: aud, GW: gw}).Register(srv, h)
 
 	fm := &fakeModel{replies: map[string][]string{}, finish: map[string]string{}, reqs: map[string][]map[string]any{}}
 	ms := httptest.NewServer(fm)
+	fm.url = ms.URL
 	t.Cleanup(ms.Close)
 	var tavilyKey string
 	tv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

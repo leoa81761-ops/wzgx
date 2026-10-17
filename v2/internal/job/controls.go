@@ -189,19 +189,31 @@ func (s *Service) SaveFeedback(ctx context.Context, actor auth.User, articleID i
 
 // Settings the admin can change. AutoPauseAfter = 0 means off.
 type Settings struct {
-	AutoPauseAfter int `json:"auto_pause_after"` // pause an account's plans after this many pushed-but-untouched articles with no feedback
+	AutoPauseAfter int     `json:"auto_pause_after"` // pause an account's plans after this many pushed-but-untouched articles with no feedback
+	DailyCap       float64 `json:"daily_cap"`        // platform-wide daily model spend cap in yuan; 0 = off
 }
 
 func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
 	var st Settings
-	var raw []byte
-	err := s.DB.QueryRow(ctx, `SELECT value FROM platform_setting WHERE key='auto_pause_after'`).Scan(&raw)
-	if err == nil {
-		json.Unmarshal(raw, &st.AutoPauseAfter)
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+	rows, err := s.DB.Query(ctx, `SELECT key, value FROM platform_setting WHERE key IN ('auto_pause_after','daily_cap')`)
+	if err != nil {
 		return st, err
 	}
-	return st, nil
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		var raw []byte
+		if err := rows.Scan(&k, &raw); err != nil {
+			return st, err
+		}
+		switch k {
+		case "auto_pause_after":
+			json.Unmarshal(raw, &st.AutoPauseAfter)
+		case "daily_cap":
+			json.Unmarshal(raw, &st.DailyCap)
+		}
+	}
+	return st, rows.Err()
 }
 
 func (s *Service) SaveSettings(ctx context.Context, actor auth.User, st Settings) error {
@@ -211,12 +223,22 @@ func (s *Service) SaveSettings(ctx context.Context, actor auth.User, st Settings
 	if st.AutoPauseAfter < 0 || st.AutoPauseAfter > 50 {
 		return ErrInvalid{"篇数请填 0 到 50（0 表示不自动暂停）"}
 	}
-	v, _ := json.Marshal(st.AutoPauseAfter)
-	if _, err := s.DB.Exec(ctx, `INSERT INTO platform_setting (key, value, updated_by) VALUES ('auto_pause_after',$1,$2)
-		ON CONFLICT (key) DO UPDATE SET value=$1, updated_by=$2, updated_at=now()`, v, actor.ID); err != nil {
+	if cur, err := s.GetSettings(ctx); err != nil {
 		return err
+	} else if cur.DailyCap != st.DailyCap && actor.Role != auth.RoleSuperAdmin {
+		return ErrInvalid{"每日花费上限只有超级管理员可以修改"}
 	}
-	s.Audit.Log(ctx, actor.ID, "settings.save", "", map[string]any{"auto_pause_after": st.AutoPauseAfter})
+	if st.DailyCap < 0 || st.DailyCap > 1e7 {
+		return ErrInvalid{"每日花费上限请填 0 或正数（0 表示不限）"}
+	}
+	for k, v := range map[string]any{"auto_pause_after": st.AutoPauseAfter, "daily_cap": st.DailyCap} {
+		b, _ := json.Marshal(v)
+		if _, err := s.DB.Exec(ctx, `INSERT INTO platform_setting (key, value, updated_by) VALUES ($1,$2,$3)
+			ON CONFLICT (key) DO UPDATE SET value=$2, updated_by=$3, updated_at=now()`, k, b, actor.ID); err != nil {
+			return err
+		}
+	}
+	s.Audit.Log(ctx, actor.ID, "settings.save", "", map[string]any{"auto_pause_after": st.AutoPauseAfter, "daily_cap": st.DailyCap})
 	return nil
 }
 

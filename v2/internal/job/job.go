@@ -17,6 +17,7 @@ import (
 
 	"gonghao/internal/audit"
 	"gonghao/internal/auth"
+	"gonghao/internal/gateway"
 	"gonghao/internal/gen"
 )
 
@@ -25,6 +26,9 @@ var (
 	ErrNotFound  = errors.New("not found")
 	ErrForbidden = errors.New("没有权限")
 )
+
+// budgetWait: how long a job waits before trying again when every model config is over its spend cap.
+const budgetWait = 10 * time.Minute
 
 // Day boundaries for quotas are in China time.
 var china = time.FixedZone("CST", 8*3600)
@@ -42,6 +46,8 @@ type Service struct {
 	Lease    time.Duration                 // default 30 min
 	ServerIP string                        // outbound IP users add to the WeChat IP whitelist (V2_SERVER_IP); shown on the bind screen
 	Tick     []func(context.Context) error // extra periodic work in the worker loop (e.g. draft read-back)
+
+	running runningJobs
 }
 
 func (s *Service) now() time.Time {
@@ -177,6 +183,10 @@ func (s *Service) RunOnce(ctx context.Context) (bool, error) {
 	if lease <= 0 {
 		lease = 30 * time.Minute
 	}
+	// platform-wide spend cap reached: leave everything queued until tomorrow (or until an admin raises it)
+	if over, err := gateway.PlatformOverCap(ctx, s.DB, s.now()); err != nil || over {
+		return false, err
+	}
 	var j gen.Job
 	var proposal []byte
 	var source string
@@ -202,7 +212,14 @@ func (s *Service) RunOnce(ctx context.Context) (bool, error) {
 			j.Seed = pr.Events
 		}
 	}
-	res, runErr := s.Runner.Run(ctx, j)
+	jctx, stop := context.WithCancel(ctx)
+	s.running.add(j.ID, stop)
+	res, runErr := s.Runner.Run(jctx, j)
+	stop()
+	if s.running.done(j.ID) && runErr != nil {
+		_, err = s.DB.Exec(context.WithoutCancel(ctx), `UPDATE job SET status='cancelled', failure='管理员取消', trace=trace || $2::jsonb, finished_at=now(), lease_until=NULL WHERE id=$1`, j.ID, res.Trace)
+		return true, err
+	}
 	if res.Trace == nil {
 		res.Trace = []gen.Step{}
 	}
@@ -216,6 +233,15 @@ func (s *Service) RunOnce(ctx context.Context) (bool, error) {
 			j.ID, pj, col, res.Trace)
 		if s.Log != nil {
 			s.Log.Info("job", "id", j.ID, "status", "awaiting_topic")
+		}
+		return true, err
+	}
+	if errors.Is(runErr, gateway.ErrBudget) {
+		// every config for a stage is over its cap: wait and try again later; this run doesn't count as an attempt
+		_, err = s.DB.Exec(context.WithoutCancel(ctx), `UPDATE job SET status='queued', attempt=GREATEST(attempt-1,0), run_at=$2, failure=$3,
+			trace=trace || $4::jsonb, lease_until=NULL WHERE id=$1`, j.ID, s.now().Add(budgetWait), gateway.ErrBudget.Error(), res.Trace)
+		if s.Log != nil {
+			s.Log.Info("job", "id", j.ID, "status", "waiting_budget")
 		}
 		return true, err
 	}

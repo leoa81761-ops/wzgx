@@ -64,6 +64,37 @@ type ServiceConfig struct {
 	Priority        int             `json:"priority"`
 	Enabled         bool            `json:"enabled"`
 	UpdatedAt       time.Time       `json:"updated_at"`
+	PriceIn         *float64        `json:"price_in_per_m"`  // yuan per million input tokens; nil = not set
+	PriceOut        *float64        `json:"price_out_per_m"` // yuan per million output tokens
+	DailyCap        *float64        `json:"daily_cap"`       // yuan per China day; nil = no cap
+}
+
+// Pricing: optional prices and daily spend cap of one config (super admin). nil clears a value.
+type Pricing struct {
+	PriceIn  *float64 `json:"price_in_per_m"`
+	PriceOut *float64 `json:"price_out_per_m"`
+	DailyCap *float64 `json:"daily_cap"`
+}
+
+func (s *Service) SavePricing(ctx context.Context, actor auth.User, id int64, p Pricing) (ServiceConfig, error) {
+	if actor.Role != auth.RoleSuperAdmin {
+		return ServiceConfig{}, ErrForbidden
+	}
+	for _, v := range []*float64{p.PriceIn, p.PriceOut} {
+		if v != nil && (*v < 0 || *v > 100000) {
+			return ServiceConfig{}, ValidationError("价格请填 0 到 100000 之间的数")
+		}
+	}
+	if p.DailyCap != nil && *p.DailyCap <= 0 {
+		p.DailyCap = nil // 0 or less = no cap
+	}
+	out, err := scan(s.DB.QueryRow(ctx, `UPDATE service_config SET price_in_per_m=$2, price_out_per_m=$3, daily_cap=$4, updated_at=now()
+		WHERE id=$1 RETURNING `+cols, id, p.PriceIn, p.PriceOut, p.DailyCap))
+	if err != nil {
+		return out, err
+	}
+	s.Audit.Log(ctx, actor.ID, "config.pricing", out.Name, map[string]any{"id": id, "price_in_per_m": p.PriceIn, "price_out_per_m": p.PriceOut, "daily_cap": p.DailyCap})
+	return out, nil
 }
 
 // Input for create/update. APIKey: nil keeps the stored key, a value replaces it; ClearKey removes it.
@@ -158,12 +189,13 @@ func (in *Input) normalize() error {
 }
 
 const cols = `id, kind, name, protocol, base_url, key_mask, key_cipher<>'', model, reasoning_effort, params,
-	first_byte_timeout_s, idle_timeout_s, total_timeout_s, priority, enabled, updated_at`
+	first_byte_timeout_s, idle_timeout_s, total_timeout_s, priority, enabled, updated_at,
+	price_in_per_m::float8, price_out_per_m::float8, daily_cap::float8`
 
 func scan(r pgx.Row) (ServiceConfig, error) {
 	var c ServiceConfig
 	err := r.Scan(&c.ID, &c.Kind, &c.Name, &c.Protocol, &c.BaseURL, &c.KeyMask, &c.HasKey, &c.Model, &c.ReasoningEffort, &c.Params,
-		&c.FirstByteS, &c.IdleS, &c.TotalS, &c.Priority, &c.Enabled, &c.UpdatedAt)
+		&c.FirstByteS, &c.IdleS, &c.TotalS, &c.Priority, &c.Enabled, &c.UpdatedAt, &c.PriceIn, &c.PriceOut, &c.DailyCap)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}

@@ -44,7 +44,7 @@ func (s *Service) hToday(w http.ResponseWriter, r *http.Request) {
 func (s *Service) hUsers(w http.ResponseWriter, r *http.Request) {
 	q := "%" + r.URL.Query().Get("q") + "%"
 	rows, err := s.DB.Query(r.Context(), `SELECT u.id, u.email, u.display_name, u.tier, u.max_accounts, u.quota_exempt, u.daily_quota, u.status, u.created_at,
-		(SELECT count(*) FROM wx_account a WHERE a.user_id=u.id AND a.bind_status='bound')
+		(SELECT count(*) FROM wx_account a WHERE a.user_id=u.id AND a.bind_status='bound'), u.tier_expires_at
 		FROM users u WHERE u.role='user' AND (u.email ILIKE $1 OR u.display_name ILIKE $1) ORDER BY u.id DESC LIMIT 200`, q)
 	if err != nil {
 		fail(w, err)
@@ -52,21 +52,22 @@ func (s *Service) hUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type row struct {
-		ID          int64     `json:"id"`
-		Email       string    `json:"email"`
-		Name        string    `json:"display_name"`
-		Tier        string    `json:"tier"`
-		MaxAccounts int       `json:"max_accounts"`
-		Exempt      bool      `json:"quota_exempt"`
-		DailyQuota  int       `json:"daily_quota"`
-		Status      string    `json:"status"`
-		CreatedAt   time.Time `json:"created_at"`
-		Accounts    int       `json:"accounts"`
+		ID          int64      `json:"id"`
+		Email       string     `json:"email"`
+		Name        string     `json:"display_name"`
+		Tier        string     `json:"tier"`
+		MaxAccounts int        `json:"max_accounts"`
+		Exempt      bool       `json:"quota_exempt"`
+		DailyQuota  int        `json:"daily_quota"`
+		Status      string     `json:"status"`
+		CreatedAt   time.Time  `json:"created_at"`
+		Accounts    int        `json:"accounts"`
+		ExpiresAt   *time.Time `json:"tier_expires_at"`
 	}
 	out := []row{}
 	for rows.Next() {
 		var x row
-		if err := rows.Scan(&x.ID, &x.Email, &x.Name, &x.Tier, &x.MaxAccounts, &x.Exempt, &x.DailyQuota, &x.Status, &x.CreatedAt, &x.Accounts); err != nil {
+		if err := rows.Scan(&x.ID, &x.Email, &x.Name, &x.Tier, &x.MaxAccounts, &x.Exempt, &x.DailyQuota, &x.Status, &x.CreatedAt, &x.Accounts, &x.ExpiresAt); err != nil {
 			fail(w, err)
 			return
 		}

@@ -28,8 +28,20 @@ func LoadStage(ctx context.Context, db *pgxpool.Pool, box Opener, stage, tier st
 	if err != nil {
 		return nil, err
 	}
+	if over, err := PlatformOverCap(ctx, db, time.Now()); err != nil {
+		return nil, err
+	} else if over {
+		return nil, ErrBudget
+	}
 	var out []Config
+	capped := 0
 	for _, id := range ids {
+		if over, err := configOverCap(ctx, db, id, time.Now()); err != nil {
+			return nil, err
+		} else if over {
+			capped++
+			continue // over today's cap: the next config in the route takes over
+		}
 		var c Config
 		var keyCipher string
 		var params []byte
@@ -54,6 +66,9 @@ func LoadStage(ctx context.Context, db *pgxpool.Pool, box Opener, stage, tier st
 		out = append(out, c)
 	}
 	if len(out) == 0 {
+		if capped > 0 {
+			return nil, ErrBudget
+		}
 		return nil, ErrNoConfig
 	}
 	return out, nil
@@ -82,7 +97,9 @@ func (r PGRecorder) Record(ctx context.Context, stage string, jobID int64, a Att
 		fb = a.FirstByteMs
 	}
 	_, err := r.DB.Exec(context.WithoutCancel(ctx), `INSERT INTO model_call (job_id, stage, config_id, model, effort, attempt, outcome,
-		first_byte_ms, total_ms, finish_reason, tokens_in, tokens_out, error) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		first_byte_ms, total_ms, finish_reason, tokens_in, tokens_out, error, cost)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+		  COALESCE((SELECT ($11::int * COALESCE(price_in_per_m,0) + $12::int * COALESCE(price_out_per_m,0)) / 1000000 FROM service_config WHERE id=$3), 0))`,
 		job, stage, a.ConfigID, a.Model, a.Effort, a.N, string(a.Outcome), fb, a.TotalMs, a.Finish, a.TokensIn, a.TokensOut, a.Err)
 	if err != nil && r.Log != nil {
 		r.Log.Warn("model_call insert failed", "err", err)
