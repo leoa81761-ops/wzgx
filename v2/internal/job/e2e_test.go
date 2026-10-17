@@ -404,6 +404,9 @@ func TestNewsFallbackAndResearchOff(t *testing.T) {
 		t.Fatalf("article kind: %s", ab)
 	}
 	_, wu := e.fm.last("write")
+	if !strings.Contains(wu, "不按新闻写") {
+		t.Fatal("writer told the topic is a practical fallback")
+	}
 	if strings.Contains(wu, "资料") {
 		t.Fatal("no material without research")
 	}

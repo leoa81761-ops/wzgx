@@ -223,6 +223,7 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	if topic.Topic == "" {
 		return res, errors.New("选题：三次都没有选出具体题目")
 	}
+	wc.Practical = topicKind == "practical"
 	if topic.SearchQuery == "" {
 		topic.SearchQuery = topic.Topic
 	}

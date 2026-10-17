@@ -32,6 +32,7 @@ type writingContext struct {
 	LengthHint  *int
 	NeedsNews   bool
 	Research    bool // article type setting 是否检索资料
+	Practical   bool // news-type column fell back to a non-news topic (set after the topic stage)
 	Recent      []string
 	Recentnews  string // what a live search found recently, for news-type columns
 	Today       string
@@ -51,6 +52,9 @@ func (w writingContext) settings() string {
 	}
 	if w.ColumnNote != "" {
 		fmt.Fprintf(&b, "栏目说明：%s\n", w.ColumnNote)
+	}
+	if w.Practical {
+		b.WriteString("本篇：近期没有检索到可核实的动态，这一篇是本栏目范围内的实用题目，不按新闻写，也不要求新闻来源。\n")
 	}
 	return b.String()
 }
