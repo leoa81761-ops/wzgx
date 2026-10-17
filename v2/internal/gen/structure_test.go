@@ -38,3 +38,12 @@ func TestBlockVariantsAndEmptySections(t *testing.T) {
 		}
 	}
 }
+
+func TestEndAfterClosingBracket(t *testing.T) {
+	for text, ok := range map[string]bool{"建议加强学习。]": true, "见规范》": false, "写完了。】": true, "没有写完]": false} {
+		a := render.Article{Title: "t", Blocks: []render.Block{{Type: "p", Text: text}}}
+		if g := Gate(a, "stop", nil); (g == "") != ok {
+			t.Errorf("%s: %q", text, g)
+		}
+	}
+}

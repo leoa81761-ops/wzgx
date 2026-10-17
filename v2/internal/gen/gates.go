@@ -42,7 +42,8 @@ func Gate(a render.Article, finish string, sensitive []string) string {
 		return why
 	}
 	if last := lastTextBlock(a.Blocks); last != nil && last.Type == "p" {
-		t := strings.TrimSpace(last.Text)
+		// closing brackets and quotes after the sentence end are fine: "…技能。]" "…。》"
+		t := strings.TrimRight(strings.TrimSpace(last.Text), "]】》’'\" ")
 		r := []rune(t)
 		if len(r) > 0 && !strings.ContainsRune(endPunct, r[len(r)-1]) {
 			return "截断：正文最后一段没有写完"
