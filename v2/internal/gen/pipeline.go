@@ -339,6 +339,14 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	if block == "" {
 		pics, res.AIImages = p.pictures(ctx, j, tier, art, load, chat, trace)
 		charts = p.charts(ctx, j, art, trace) // the system decides; a failed chart is skipped
+		if pics[0] == "" {
+			if k := p.refCover(ctx, j, trace); k != "" {
+				if pics == nil {
+					pics = map[int]string{}
+				}
+				pics[0] = k
+			}
+		}
 	}
 	prof := wc.Profile
 	out := render.Render(art, render.Options{Opening: prof["开头"], Ending: prof["结尾"], Signature: prof["签名"],

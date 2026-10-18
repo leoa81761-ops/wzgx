@@ -66,7 +66,7 @@ func (p *Pipeline) RenderStored(ctx context.Context, articleID int64, layout str
 		}
 		if kind == "chart" {
 			charts[block] = key
-		} else if aiImages {
+		} else {
 			pics[slot] = key
 		}
 	}

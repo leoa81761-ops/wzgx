@@ -43,6 +43,10 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	h.OnRegister = s.OnRegistered
 	h.OnLogin = s.CancelDeletion
 	srv.Handle("PUT /api/accounts/{id}/layout", user(s.hSetLayout))
+	srv.Handle("GET /api/accounts/{id}/ref-images", user(s.hRefList))
+	srv.Handle("POST /api/accounts/{id}/ref-images", user(s.hRefAdd))
+	srv.Handle("DELETE /api/accounts/{id}/ref-images/{rid}", user(s.hRefDelete))
+	srv.Handle("POST /api/articles/{id}/ref-image", user(s.hArticleRef))
 	srv.Handle("GET /api/accounts/{id}/calendar", user(s.hCalendar))
 	srv.Handle("GET /api/me/topics", user(s.hPendingTopics))
 	srv.Handle("POST /api/jobs/{id}/topic", user(s.hDecideTopic))
@@ -135,6 +139,7 @@ type articleRow struct {
 	PublishedAt   *time.Time      `json:"published_at"`
 	Layout        string          `json:"layout"`
 	CoverURL      string          `json:"cover_url"`  // generated cover ('' = default cover at push)
+	CoverRef      bool            `json:"cover_ref"`  // the cover is from the user's authorized pictures
 	Images        int             `json:"ai_images"`  // generated pictures stored for this article
 	FactCheck     json.RawMessage `json:"fact_check"` // null = not checked
 	ID            int64           `json:"id"`
@@ -164,11 +169,12 @@ const artCols = `id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = a
 	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id), layout,
 	publish_status, publish_at, publish_note, publish_url, published_at,
 	COALESCE((SELECT '` + render.MediaPrefix + `' || i.key FROM article_image i WHERE i.article_id = article.id AND i.kind = 'picture' AND i.slot = 0 ORDER BY i.id DESC LIMIT 1), ''),
+	COALESCE((SELECT i.ref_id IS NOT NULL FROM article_image i WHERE i.article_id = article.id AND i.kind = 'picture' AND i.slot = 0 ORDER BY i.id DESC LIMIT 1), FALSE),
 	(SELECT count(*)::int FROM article_image i WHERE i.article_id = article.id), fact_check`
 
 func (a *articleRow) fields() []any {
 	return []any{&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason,
-		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout, &a.PublishStatus, &a.PublishAt, &a.PublishNote, &a.PublishURL, &a.PublishedAt, &a.CoverURL, &a.Images, &a.FactCheck}
+		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout, &a.PublishStatus, &a.PublishAt, &a.PublishNote, &a.PublishURL, &a.PublishedAt, &a.CoverURL, &a.CoverRef, &a.Images, &a.FactCheck}
 }
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
@@ -309,7 +315,8 @@ func (s *Service) hMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	var mime string
 	var data []byte
-	if err := s.DB.QueryRow(r.Context(), `SELECT mime, data FROM article_image WHERE key=$1`, key).Scan(&mime, &data); err != nil {
+	if err := s.DB.QueryRow(r.Context(), `SELECT mime, data FROM article_image WHERE key=$1
+		UNION ALL SELECT mime, data FROM ref_image WHERE key=$1 LIMIT 1`, key).Scan(&mime, &data); err != nil {
 		http.NotFound(w, r)
 		return
 	}

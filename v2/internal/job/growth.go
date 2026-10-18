@@ -272,6 +272,8 @@ func (s *Service) Export(ctx context.Context, userID int64) (map[string]any, err
 			FROM article_source s JOIN article a ON a.id=s.article_id WHERE a.user_id=$1 ORDER BY s.article_id, s.n`},
 		{"style_profiles", `SELECT p.account_id, p.column_id, p.traits, p.samples, p.enabled, p.updated_at
 			FROM style_profile p JOIN wx_account a ON a.id=p.account_id WHERE a.user_id=$1 ORDER BY p.id`},
+		{"ref_images", `SELECT account_id, source_url, caption, width, height, statement, authorized_at, used, created_at
+			FROM ref_image WHERE user_id=$1 ORDER BY id`},
 		{"feedback", `SELECT article_id, rating, note, updated_at FROM article_feedback WHERE user_id=$1 ORDER BY article_id`},
 		{"consents", `SELECT doc_type, version, agreed_at, revoked_at FROM consent_log WHERE user_id=$1 ORDER BY agreed_at`},
 		{"orders", `SELECT tier, max_accounts, daily_quota, months, expires_at, amount, note, created_at FROM plan_order WHERE user_id=$1 ORDER BY id`},

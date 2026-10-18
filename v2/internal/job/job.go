@@ -19,6 +19,7 @@ import (
 	"gonghao/internal/auth"
 	"gonghao/internal/gateway"
 	"gonghao/internal/gen"
+	"gonghao/internal/safefetch"
 )
 
 var (
@@ -47,8 +48,9 @@ type Service struct {
 	ServerIP string                        // outbound IP users add to the WeChat IP whitelist (V2_SERVER_IP); shown on the bind screen
 	Tick     []func(context.Context) error // extra periodic work in the worker loop (e.g. draft read-back)
 
-	Render Renderer      // optional: layout re-rendering (the pipeline)
-	Auth   *auth.Service // password confirmation and logout for account deletion
+	Render Renderer           // optional: layout re-rendering (the pipeline)
+	Auth   *auth.Service      // password confirmation and logout for account deletion
+	Fetch  *safefetch.Fetcher // authorized reference images (nil: defaults)
 
 	running runningJobs
 }

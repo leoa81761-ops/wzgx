@@ -42,7 +42,8 @@ type Options struct {
 	Opening, Ending, Signature string
 	AILabel                    bool
 	DefaultImageURL            string
-	// AIImages: the article has generated images; Images[slot] is the picture for an image slot
+	// AIImages: the article has generated images (slots without one are dropped instead of using the
+	// default image); Images[slot] is the picture for an image slot, generated or user-supplied
 	// (1-based, in order). Slots without one are dropped instead of showing the default picture.
 	AIImages bool
 	Images   map[int]string
@@ -210,9 +211,9 @@ func Render(a Article, o Options) Output {
 			return
 		}
 		slot++
-		src := o.DefaultImageURL
-		if o.AIImages {
-			src = o.Images[slot]
+		src := o.Images[slot] // a generated or user-supplied picture
+		if src == "" && !o.AIImages {
+			src = o.DefaultImageURL
 		}
 		if src == "" {
 			return

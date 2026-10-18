@@ -30,7 +30,20 @@
         </div>
         <div class="cover">
           <img v-if="cur.cover_url" :src="cur.cover_url" alt="封面" />
-          <div class="muted">{{ cur.cover_url ? '封面（AI 生成）' : '封面：推送时使用默认封面或文中第一张图' }}</div>
+          <div class="muted">{{ cur.cover_url ? (cur.cover_ref ? '封面（你的授权图片）' : '封面（AI 生成）') : '封面：推送时使用默认封面或文中第一张图' }}</div>
+        </div>
+        <div v-if="cur.status === 'ready' || cur.status === 'blocked'" class="refswap">
+          <button v-if="!swap.open" @click="openSwap">换成我的授权图片</button>
+          <template v-else>
+            <label class="f"><span>换哪张</span><select v-model="swap.slot"><option :value="0">封面</option><option v-for="n in 3" :key="n" :value="n">文中第 {{ n }} 张配图</option></select></label>
+            <label class="f"><span>用哪张</span><select v-model="swap.ref"><option :value="null">填一个新的图片网址</option><option v-for="x in swap.lib" :key="x.id" :value="x.id">{{ x.caption || ('图片 #' + x.id) }}</option></select></label>
+            <template v-if="swap.ref === null">
+              <label class="f"><span>图片网址</span><input v-model="swap.url" placeholder="https://…/photo.jpg" /></label>
+              <label class="check"><input type="checkbox" v-model="swap.authorized" /> {{ swap.statement }}</label>
+            </template>
+            <div class="row"><button class="primary" :disabled="busy || (swap.ref === null && (!swap.url.trim() || !swap.authorized))" @click="doSwap">换图</button><button @click="swap.open = false">取消</button></div>
+            <div v-if="swap.msg" class="msg" :class="{ ok: swap.msg.ok }">{{ swap.msg.text }}</div>
+          </template>
         </div>
         <div v-if="cur.status === 'blocked'" class="msg">没有通过检查：{{ cur.block_reason }}</div>
         <div v-if="cur.status === 'pushed'" class="msg ok">已在公众号草稿箱，可以去公众号后台检查后发表。</div>
@@ -121,6 +134,17 @@ async function applyLayout() {
 }
 const curAccount = computed(() => list.value.find((a) => a.id === cur.value?.id)?.account_name || '')
 async function load() { list.value = await get('/api/articles') }
+const swap = reactive({ open: false, slot: 0, ref: null, url: '', authorized: false, lib: [], statement: '', msg: null })
+async function openSwap() {
+  Object.assign(swap, { open: true, slot: 0, ref: null, url: '', authorized: false, msg: null })
+  try { const r = await get(`/api/accounts/${cur.value.account_id}/ref-images`); swap.lib = r.images; swap.statement = r.statement; if (r.images.length) swap.ref = r.images[0].id } catch (e) { swap.msg = { ok: false, text: e.message } }
+}
+async function doSwap() {
+  busy.value = true; swap.msg = null
+  const body = swap.ref === null ? { slot: swap.slot, url: swap.url.trim(), authorized: swap.authorized } : { slot: swap.slot, ref_id: swap.ref }
+  try { await post(`/api/articles/${cur.value.id}/ref-image`, body); const id = cur.value.id; await open(id); cur.value._v = Date.now(); swap.open = false }
+  catch (e) { swap.msg = { ok: false, text: e.message } } finally { busy.value = false }
+}
 async function open(id) {
   pushErr.value = ''; fbMsg.value = null; rbErr.value = ''
   cur.value = await get(`/api/articles/${id}`)
