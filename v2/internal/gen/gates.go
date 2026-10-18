@@ -12,6 +12,8 @@ import (
 
 var junkRe = regexp.MustCompile(`(?i)(<\|[a-z_]*\|>|</?think>|<\/s>|\[/?INST\]|` + "```" + `|\{\s*"(type|blocks)"\s*:|as an ai|作为(一个)?(ai|人工智能)(语言)?模型|系统提示词|system prompt)`)
 
+var trailingCites = regexp.MustCompile(`(\s*\[\d+\])+$`) // "…从这张平面算出来。[1][2]"
+
 var endPunct = "。！？!?…”」』）)."
 
 // Gate returns "" if the article may be delivered, else the blocking reason.
@@ -43,7 +45,7 @@ func Gate(a render.Article, finish string, sensitive []string) string {
 	}
 	if last := lastTextBlock(a.Blocks); last != nil && last.Type == "p" {
 		// closing brackets and quotes after the sentence end are fine: "…技能。]" "…。》"
-		t := strings.TrimRight(strings.TrimSpace(last.Text), "]】》’'\" ")
+		t := strings.TrimRight(trailingCites.ReplaceAllString(strings.TrimSpace(last.Text), ""), "]】》’'\" ")
 		r := []rune(t)
 		if len(r) > 0 && !strings.ContainsRune(endPunct, r[len(r)-1]) {
 			return "截断：正文最后一段没有写完"
