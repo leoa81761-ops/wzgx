@@ -140,10 +140,10 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("freepublish/submit %s (fake, nothing is published)", in.MediaID)
 		fmt.Fprintf(w, `{"errcode":0,"errmsg":"ok","publish_id":%d,"msg_data_id":%d}`, started*100+int64(n), n)
 	case p == "/cgi-bin/freepublish/get":
-		var in map[string]json.Number
+		var in map[string]any
 		json.NewDecoder(r.Body).Decode(&in)
-		pid := in["publish_id"].String()
-		fmt.Fprintf(w, `{"publish_id":%s,"publish_status":0,"article_id":"FAKEART%s","article_detail":{"count":1,"item":[{"idx":1,"article_url":"https://mp.weixin.qq.com/s/devfake-%s"}]},"fail_idx":[]}`, pid, pid, pid)
+		pid := fmt.Sprint(in["publish_id"])
+		fmt.Fprintf(w, `{"publish_id":%q,"publish_status":0,"article_id":"FAKEART%s","article_detail":{"count":1,"item":[{"idx":1,"article_url":"https://mp.weixin.qq.com/s/devfake-%s"}]},"fail_idx":[]}`, pid, pid, pid)
 	case p == "/dev/edit", p == "/dev/delete": // walk-through helpers: pretend the user edited or published a draft
 		id := r.URL.Query().Get("media_id")
 		f.mu.Lock()
