@@ -42,8 +42,12 @@ type Options struct {
 	Opening, Ending, Signature string
 	AILabel                    bool
 	DefaultImageURL            string
-	Sources                    map[int]Source // official sources only, by evidence number
-	Layout                     string         // layout key; empty = classic
+	// AIImages: the article has generated images; Images[slot] is the picture for an image slot
+	// (1-based, in order). Slots without one are dropped instead of showing the default picture.
+	AIImages bool
+	Images   map[int]string
+	Sources  map[int]Source // official sources only, by evidence number
+	Layout   string         // layout key; empty = classic
 }
 
 type Output struct {
@@ -197,12 +201,21 @@ func Render(a Article, o Options) Output {
 			fmt.Fprintf(&b, `<p style="%s">%s</p>`, L.P, inline(s))
 		}
 	}
+	slot := 0
 	image := func(caption string) {
-		if o.DefaultImageURL == "" || out.Images >= 3 {
+		if slot >= MaxSlots {
+			return
+		}
+		slot++
+		src := o.DefaultImageURL
+		if o.AIImages {
+			src = o.Images[slot]
+		}
+		if src == "" {
 			return
 		}
 		out.Images++
-		fmt.Fprintf(&b, `<section style="%s"><img src="%s" alt="%s" style="max-width:100%%;"/>`, L.Img, html.EscapeString(o.DefaultImageURL), html.EscapeString(caption))
+		fmt.Fprintf(&b, `<section style="%s"><img src="%s" alt="%s" style="max-width:100%%;"/>`, L.Img, html.EscapeString(src), html.EscapeString(caption))
 		if caption != "" {
 			fmt.Fprintf(&b, `<p style="%s">%s</p>`, L.Caption, html.EscapeString(caption))
 		}
@@ -226,12 +239,7 @@ func Render(a Article, o Options) Output {
 	}
 
 	para(o.Opening)
-	hasImage := false
-	for _, bl := range a.Blocks {
-		if bl.Type == "image" {
-			hasImage = true
-		}
-	}
+	hasImage := hasImageBlock(a)
 	sections := 0
 	for _, bl := range a.Blocks {
 		switch bl.Type {
@@ -317,4 +325,87 @@ func PreviewPage(title, body string, dark bool) string {
 		`<title>` + html.EscapeString(title) + `</title>` + wrap + `</head><body style="margin:0;background:` + bg + `;">` +
 		`<div class="dk" style="max-width:420px;margin:0 auto;padding:20px 16px;">` +
 		`<h1 style="font-size:22px;line-height:1.4;margin:0 0 20px;color:` + h1 + `;">` + html.EscapeString(title) + `</h1>` + body + `</div></body></html>`
+}
+
+// MediaPrefix is the path generated pictures are served under: MediaPrefix + key.
+const MediaPrefix = "/api/media/"
+
+// MaxSlots is the most image slots an article gets.
+const MaxSlots = 3
+
+func hasImageBlock(a Article) bool {
+	for _, bl := range a.Blocks {
+		if bl.Type == "image" {
+			return true
+		}
+	}
+	return false
+}
+
+// Slot is a place where the renderer would put a picture (same rules as Render).
+type Slot struct {
+	N       int    // 1-based, in order
+	Caption string // the writer's caption, if it proposed the image
+	Block   int    // index of the block the picture comes before (image blocks: the block itself)
+}
+
+// Slots lists the image slots of an article in order, at most MaxSlots.
+func Slots(a Article) []Slot {
+	var out []Slot
+	hasImage := hasImageBlock(a)
+	sections := 0
+	for i, bl := range a.Blocks {
+		if len(out) >= MaxSlots {
+			break
+		}
+		switch bl.Type {
+		case "h2":
+			sections++
+			if !hasImage && sections == 2 && len(a.Blocks) >= 6 {
+				out = append(out, Slot{N: len(out) + 1, Block: i})
+			}
+		case "image":
+			out = append(out, Slot{N: len(out) + 1, Caption: strings.TrimSpace(bl.Caption), Block: i})
+		}
+	}
+	return out
+}
+
+// Outline is a short text view of the article with the image slots marked, for planning pictures.
+func Outline(a Article, slots []Slot) string {
+	at := map[int]Slot{}
+	for _, s := range slots {
+		at[s.Block] = s
+	}
+	short := func(s string, n int) string {
+		r := []rune(strings.TrimSpace(s))
+		if len(r) > n {
+			return string(r[:n]) + "…"
+		}
+		return string(r)
+	}
+	var b strings.Builder
+	for i, bl := range a.Blocks {
+		if s, ok := at[i]; ok {
+			fmt.Fprintf(&b, "【候选配图位置 %d", s.N)
+			if s.Caption != "" {
+				fmt.Fprintf(&b, "：%s", s.Caption)
+			}
+			b.WriteString("】\n")
+		}
+		switch bl.Type {
+		case "h2":
+			fmt.Fprintf(&b, "## %s\n", short(bl.Text, 40))
+		case "list":
+			fmt.Fprintf(&b, "- %s\n", short(strings.Join(bl.Items, "；"), 80))
+		case "table":
+			fmt.Fprintf(&b, "（表格，%d 行）\n", len(bl.Rows))
+		case "image":
+		default:
+			if t := short(bl.Text, 80); t != "" {
+				b.WriteString(t + "\n")
+			}
+		}
+	}
+	return b.String()
 }

@@ -88,7 +88,7 @@ func (s *Service) hTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) hRoutes(w http.ResponseWriter, r *http.Request) {
 	rs, err := s.Routes(r.Context())
-	reply(w, 200, map[string]any{"routes": rs, "stages": Stages}, err)
+	reply(w, 200, map[string]any{"routes": rs, "stages": RouteStages}, err)
 }
 
 func (s *Service) hSaveRoute(w http.ResponseWriter, r *http.Request) {

@@ -135,6 +135,7 @@ type Result struct {
 	Trace       []Step
 	Proposal    *Proposal // set when the job stops for topic confirmation
 	Layout      string
+	AIImages    bool // the article was rendered with generated pictures
 }
 
 var ErrNoColumn = errors.New("这个公众号还没有可用的栏目")
@@ -317,23 +318,29 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 		}
 	}
 
-	// ⑤ render
+	// ⑥ render (official sources only are cited)
 	srcs := map[int]render.Source{}
 	for _, e := range ev {
 		if e.Official() {
 			srcs[e.N] = render.Source{N: e.N, Kind: e.Kind, Title: e.Title, Issuer: e.Issuer, DocNumber: e.DocNumber, Date: e.Date, URL: e.URL}
 		}
 	}
+	// ⑤ pictures (only for an article that passed; never blocks it)
+	var pics map[int]string
+	if block == "" {
+		pics, res.AIImages = p.pictures(ctx, j, tier, art, load, chat, trace)
+	}
 	prof := wc.Profile
 	out := render.Render(art, render.Options{Opening: prof["开头"], Ending: prof["结尾"], Signature: prof["签名"],
-		AILabel: prof["AI标识"] == "on", DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: wc.Layout})
+		AILabel: prof["AI标识"] == "on", DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: wc.Layout,
+		AIImages: res.AIImages, Images: mediaURLs(pics)})
 	res.Layout = render.LayoutByKey(wc.Layout).Key
 
 	res.Status, res.BlockReason = "ready", block
 	if block != "" {
 		res.Status = "blocked"
 	}
-	res.ArticleID, err = p.save(ctx, j, colID, topic.Topic, topicKind, art, out, res)
+	res.ArticleID, err = p.save(ctx, j, colID, topic.Topic, topicKind, art, out, res, pics)
 	return res, err
 }
 
@@ -535,7 +542,7 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	return w, tier, colID, review, nil
 }
 
-func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKind string, a render.Article, out render.Output, res Result) (int64, error) {
+func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKind string, a render.Article, out render.Output, res Result, pics map[int]string) (int64, error) {
 	body, _ := json.Marshal(a)
 	alts := a.AltTitles
 	if alts == nil {
@@ -551,11 +558,20 @@ func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKin
 		jobID = j.ID
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic, topic_kind, layout)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,''),$14) RETURNING id`,
-		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic, topicKind, res.Layout).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic, topic_kind, layout, ai_images)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,''),$14,$15) RETURNING id`,
+		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic, topicKind, res.Layout, res.AIImages).Scan(&id)
 	if err != nil {
 		return 0, err
+	}
+	if len(pics) > 0 {
+		keys := make([]string, 0, len(pics))
+		for _, k := range pics {
+			keys = append(keys, k)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE article_image SET article_id=$1 WHERE key = ANY($2) AND article_id IS NULL`, id, keys); err != nil {
+			return 0, err
+		}
 	}
 	for _, s := range out.Cited {
 		var d any

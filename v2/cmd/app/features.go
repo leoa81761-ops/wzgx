@@ -48,7 +48,7 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{BaseURL: cfg.TavilyBase}, DefaultImageURL: cfg.DefaultCoverURL, Log: log}
 	jobs := &job.Service{DB: pool, Runner: pipe, Render: pipe, Auth: authSvc, Audit: aud, Log: log, ServerIP: cfg.ServerIP}
 	jobs.Register(srv, ah)
-	pub := &publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: cfg.WeChatBase}, ServerIP: cfg.ServerIP,
+	pub := &publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: cfg.WeChatBase}, ServerIP: cfg.ServerIP, DefaultCover: cfg.DefaultCoverURL,
 		ReadBackAfter: cfg.ReadBackAfter, AutoPublish: cfg.AutoPublish}
 	pub.Register(srv, ah)
 	jobs.Tick = append(jobs.Tick, pub.ReadBackDue, pub.PublishDue, jobs.GrowthTick)

@@ -417,7 +417,8 @@ func (im *importer) configs(ctx context.Context) error {
 }
 
 func (im *importer) routes(ctx context.Context) error {
-	stageMap := map[string]string{"topic": "topic", "research": "research", "draft": "write", "write": "write", "review": "review"}
+	stageMap := map[string]string{"topic": "topic", "research": "research", "draft": "write", "write": "write", "review": "review",
+		"image": "image", "cover": "image", "illustration": "image"}
 	rows, err := im.v1.Query(ctx, `SELECT stage, COALESCE(tier,'*'), service_config_id FROM stage_route ORDER BY stage, tier, sort_order, id`)
 	if err != nil {
 		return err
@@ -475,6 +476,22 @@ func (im *importer) routes(ctx context.Context) error {
 			return err
 		}
 		im.rep.imported["route"]++
+	}
+	// v1 image configs (e.g. old #8 grok-imagine) serve v2's image route when v1 had no image route
+	var n int
+	im.tx.QueryRow(ctx, `SELECT count(*) FROM stage_route WHERE stage='image' AND tier='*'`).Scan(&n)
+	if n == 0 {
+		var list []int64
+		if err := im.tx.QueryRow(ctx, `SELECT COALESCE(array_agg(c.id ORDER BY c.priority, c.id), '{}') FROM service_config c
+			JOIN v1_import m ON m.kind='config' AND m.new_id=c.id WHERE c.kind='image' AND c.enabled`).Scan(&list); err != nil {
+			return err
+		}
+		if len(list) > 0 {
+			if _, err := im.tx.Exec(ctx, `INSERT INTO stage_route (stage, tier, config_ids) VALUES ('image','*',$1)`, list); err != nil {
+				return err
+			}
+			im.rep.imported["route"]++
+		}
 	}
 	return nil
 }

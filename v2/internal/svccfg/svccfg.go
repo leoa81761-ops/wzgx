@@ -5,8 +5,10 @@ package svccfg
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -46,6 +48,12 @@ type Service struct {
 
 var Kinds = []string{"text", "search", "image", "notify", "sms", "pay"}
 var Stages = []string{"topic", "research", "write", "review"}
+
+// ImageStage is routed to image configs (cover and inline images); the writing stages use text/search.
+const ImageStage = "image"
+
+// RouteStages are all stages that can have a route.
+var RouteStages = append(append([]string{}, Stages...), ImageStage)
 
 type ServiceConfig struct {
 	ID              int64           `json:"id"`
@@ -139,6 +147,21 @@ func (in *Input) normalize() error {
 	if in.Protocol == "" {
 		in.Protocol = "openai"
 	}
+	if in.Kind == "image" {
+		if in.Protocol != "openai" {
+			return ValidationError("图片配置只支持 openai 图片接口（/images/generations）")
+		}
+		u, err := url.Parse(in.BaseURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return ValidationError("接口地址需以 http:// 或 https:// 开头")
+		}
+		if in.Model == "" {
+			return ValidationError("请填写模型")
+		}
+		if in.TotalS == 0 {
+			in.TotalS = 180
+		}
+	}
 	if isModelKind(in.Kind) {
 		if in.Protocol != "openai" && in.Protocol != "anthropic" {
 			return ValidationError("模型配置只支持 openai 或 anthropic 接口")
@@ -161,7 +184,7 @@ func (in *Input) normalize() error {
 	if err := json.Unmarshal(in.Params, &p); err != nil {
 		return ValidationError("附加参数必须是 JSON 对象")
 	}
-	for _, k := range []string{"model", "messages", "stream", "reasoning_effort"} {
+	for _, k := range []string{"model", "messages", "stream", "reasoning_effort", "prompt", "n", "response_format"} {
 		if _, ok := p[k]; ok {
 			return ValidationError("附加参数里不能设置 " + k)
 		}
@@ -333,7 +356,7 @@ func (s *Service) SaveRoute(ctx context.Context, actor auth.User, r Route) (Rout
 	if r.Tier == "" {
 		r.Tier = "*"
 	}
-	if !contains(Stages, r.Stage) {
+	if !contains(RouteStages, r.Stage) {
 		return r, ValidationError("环节不正确")
 	}
 	if len(r.ConfigIDs) == 0 || len(r.ConfigIDs) > 5 {
@@ -353,8 +376,11 @@ func (s *Service) SaveRoute(ctx context.Context, actor auth.User, r Route) (Rout
 		if err != nil {
 			return r, err
 		}
-		if !isModelKind(kind) {
-			return r, ValidationError("环节只能使用文本或搜索模型配置")
+		if r.Stage == ImageStage && kind != "image" {
+			return r, ValidationError("配图环节只能使用图片模型配置")
+		}
+		if r.Stage != ImageStage && !isModelKind(kind) {
+			return r, ValidationError("写作环节只能使用文本或搜索模型配置")
 		}
 	}
 	if _, err := s.DB.Exec(ctx, `INSERT INTO stage_route (stage, tier, config_ids) VALUES ($1,$2,$3)
@@ -391,6 +417,7 @@ type TestResult struct {
 	Model    string            `json:"model"`
 	Error    string            `json:"error,omitempty"`
 	Attempts []gateway.Attempt `json:"attempts"`
+	Image    string            `json:"image,omitempty"` // image configs: the test picture as a data URL
 }
 
 // TestConnection sends one tiny streamed request through the gateway with the config's own
@@ -412,8 +439,8 @@ func (s *Service) TestConnection(ctx context.Context, actor auth.User, id int64)
 	if err != nil {
 		return TestResult{}, err
 	}
-	if !isModelKind(kind) {
-		return TestResult{}, ValidationError("目前只能测试文本和搜索模型配置")
+	if !isModelKind(kind) && kind != "image" {
+		return TestResult{}, ValidationError("目前只能测试文本、搜索和图片模型配置")
 	}
 	if keyCipher != "" {
 		if c.APIKey, err = s.Box.Open(keyCipher); err != nil {
@@ -422,6 +449,9 @@ func (s *Service) TestConnection(ctx context.Context, actor auth.User, id int64)
 	}
 	_ = json.Unmarshal(params, &c.Params)
 	c.FirstByte, c.Idle, c.Total = time.Duration(fb)*time.Second, time.Duration(idle)*time.Second, time.Duration(total)*time.Second
+	if kind == "image" {
+		return s.testImage(ctx, actor, id, c)
+	}
 
 	budget := c.Total
 	if budget > 5*time.Minute {
@@ -442,6 +472,28 @@ func (s *Service) TestConnection(ctx context.Context, actor auth.User, id int64)
 			r = r[:200]
 		}
 		out.Reply = string(r)
+	}
+	s.Audit.Log(ctx, actor.ID, "config.test", c.Name, map[string]any{"id": id, "ok": out.OK, "attempts": len(out.Attempts)})
+	return out, nil
+}
+
+// testImage generates one small test picture with the config (one call, no backup config).
+func (s *Service) testImage(ctx context.Context, actor auth.User, id int64, c gateway.Config) (TestResult, error) {
+	res, err := s.GW.Image(ctx, []gateway.Config{c}, gateway.ImageRequest{Stage: "config_test",
+		Prompt: "一只橘猫趴在窗台上晒太阳，简洁插画，不要文字", Aspect: "16:9"})
+	out := TestResult{OK: err == nil, Model: res.Model, Attempts: res.Attempts}
+	if err != nil {
+		out.Error = err.Error()
+		var fe *gateway.FailedError
+		if errors.As(err, &fe) {
+			out.Attempts = fe.Attempts
+			if len(fe.Attempts) > 0 && fe.Attempts[0].Err != "" {
+				out.Error = fe.Attempts[0].Err
+			}
+		}
+	} else {
+		out.Reply = fmt.Sprintf("收到 1 张图片（%s，%d KB）", res.Mime, (len(res.Data)+1023)/1024)
+		out.Image = "data:" + res.Mime + ";base64," + base64.StdEncoding.EncodeToString(res.Data)
 	}
 	s.Audit.Log(ctx, actor.ID, "config.test", c.Name, map[string]any{"id": id, "ok": out.OK, "attempts": len(out.Attempts)})
 	return out, nil

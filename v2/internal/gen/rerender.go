@@ -17,8 +17,9 @@ func (p *Pipeline) RenderStored(ctx context.Context, articleID int64, layout str
 	var accID int64
 	var body []byte
 	var accLayout string
-	err := p.DB.QueryRow(ctx, `SELECT a.account_id, a.body_json, w.layout FROM article a JOIN wx_account w ON w.id=a.account_id WHERE a.id=$1`, articleID).
-		Scan(&accID, &body, &accLayout)
+	var aiImages bool
+	err := p.DB.QueryRow(ctx, `SELECT a.account_id, a.body_json, w.layout, a.ai_images FROM article a JOIN wx_account w ON w.id=a.account_id WHERE a.id=$1`, articleID).
+		Scan(&accID, &body, &accLayout, &aiImages)
 	if err != nil {
 		return "", err
 	}
@@ -51,8 +52,25 @@ func (p *Pipeline) RenderStored(ctx context.Context, articleID int64, layout str
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
+	pics := map[int]string{}
+	if aiImages {
+		irows, err := p.DB.Query(ctx, `SELECT slot, key FROM article_image WHERE article_id=$1 AND slot > 0`, articleID)
+		if err != nil {
+			return "", err
+		}
+		for irows.Next() {
+			var slot int
+			var key string
+			if err := irows.Scan(&slot, &key); err != nil {
+				irows.Close()
+				return "", err
+			}
+			pics[slot] = key
+		}
+		irows.Close()
+	}
 	out := render.Render(art, render.Options{Opening: opening, Ending: ending, Signature: sig, AILabel: ai,
-		DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: layout})
+		DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: layout, AIImages: aiImages, Images: mediaURLs(pics)})
 	return out.HTML, nil
 }
 

@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -163,6 +164,9 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Fprintln(w, "ok", p, id)
+	case strings.HasSuffix(p, "/images/generations"): // OpenAI images API: a real JPEG, as b64_json with a data: prefix
+		io.Copy(io.Discard, r.Body)
+		fmt.Fprintf(w, `{"data":[{"b64_json":"data:image/jpeg;base64,%s","mime_type":"image/jpeg"}]}`, base64.StdEncoding.EncodeToString(jpeg))
 	case p == "/search": // Tavily
 		io.Copy(io.Discard, r.Body)
 		fmt.Fprint(w, `{"results":[{"title":"建筑照明设计标准","url":"https://www.mohurd.gov.cn/devfake","content":"学习桌面照度不低于 300 lx。","published_date":"2026-09-01"}]}`)
@@ -174,7 +178,10 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fake) model(w http.ResponseWriter, r *http.Request, stage string) {
-	io.Copy(io.Discard, r.Body)
+	body, _ := io.ReadAll(r.Body)
+	if stage == "topic" && bytes.Contains(body, []byte("安排配图")) { // the picture plan rides on the topic route
+		stage = "image_plan"
+	}
 	// one shared counter used to number titles, so topic/research/write calls of one article skipped
 	// numbers and a restart repeated them; label by time instead
 	stamp := time.Now().Format("01-02 15:04:05")
@@ -205,6 +212,8 @@ func (f *fake) model(w http.ResponseWriter, r *http.Request, stage string) {
 {"type":"p","text":"选好台灯，孩子写作业也舒服些。"}]}`, title, stamp)
 	case "review":
 		text = `{"pass":true,"problems":[]}`
+	case "image_plan":
+		text = `{"cover":"书桌上一盏台灯，暖色灯光","images":[{"slot":1,"prompt":"台灯照亮作业本"}]}`
 	default:
 		text = "未检索到可靠来源"
 	}

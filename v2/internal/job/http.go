@@ -21,6 +21,7 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("GET /api/articles", anyR(s.hArticles))
 	srv.Handle("GET /api/articles/{id}", anyR(s.hArticle))
 	srv.Handle("GET /api/articles/{id}/preview", anyR(s.hPreview))
+	srv.Handle("GET "+render.MediaPrefix+"{key}", http.HandlerFunc(s.hMedia))
 	srv.Handle("PUT /api/admin/users/{uid}/daily-quota", staff(s.hQuota))
 	srv.Handle("GET /api/me/today", user(s.hToday))
 	srv.Handle("GET /api/admin/users", staff(s.hUsers))
@@ -133,6 +134,8 @@ type articleRow struct {
 	PublishURL    string          `json:"publish_url"`
 	PublishedAt   *time.Time      `json:"published_at"`
 	Layout        string          `json:"layout"`
+	CoverURL      string          `json:"cover_url"` // generated cover ('' = default cover at push)
+	Images        int             `json:"ai_images"` // generated pictures stored for this article
 	ID            int64           `json:"id"`
 	AccountID     int64           `json:"account_id"`
 	AccountName   string          `json:"account_name"`
@@ -158,11 +161,13 @@ type articleRow struct {
 const artCols = `id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = article.account_id), column_id, title, topic, topic_kind,
 	summary, status, block_reason, created_at, pushed_at, readback_status, change_ratio, readback_at, readback_note,
 	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id), layout,
-	publish_status, publish_at, publish_note, publish_url, published_at`
+	publish_status, publish_at, publish_note, publish_url, published_at,
+	COALESCE((SELECT '` + render.MediaPrefix + `' || i.key FROM article_image i WHERE i.article_id = article.id AND i.slot = 0 ORDER BY i.id DESC LIMIT 1), ''),
+	(SELECT count(*)::int FROM article_image i WHERE i.article_id = article.id)`
 
 func (a *articleRow) fields() []any {
 	return []any{&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason,
-		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout, &a.PublishStatus, &a.PublishAt, &a.PublishNote, &a.PublishURL, &a.PublishedAt}
+		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout, &a.PublishStatus, &a.PublishAt, &a.PublishNote, &a.PublishURL, &a.PublishedAt, &a.CoverURL, &a.Images}
 }
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
@@ -274,4 +279,23 @@ func (s *Service) hDeletePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	server.WriteJSON(w, 200, map[string]any{"ok": true})
+}
+
+// hMedia serves a generated picture by its random key (used by previews; WeChat gets its own copy at push).
+func (s *Service) hMedia(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if len(key) != 32 {
+		http.NotFound(w, r)
+		return
+	}
+	var mime string
+	var data []byte
+	if err := s.DB.QueryRow(r.Context(), `SELECT mime, data FROM article_image WHERE key=$1`, key).Scan(&mime, &data); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Write(data)
 }

@@ -16,7 +16,8 @@ type Opener interface {
 	Open(sealed string) (string, error)
 }
 
-// LoadStage returns the enabled text/search configs routed to a stage, primary first.
+// LoadStage returns the enabled configs routed to a stage, primary first: text/search configs for
+// the writing stages, image configs for the "image" stage.
 // A tier-specific route wins over the '*' route.
 func LoadStage(ctx context.Context, db *pgxpool.Pool, box Opener, stage, tier string) ([]Config, error) {
 	var ids []int64
@@ -46,9 +47,13 @@ func LoadStage(ctx context.Context, db *pgxpool.Pool, box Opener, stage, tier st
 		var keyCipher string
 		var params []byte
 		var fb, idle, total int
+		kinds := []string{"text", "search"}
+		if stage == "image" {
+			kinds = []string{"image"}
+		}
 		err := db.QueryRow(ctx, `SELECT id, name, protocol, base_url, key_cipher, model, reasoning_effort, params,
 			first_byte_timeout_s, idle_timeout_s, total_timeout_s FROM service_config
-			WHERE id=$1 AND enabled AND kind IN ('text','search')`, id).
+			WHERE id=$1 AND enabled AND kind = ANY($2)`, id, kinds).
 			Scan(&c.ID, &c.Name, &c.Protocol, &c.BaseURL, &keyCipher, &c.Model, &c.ReasoningEffort, &params, &fb, &idle, &total)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue // disabled or deleted: skip silently in routing, admin sees it in the route editor

@@ -21,6 +21,7 @@ import (
 	"gonghao/internal/audit"
 	"gonghao/internal/auth"
 	"gonghao/internal/crypto"
+	"gonghao/internal/render"
 	"gonghao/internal/wechat"
 )
 
@@ -36,6 +37,8 @@ type Service struct {
 	Audit    audit.Logger
 	Fetch    *http.Client // downloads article images for upload; default 15s timeout
 	ServerIP string       // V2_SERVER_IP, named in the IP-whitelist hint
+	// DefaultCover (V2_DEFAULT_COVER_URL) is the cover when the article has no generated cover and no picture.
+	DefaultCover string
 
 	ReadBackAfter time.Duration // first draft read-back this long after a push (default 2h)
 	ReadBackEvery time.Duration // then at most this often, for 7 days (default 12h)
@@ -136,7 +139,7 @@ func (s *Service) Push(ctx context.Context, actor auth.User, articleID int64) (s
 	if a.bindStatus != "bound" {
 		return "", fmt.Errorf("%w：公众号已解绑", ErrState)
 	}
-	mediaID, pushed, err := s.push(ctx, a, title, summary, html)
+	mediaID, pushed, err := s.push(ctx, a, articleID, title, summary, html)
 	if err != nil {
 		msg := err.Error()
 		var ae *wechat.APIError
@@ -157,20 +160,25 @@ func (s *Service) Push(ctx context.Context, actor auth.User, articleID int64) (s
 	return mediaID, nil
 }
 
-func (s *Service) push(ctx context.Context, a account, title, summary, html string) (mediaID, content string, err error) {
+func (s *Service) push(ctx context.Context, a account, articleID int64, title, summary, html string) (mediaID, content string, err error) {
 	tok, err := s.token(ctx, a, false)
 	if err != nil {
 		return "", "", err
 	}
+	// the generated cover, if there is one; else the first picture in the body; else the default cover
 	var thumb []byte
 	var thumbName string
+	var cover []byte
+	if s.DB.QueryRow(ctx, `SELECT data FROM article_image WHERE article_id=$1 AND slot=0 ORDER BY id DESC LIMIT 1`, articleID).Scan(&cover) == nil && len(cover) > 0 {
+		thumb, thumbName = cover, fmt.Sprintf("cover-%d.jpg", articleID)
+	}
 	uploaded := map[string]string{}
 	for _, m := range imgSrc.FindAllStringSubmatch(html, -1) {
 		src := m[1]
 		if _, done := uploaded[src]; done {
 			continue
 		}
-		img, name, err := s.download(ctx, src)
+		img, name, err := s.image(ctx, src)
 		if err != nil {
 			return "", "", fmt.Errorf("下载文中图片失败：%w", err)
 		}
@@ -183,8 +191,13 @@ func (s *Service) push(ctx context.Context, a account, title, summary, html stri
 		}
 		uploaded[src] = u
 	}
+	if thumb == nil && s.DefaultCover != "" {
+		if thumb, thumbName, err = s.download(ctx, s.DefaultCover); err != nil {
+			return "", "", fmt.Errorf("下载默认封面失败：%w", err)
+		}
+	}
 	if thumb == nil {
-		return "", "", errors.New("文章没有图片，无法设置封面")
+		return "", "", errors.New("文章没有图片，也没有设置默认封面，无法设置封面")
 	}
 	for src, u := range uploaded {
 		html = strings.ReplaceAll(html, `src="`+src+`"`, `src="`+u+`"`)
@@ -218,6 +231,18 @@ func (s *Service) withRetry(ctx context.Context, a account, tok *string, f func(
 }
 
 const maxImage = 2 << 20
+
+// image returns a body picture: a generated one from the DB (/api/media/{key}) or a download.
+func (s *Service) image(ctx context.Context, src string) ([]byte, string, error) {
+	if key, ok := strings.CutPrefix(src, render.MediaPrefix); ok {
+		var data []byte
+		if err := s.DB.QueryRow(ctx, `SELECT data FROM article_image WHERE key=$1`, key).Scan(&data); err != nil {
+			return nil, "", fmt.Errorf("找不到生成的图片：%w", err)
+		}
+		return data, "img-" + key[:8] + ".jpg", nil
+	}
+	return s.download(ctx, src)
+}
 
 func (s *Service) download(ctx context.Context, src string) ([]byte, string, error) {
 	u, err := url.Parse(src)

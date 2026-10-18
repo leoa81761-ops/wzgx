@@ -19,6 +19,10 @@
         <b>{{ cur.title }}</b>
         <div class="muted" v-if="curAccount">{{ curAccount }}</div>
         <p class="muted" v-if="cur.summary">{{ cur.summary }}</p>
+        <div class="cover">
+          <img v-if="cur.cover_url" :src="cur.cover_url" alt="封面" />
+          <div class="muted">{{ cur.cover_url ? '封面（AI 生成）' : '封面：推送时使用默认封面或文中第一张图' }}</div>
+        </div>
         <div v-if="cur.status === 'blocked'" class="msg">没有通过检查：{{ cur.block_reason }}</div>
         <div v-if="cur.status === 'pushed'" class="msg ok">已在公众号草稿箱，可以去公众号后台检查后发表。</div>
         <div v-if="pushErr" class="msg">{{ pushErr }}</div>

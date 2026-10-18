@@ -18,7 +18,7 @@ type Config struct {
 	SessionTTL      time.Duration // V2_SESSION_TTL (default 720h)
 	CookieSecure    bool          // V2_COOKIE_SECURE (default true)
 	WebDir          string        // V2_WEB_DIR, built frontend on disk (default: the copy embedded in the binary)
-	DefaultCoverURL string        // V2_DEFAULT_COVER_URL, image slots use it until image generation lands
+	DefaultCoverURL string        // V2_DEFAULT_COVER_URL: image slots without AI pictures, and the cover when there is no generated one
 	WorkerOff       bool          // V2_WORKER_OFF=true disables the job worker in this process
 	ServerIP        string        // V2_SERVER_IP, this server's outbound IP, shown as the WeChat IP-whitelist hint
 	ReadBackAfter   time.Duration // V2_READBACK_AFTER, first draft read-back after a push (default 2h; local walk-throughs use a minute)

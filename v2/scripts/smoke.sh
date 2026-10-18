@@ -59,8 +59,10 @@ curl -fs -H 'Content-Type: application/json' -d '{"kind":"other","content":"冒�
 curl -fs -b "$JAR" "$B/api/admin/complaints" | grep -q '冒烟测试' || fail "admin complaints"
 curl -fs -b "$JAR" "$B/api/admin/tiers" | grep -q '"standard"' || fail "admin tiers"
 curl -fs -b "$JAR" "$B/api/admin/publish-pause" | grep -q '"paused"' || fail "platform publish switch"
+curl -fs -b "$JAR" "$B/api/admin/routes" | grep -q '"image"' || fail "image route stage"
+curl -s -o /dev/null -w '%{http_code}' "$B/api/media/00000000000000000000000000000000" | grep -q 404 || fail "media 404"
 # the built UI carries the P1-1 and P1-6 screens (no browser: look for their Chinese labels in the bundle)
-for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限 内容日历 用这个排版 深色 IP白名单 投诉与举报 导出我的数据 注销账号 邀请好友 套餐设置 投诉处理 联系管理员 推送到草稿箱后自动发表 取消自动发表 暂停全部自动发表 暂停全平台自动发表; do
+for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限 内容日历 用这个排版 深色 IP白名单 投诉与举报 导出我的数据 注销账号 邀请好友 套餐设置 投诉处理 联系管理员 推送到草稿箱后自动发表 取消自动发表 暂停全部自动发表 暂停全平台自动发表 图片模型（封面和配图） AI 封面和配图 配图（封面和文中图片） 封面（AI 生成）; do
   grep -rqF "$label" web/dist/assets/ || fail "UI label missing: $label"
 done
 for chunk in TopicConfirm Jobs Costs Orders Feedback Settings Calendar Landing Pricing Help Complaint Tiers Complaints; do

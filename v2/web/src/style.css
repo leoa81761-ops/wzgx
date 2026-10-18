@@ -102,3 +102,6 @@ a.big { padding: 10px 22px; font-size: 16px; }
 .pubstate.scheduled { background: #fff8e6; }
 .pubstate.published { background: #e7f6ee; }
 .pubstate.failed { background: #fdecea; }
+
+.cover { margin: 8px 0; }
+.cover img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; display: block; margin-bottom: 4px; }

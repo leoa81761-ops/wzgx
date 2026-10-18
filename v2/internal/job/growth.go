@@ -26,10 +26,11 @@ type Tier struct {
 	Description string `json:"description"`
 	Visible     bool   `json:"visible"`
 	Sort        int    `json:"sort"`
+	AIImages    bool   `json:"ai_images"` // AI cover and inline pictures for this tier
 }
 
 func (s *Service) tiers(ctx context.Context, visibleOnly bool) ([]Tier, error) {
-	q := `SELECT key, name, price_text, max_accounts, daily_quota, description, visible, sort FROM plan_tier`
+	q := `SELECT key, name, price_text, max_accounts, daily_quota, description, visible, sort, ai_images FROM plan_tier`
 	if visibleOnly {
 		q += ` WHERE visible`
 	}
@@ -41,7 +42,7 @@ func (s *Service) tiers(ctx context.Context, visibleOnly bool) ([]Tier, error) {
 	out := []Tier{}
 	for rows.Next() {
 		var t Tier
-		if err := rows.Scan(&t.Key, &t.Name, &t.PriceText, &t.MaxAccounts, &t.DailyQuota, &t.Description, &t.Visible, &t.Sort); err != nil {
+		if err := rows.Scan(&t.Key, &t.Name, &t.PriceText, &t.MaxAccounts, &t.DailyQuota, &t.Description, &t.Visible, &t.Sort, &t.AIImages); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -84,15 +85,15 @@ func (s *Service) SaveTier(ctx context.Context, actor auth.User, t Tier) error {
 	case t.MaxAccounts < 0 || t.MaxAccounts > 100 || t.DailyQuota < 0 || t.DailyQuota > 1000:
 		return ErrInvalid{"公众号数量 0–100，每天篇数 0–1000"}
 	}
-	tag, err := s.DB.Exec(ctx, `UPDATE plan_tier SET name=$2, price_text=$3, max_accounts=$4, daily_quota=$5, description=$6, visible=$7, sort=$8, updated_at=now() WHERE key=$1`,
-		t.Key, t.Name, t.PriceText, t.MaxAccounts, t.DailyQuota, t.Description, t.Visible, t.Sort)
+	tag, err := s.DB.Exec(ctx, `UPDATE plan_tier SET name=$2, price_text=$3, max_accounts=$4, daily_quota=$5, description=$6, visible=$7, sort=$8, ai_images=$9, updated_at=now() WHERE key=$1`,
+		t.Key, t.Name, t.PriceText, t.MaxAccounts, t.DailyQuota, t.Description, t.Visible, t.Sort, t.AIImages)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit.Log(ctx, actor.ID, "tier.save", t.Key, map[string]any{"name": t.Name, "price_text": t.PriceText, "max_accounts": t.MaxAccounts, "daily_quota": t.DailyQuota, "visible": t.Visible})
+	s.Audit.Log(ctx, actor.ID, "tier.save", t.Key, map[string]any{"name": t.Name, "price_text": t.PriceText, "max_accounts": t.MaxAccounts, "daily_quota": t.DailyQuota, "visible": t.Visible, "ai_images": t.AIImages})
 	return nil
 }
 
@@ -569,6 +570,10 @@ func (s *Service) GrowthTick(ctx context.Context) error {
 		return err
 	}
 	if _, err := s.RefundBonuses(ctx); err != nil {
+		return err
+	}
+	// pictures of a job that never saved an article (failed or cancelled mid-way)
+	if _, err := s.DB.Exec(ctx, `DELETE FROM article_image WHERE article_id IS NULL AND created_at < $1`, s.now().Add(-24*time.Hour)); err != nil {
 		return err
 	}
 	return s.PurgeDeleted(ctx)

@@ -11,6 +11,7 @@
         <ul>
           <li>可绑定 {{ t.max_accounts }} 个公众号</li>
           <li>每天最多写 {{ t.daily_quota }} 篇</li>
+          <li>{{ t.ai_images ? 'AI 生成封面和文中配图' : '使用默认封面' }}</li>
         </ul>
         <p class="muted">{{ t.description }}</p>
         <router-link v-if="t.key === 'free'" to="/register" class="btn-primary">免费注册</router-link>
