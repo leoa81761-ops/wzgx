@@ -23,6 +23,15 @@
         <div v-if="cur.status === 'pushed'" class="msg ok">已在公众号草稿箱，可以去公众号后台检查后发表。</div>
         <div v-if="pushErr" class="msg">{{ pushErr }}</div>
         <button v-if="cur.status === 'ready'" class="primary" @click="confirming = true">推送到草稿箱</button>
+        <div v-if="cur.publish_status" class="pubstate" :class="cur.publish_status">
+          <template v-if="cur.publish_status === 'scheduled'">
+            将在 <b>{{ fmtTime(cur.publish_at) }}</b> 自动发表<span v-if="today?.publish_paused">（你已暂停全部自动发表，恢复后才会发）</span>。
+            <button class="danger" :disabled="busy" @click="cancelPublish">取消自动发表</button>
+            <div v-if="cur.publish_note" class="muted">{{ cur.publish_note }}</div>
+          </template>
+          <template v-else-if="cur.publish_status === 'published'">已自动发表（{{ fmtTime(cur.published_at) }}）<a v-if="cur.publish_url" :href="cur.publish_url" target="_blank" rel="noopener">查看文章</a></template>
+          <template v-else>{{ { cancelled: '不自动发表', submitting: '正在提交发表', publishing: '已提交发表，等待微信处理', failed: '自动发表没有成功' }[cur.publish_status] }}<span v-if="cur.publish_note">：{{ cur.publish_note }}</span></template>
+        </div>
         <div v-if="cur.status === 'pushed'" style="margin-top:8px">
           <span class="muted">草稿有没有改过：</span>{{ readbackText(cur) }}
           <button style="margin-left:6px" :disabled="busy" @click="readback">现在检查</button>
@@ -75,6 +84,11 @@ import { get, post, put, fmtTime, statusText } from '../api.js'
 const list = ref([]), cur = ref(null), err = ref(''), pushErr = ref(''), confirming = ref(false), busy = ref(false)
 const fb = reactive({ rating: 0, note: '' }), fbMsg = ref(null), fbBusy = ref(false), rbErr = ref('')
 const route = useRoute()
+const today = ref(null)
+async function cancelPublish() {
+  busy.value = true
+  try { await post(`/api/articles/${cur.value.id}/publish/cancel`); await open(cur.value.id) } catch (e) { pushErr.value = e.message } finally { busy.value = false }
+}
 const theme = ref('light'), layouts = ref([]), tryLayout = ref(''), layoutMsg = ref('')
 const layoutName = (k) => layouts.value.find((l) => l.key === k)?.name || k
 const previewURL = computed(() => {
@@ -126,6 +140,7 @@ async function push() {
   catch (e) { pushErr.value = e.message; confirming.value = false } finally { busy.value = false }
 }
 onMounted(async () => {
+  get('/api/me/today').then((t) => { today.value = t }).catch(() => {})
   try { await load(); const id = route.query.id || list.value[0]?.id; if (id) await open(id) } catch (e) { err.value = e.message }
 })
 </script>

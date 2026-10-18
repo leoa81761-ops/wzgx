@@ -58,8 +58,9 @@ for pg in welcome pricing help complaint; do curl -fs "$B/$pg" | grep -q '<div i
 curl -fs -H 'Content-Type: application/json' -d '{"kind":"other","content":"冒烟测试：这是一条测试投诉内容"}' "$B/api/complaints" >/dev/null || fail "complaint"
 curl -fs -b "$JAR" "$B/api/admin/complaints" | grep -q '冒烟测试' || fail "admin complaints"
 curl -fs -b "$JAR" "$B/api/admin/tiers" | grep -q '"standard"' || fail "admin tiers"
+curl -fs -b "$JAR" "$B/api/admin/publish-pause" | grep -q '"paused"' || fail "platform publish switch"
 # the built UI carries the P1-1 and P1-6 screens (no browser: look for their Chinese labels in the bundle)
-for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限 内容日历 用这个排版 深色 IP白名单 投诉与举报 导出我的数据 注销账号 邀请好友 套餐设置 投诉处理 联系管理员; do
+for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限 内容日历 用这个排版 深色 IP白名单 投诉与举报 导出我的数据 注销账号 邀请好友 套餐设置 投诉处理 联系管理员 推送到草稿箱后自动发表 取消自动发表 暂停全部自动发表 暂停全平台自动发表; do
   grep -rqF "$label" web/dist/assets/ || fail "UI label missing: $label"
 done
 for chunk in TopicConfirm Jobs Costs Orders Feedback Settings Calendar Landing Pricing Help Complaint Tiers Complaints; do

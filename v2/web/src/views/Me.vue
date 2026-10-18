@@ -1,5 +1,11 @@
 <template>
   <h1>我的</h1>
+  <div class="card" v-if="today">
+    <h2 style="margin-top:0">自动发表</h2>
+    <p class="muted">开启了自动发表的公众号，推送到草稿箱后过了检查时间会自动发表。需要临时全部停下时点下面的按钮；恢复前所有等待中的文章都不会发表。</p>
+    <button :class="today.publish_paused ? 'primary' : 'danger'" @click="togglePublish">{{ today.publish_paused ? '恢复自动发表' : '暂停全部自动发表' }}</button>
+    <span class="muted" style="margin-left:8px">{{ today.publish_paused ? '现在：已暂停' : '现在：正常' }}</span>
+  </div>
   <div class="card">
     <h2 style="margin-top:0">Tavily 检索密钥（可选，不填也能正常写作）</h2>
     <p class="muted">Tavily 是一个联网搜索服务。填上你自己的 Tavily 密钥后，写作前除了平台自带的检索，还会再用它多搜一路资料，事实和出处会更充实；搜索费用记在你的 Tavily 账户上。
@@ -62,6 +68,8 @@ import { session } from '../store.js'
 import PwInput from './PwInput.vue'
 const tv = ref({}), tavilyKey = ref(''), pw = reactive({ old: '', new: '' }), keyMsg = ref(null), pwMsg = ref('')
 const router = useRouter()
+const today = ref(null)
+async function togglePublish() { try { const r = await put('/api/me/publish-pause', { paused: !today.value.publish_paused }); today.value.publish_paused = r.paused } catch (e) { alert(e.message) } }
 const inv = ref(null), copied = ref(false), delOpen = ref(false), delPw = ref(''), delMsg = ref(''), delBusy = ref(false)
 const inviteLink = computed(() => inv.value ? `${location.origin}/register?invite=${inv.value.code}` : '')
 async function copy() { try { await navigator.clipboard.writeText(inviteLink.value); copied.value = true } catch { /* select and copy by hand */ } }
@@ -84,5 +92,5 @@ async function changePw() {
   try { await post('/api/auth/password', { old_password: pw.old, new_password: pw.new }); session.me = null; router.push('/login') } catch (e) { pwMsg.value = e.message }
 }
 async function logout() { await post('/api/auth/logout').catch(() => {}); session.me = null; router.push('/login') }
-onMounted(async () => { get('/api/me/invite').then((r) => { inv.value = r }).catch(() => {}); try { tv.value = await get('/api/me/tavily') } catch (e) { keyMsg.value = { ok: false, text: e.message } } })
+onMounted(async () => { get('/api/me/today').then((t) => { today.value = t }).catch(() => {}); get('/api/me/invite').then((r) => { inv.value = r }).catch(() => {}); try { tv.value = await get('/api/me/tavily') } catch (e) { keyMsg.value = { ok: false, text: e.message } } })
 </script>

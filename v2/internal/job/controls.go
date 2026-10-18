@@ -22,18 +22,41 @@ import (
 type Controls struct {
 	Paused       *bool `json:"paused"`
 	ConfirmTopic *bool `json:"confirm_topic"`
+	AutoPublish  *bool `json:"auto_publish"`   // verified accounts only
+	ReviewMin    *int  `json:"review_minutes"` // review window after the draft push, 10 min – 7 days
+	PublishCap   *int  `json:"publish_cap"`    // auto-published articles per China day, 1–5
 }
 
 // SetControls (owner): pause or resume the whole account, switch topic confirmation on or off.
 // A paused account runs no plans; "write now" still works because the user asks for it explicitly.
 func (s *Service) SetControls(ctx context.Context, actor auth.User, accountID int64, c Controls) error {
 	var owner int64
-	err := s.DB.QueryRow(ctx, `SELECT user_id FROM wx_account WHERE id=$1 AND bind_status='bound'`, accountID).Scan(&owner)
+	var verified bool
+	err := s.DB.QueryRow(ctx, `SELECT user_id, verified FROM wx_account WHERE id=$1 AND bind_status='bound'`, accountID).Scan(&owner, &verified)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && owner != actor.ID) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
+	}
+	if c.AutoPublish != nil && *c.AutoPublish && !verified {
+		return ErrInvalid{"只有已认证的公众号可以开启自动发表"}
+	}
+	if c.ReviewMin != nil && (*c.ReviewMin < 10 || *c.ReviewMin > 10080) {
+		return ErrInvalid{"检查时间请设在 10 分钟到 7 天之间"}
+	}
+	if c.PublishCap != nil && (*c.PublishCap < 1 || *c.PublishCap > 5) {
+		return ErrInvalid{"每天自动发表篇数请填 1 到 5"}
+	}
+	if c.AutoPublish != nil || c.ReviewMin != nil || c.PublishCap != nil {
+		if _, err := s.DB.Exec(ctx, `UPDATE wx_account SET auto_publish=COALESCE($2, auto_publish), review_minutes=COALESCE($3, review_minutes),
+			publish_cap=COALESCE($4, publish_cap), updated_at=now() WHERE id=$1`, accountID, c.AutoPublish, c.ReviewMin, c.PublishCap); err != nil {
+			return err
+		}
+		if c.AutoPublish != nil && !*c.AutoPublish { // switched off: nothing scheduled goes out
+			s.DB.Exec(ctx, `UPDATE article SET publish_status='cancelled', publish_note='已关闭自动发表' WHERE account_id=$1 AND publish_status='scheduled'`, accountID)
+		}
+		s.Audit.Log(ctx, actor.ID, "account.auto_publish", "", map[string]any{"account_id": accountID, "enabled": c.AutoPublish, "review_minutes": c.ReviewMin, "publish_cap": c.PublishCap})
 	}
 	if c.Paused != nil {
 		if *c.Paused {

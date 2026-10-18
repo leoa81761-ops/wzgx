@@ -127,36 +127,42 @@ func (s *Service) hJob(w http.ResponseWriter, r *http.Request) {
 }
 
 type articleRow struct {
-	Layout       string          `json:"layout"`
-	ID           int64           `json:"id"`
-	AccountID    int64           `json:"account_id"`
-	AccountName  string          `json:"account_name"`
-	ColumnID     *int64          `json:"column_id"`
-	Title        string          `json:"title"`
-	Topic        string          `json:"topic"`
-	TopicKind    *string         `json:"topic_kind"` // news | practical (news-type columns only)
-	Summary      string          `json:"summary"`
-	Status       string          `json:"status"`
-	BlockReason  string          `json:"block_reason"`
-	CreatedAt    time.Time       `json:"created_at"`
-	PushedAt     *time.Time      `json:"pushed_at"`
-	Readback     string          `json:"readback_status"` // '' | unedited | edited | gone | error
-	ChangeRatio  *float64        `json:"change_ratio"`
-	ReadbackAt   *time.Time      `json:"readback_at"`
-	ReadbackNote string          `json:"readback_note"`
-	Rating       *int            `json:"rating"` // the user's feedback: 1 / -1
-	Note         *string         `json:"feedback_note"`
-	Body         json.RawMessage `json:"body,omitempty"`
-	HTML         string          `json:"html,omitempty"`
+	PublishStatus string          `json:"publish_status"`
+	PublishAt     *time.Time      `json:"publish_at"`
+	PublishNote   string          `json:"publish_note"`
+	PublishURL    string          `json:"publish_url"`
+	PublishedAt   *time.Time      `json:"published_at"`
+	Layout        string          `json:"layout"`
+	ID            int64           `json:"id"`
+	AccountID     int64           `json:"account_id"`
+	AccountName   string          `json:"account_name"`
+	ColumnID      *int64          `json:"column_id"`
+	Title         string          `json:"title"`
+	Topic         string          `json:"topic"`
+	TopicKind     *string         `json:"topic_kind"` // news | practical (news-type columns only)
+	Summary       string          `json:"summary"`
+	Status        string          `json:"status"`
+	BlockReason   string          `json:"block_reason"`
+	CreatedAt     time.Time       `json:"created_at"`
+	PushedAt      *time.Time      `json:"pushed_at"`
+	Readback      string          `json:"readback_status"` // '' | unedited | edited | gone | error
+	ChangeRatio   *float64        `json:"change_ratio"`
+	ReadbackAt    *time.Time      `json:"readback_at"`
+	ReadbackNote  string          `json:"readback_note"`
+	Rating        *int            `json:"rating"` // the user's feedback: 1 / -1
+	Note          *string         `json:"feedback_note"`
+	Body          json.RawMessage `json:"body,omitempty"`
+	HTML          string          `json:"html,omitempty"`
 }
 
 const artCols = `id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = article.account_id), column_id, title, topic, topic_kind,
 	summary, status, block_reason, created_at, pushed_at, readback_status, change_ratio, readback_at, readback_note,
-	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id), layout`
+	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id), layout,
+	publish_status, publish_at, publish_note, publish_url, published_at`
 
 func (a *articleRow) fields() []any {
 	return []any{&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason,
-		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout}
+		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout, &a.PublishStatus, &a.PublishAt, &a.PublishNote, &a.PublishURL, &a.PublishedAt}
 }
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {

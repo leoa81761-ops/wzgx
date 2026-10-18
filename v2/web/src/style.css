@@ -97,3 +97,8 @@ a.big { padding: 10px 22px; font-size: 16px; }
 .doc .toc { margin-bottom: 10px; }
 .form label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .pubfoot { text-align: center; color: #888; font-size: 13px; margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); }
+
+.pubstate { margin-top: 8px; padding: 8px 12px; border-radius: 6px; background: #f3f4f6; }
+.pubstate.scheduled { background: #fff8e6; }
+.pubstate.published { background: #e7f6ee; }
+.pubstate.failed { background: #fdecea; }

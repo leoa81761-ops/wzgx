@@ -41,11 +41,12 @@ var jpeg = func() []byte {
 }()
 
 type fake struct {
-	mu     sync.Mutex
-	topic  string // last topic handed out; the next write uses it as the title (single-user local tool)
-	tokens int
-	drafts int
-	saved  map[string]draft // media_id -> what was put in the draft box (memory only)
+	mu        sync.Mutex
+	topic     string // last topic handed out; the next write uses it as the title (single-user local tool)
+	tokens    int
+	drafts    int
+	publishes int
+	saved     map[string]draft // media_id -> what was put in the draft box (memory only)
 }
 
 type draft struct {
@@ -121,6 +122,28 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		b, _ := json.Marshal(map[string]any{"news_item": []map[string]string{{"title": d.Title, "content": d.Content}}})
 		w.Write(b)
+	case p == "/cgi-bin/freepublish/submit": // pretend to publish: the draft leaves the draft box
+		var in struct {
+			MediaID string `json:"media_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		_, ok := f.saved[in.MediaID]
+		delete(f.saved, in.MediaID)
+		f.publishes++
+		n := f.publishes
+		f.mu.Unlock()
+		if !ok {
+			fmt.Fprint(w, `{"errcode":40007,"errmsg":"invalid media_id"}`)
+			return
+		}
+		log.Printf("freepublish/submit %s (fake, nothing is published)", in.MediaID)
+		fmt.Fprintf(w, `{"errcode":0,"errmsg":"ok","publish_id":%d,"msg_data_id":%d}`, started*100+int64(n), n)
+	case p == "/cgi-bin/freepublish/get":
+		var in map[string]json.Number
+		json.NewDecoder(r.Body).Decode(&in)
+		pid := in["publish_id"].String()
+		fmt.Fprintf(w, `{"publish_id":%s,"publish_status":0,"article_id":"FAKEART%s","article_detail":{"count":1,"item":[{"idx":1,"article_url":"https://mp.weixin.qq.com/s/devfake-%s"}]},"fail_idx":[]}`, pid, pid, pid)
 	case p == "/dev/edit", p == "/dev/delete": // walk-through helpers: pretend the user edited or published a draft
 		id := r.URL.Query().Get("media_id")
 		f.mu.Lock()

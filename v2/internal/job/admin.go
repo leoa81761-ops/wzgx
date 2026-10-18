@@ -25,15 +25,16 @@ func (s *Service) hToday(w http.ResponseWriter, r *http.Request) {
 		ReadyCount int  `json:"ready_articles"`
 		Accounts   int  `json:"accounts"`
 		Bonus      int  `json:"bonus_articles"`
+		PubPaused  bool `json:"publish_paused"`
 	}
 	err := s.DB.QueryRow(r.Context(), `SELECT u.daily_quota, u.quota_exempt,
 		(SELECT count(*) FROM job WHERE user_id=u.id AND created_at >= $2 AND status IN ('queued','running','done')),
 		(SELECT count(*) FROM job WHERE user_id=u.id AND status='running'),
 		(SELECT count(*) FROM job WHERE user_id=u.id AND status='queued'),
 		(SELECT count(*) FROM article WHERE user_id=u.id AND status='ready'),
-		(SELECT count(*) FROM wx_account WHERE user_id=u.id AND bind_status='bound'), u.bonus_articles
+		(SELECT count(*) FROM wx_account WHERE user_id=u.id AND bind_status='bound'), u.bonus_articles, u.publish_paused
 		FROM users u WHERE u.id=$1`, u.ID, dayStart).
-		Scan(&out.DailyQuota, &out.Exempt, &out.UsedToday, &out.Running, &out.Queued, &out.ReadyCount, &out.Accounts, &out.Bonus)
+		Scan(&out.DailyQuota, &out.Exempt, &out.UsedToday, &out.Running, &out.Queued, &out.ReadyCount, &out.Accounts, &out.Bonus, &out.PubPaused)
 	if err != nil {
 		fail(w, err)
 		return

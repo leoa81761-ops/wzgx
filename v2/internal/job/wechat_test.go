@@ -23,10 +23,13 @@ type fakeWX struct {
 	uploads []string
 	edited  map[string]string // media_id -> content the "user" changed it to
 	gone    map[string]bool   // media_id -> published or deleted
+	submits []string          // freepublish/submit media_ids, in order
+	pubStat map[string]int    // publish_id -> publish_status to report (default 0 = published)
+	subErr  int               // next freepublish/submit answers this errcode once
 }
 
 func newFakeWX(t *testing.T) *fakeWX {
-	f := &fakeWX{secret: "0123456789abcdef0123456789abcdef", edited: map[string]string{}, gone: map[string]bool{}}
+	f := &fakeWX{secret: "0123456789abcdef0123456789abcdef", edited: map[string]string{}, gone: map[string]bool{}, pubStat: map[string]int{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -87,6 +90,30 @@ func newFakeWX(t *testing.T) *fakeWX {
 				content = c
 			}
 			b, _ := json.Marshal(map[string]any{"news_item": []any{map[string]any{"title": a["title"], "content": content}}})
+			w.Write(b)
+		case "/cgi-bin/freepublish/submit":
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			if f.subErr != 0 {
+				fmt.Fprintf(w, `{"errcode":%d,"errmsg":"fake refusal"}`, f.subErr)
+				f.subErr = 0
+				return
+			}
+			id := in["media_id"]
+			if f.gone[id] {
+				fmt.Fprint(w, `{"errcode":40007,"errmsg":"invalid media_id"}`)
+				return
+			}
+			f.submits = append(f.submits, id)
+			f.gone[id] = true // a published draft leaves the draft box
+			fmt.Fprintf(w, `{"errcode":0,"errmsg":"ok","publish_id":%d,"msg_data_id":1}`, 2247483600+len(f.submits))
+		case "/cgi-bin/freepublish/get":
+			var in map[string]json.Number
+			json.NewDecoder(r.Body).Decode(&in)
+			pid := in["publish_id"].String()
+			st := f.pubStat[pid]
+			b, _ := json.Marshal(map[string]any{"publish_id": json.Number(pid), "publish_status": st, "article_id": "ART" + pid,
+				"article_detail": map[string]any{"count": 1, "item": []any{map[string]any{"idx": 1, "article_url": "https://mp.weixin.qq.com/s/fake" + pid}}}, "fail_idx": []int{}})
 			w.Write(b)
 		default:
 			http.NotFound(w, r)

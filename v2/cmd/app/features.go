@@ -49,9 +49,12 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	jobs := &job.Service{DB: pool, Runner: pipe, Render: pipe, Auth: authSvc, Audit: aud, Log: log, ServerIP: cfg.ServerIP}
 	jobs.Register(srv, ah)
 	pub := &publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: cfg.WeChatBase}, ServerIP: cfg.ServerIP,
-		ReadBackAfter: cfg.ReadBackAfter}
+		ReadBackAfter: cfg.ReadBackAfter, AutoPublish: cfg.AutoPublish}
 	pub.Register(srv, ah)
-	jobs.Tick = append(jobs.Tick, pub.ReadBackDue, jobs.GrowthTick)
+	jobs.Tick = append(jobs.Tick, pub.ReadBackDue, pub.PublishDue, jobs.GrowthTick)
+	if cfg.AutoPublish {
+		log.Info("auto-publish worker on", "wechat_base", pub.WX.Base)
+	}
 	if !cfg.WorkerOff {
 		go jobs.Work(ctx, 15*time.Second)
 	}

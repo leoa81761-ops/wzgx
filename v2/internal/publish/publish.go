@@ -1,5 +1,6 @@
 // Package publish runs the WeChat bind check and pushes a ready article into the account's draft
-// box. Both happen only when a person asks for them; nothing here is called by the worker.
+// box. Both happen only when a person asks for them. The worker only reads drafts back and, for
+// accounts that turned auto-publish on, publishes after the review window (autopublish.go).
 package publish
 
 import (
@@ -38,6 +39,7 @@ type Service struct {
 
 	ReadBackAfter time.Duration // first draft read-back this long after a push (default 2h)
 	ReadBackEvery time.Duration // then at most this often, for 7 days (default 12h)
+	AutoPublish   bool          // V2_AUTOPUBLISH=on: the worker may publish (otherwise PublishDue does nothing)
 	Now           func() time.Time
 }
 
@@ -151,6 +153,7 @@ func (s *Service) Push(ctx context.Context, actor auth.User, articleID int64) (s
 		return "", err
 	}
 	s.Audit.Log(ctx, actor.ID, "article.push", fmt.Sprint(articleID), map[string]any{"account_id": a.id, "media_id": mediaID})
+	s.schedule(ctx, articleID, a.id)
 	return mediaID, nil
 }
 

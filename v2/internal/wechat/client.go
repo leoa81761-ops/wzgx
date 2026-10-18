@@ -226,3 +226,52 @@ func (c *Client) GetDraft(ctx context.Context, token, mediaID string) ([]DraftIt
 	}
 	return out.NewsItem, nil
 }
+
+// SubmitPublish publishes a draft (freepublish/submit). WeChat answers with a publish_id; the
+// result comes later and is read with GetPublish.
+func (c *Client) SubmitPublish(ctx context.Context, token, mediaID string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"media_id": mediaID})
+	var out struct {
+		APIError
+		PublishID json.Number `json:"publish_id"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/freepublish/submit?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return "", err
+	}
+	if out.PublishID == "" {
+		return "", errors.New("微信没有返回 publish_id")
+	}
+	return out.PublishID.String(), nil
+}
+
+// PublishStatus is freepublish/get. Status: 0 published, 1 publishing, 2 original-check failed,
+// 3 normal failure, 4 platform review failed, 5 deleted after publishing, 6 banned after publishing.
+type PublishStatus struct {
+	Status    int
+	ArticleID string
+	URLs      []string
+	FailIdx   []int
+}
+
+func (c *Client) GetPublish(ctx context.Context, token, publishID string) (PublishStatus, error) {
+	body, _ := json.Marshal(map[string]any{"publish_id": json.Number(publishID)})
+	var out struct {
+		APIError
+		Status        int    `json:"publish_status"`
+		ArticleID     string `json:"article_id"`
+		ArticleDetail struct {
+			Item []struct {
+				URL string `json:"article_url"`
+			} `json:"item"`
+		} `json:"article_detail"`
+		FailIdx []int `json:"fail_idx"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/freepublish/get?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return PublishStatus{}, err
+	}
+	ps := PublishStatus{Status: out.Status, ArticleID: out.ArticleID, FailIdx: out.FailIdx}
+	for _, it := range out.ArticleDetail.Item {
+		ps.URLs = append(ps.URLs, it.URL)
+	}
+	return ps, nil
+}

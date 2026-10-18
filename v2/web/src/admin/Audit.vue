@@ -27,13 +27,13 @@ const actionNames = {
   'route.save': '保存环节路由', 'route.delete': '删除环节路由', 'sensitive_words.save': '修改敏感词', 'user.allowance': '修改用户套餐/可绑数量',
   'user.daily_quota': '修改每日篇数', 'staff.bootstrap': '创建初始超级管理员', 'staff.create': '添加运营人员', 'staff.status': '启用/停用运营人员', 'auth.password': '修改密码', 'account.pause': '暂停公众号', 'account.resume': '恢复公众号',
   'account.auto_pause': '自动暂停公众号', 'account.confirm_topic': '切换选题确认', 'topic.approve': '采用选题', 'topic.change': '改题目',
-  'topic.reject': '否决选题', 'settings.save': '修改平台设置', 'config.pricing': '修改模型单价与上限', 'job.retry': '重试任务', 'job.cancel': '取消任务', 'order.activate': '手动开通套餐', 'account.layout': '更换排版', 'tier.save': '修改套餐', 'complaint.handle': '处理投诉', 'user.export': '导出数据', 'user.delete_request': '申请注销', 'user.delete_cancel': '登录取消注销', 'user.purge': '注销删除数据', 'invite.valid': '邀请生效',
+  'topic.reject': '否决选题', 'settings.save': '修改平台设置', 'config.pricing': '修改模型单价与上限', 'job.retry': '重试任务', 'job.cancel': '取消任务', 'order.activate': '手动开通套餐', 'account.layout': '更换排版', 'tier.save': '修改套餐', 'complaint.handle': '处理投诉', 'user.export': '导出数据', 'user.delete_request': '申请注销', 'user.delete_cancel': '登录取消注销', 'user.purge': '注销删除数据', 'invite.valid': '邀请生效', 'account.auto_publish': '设置自动发表', 'article.publish_cancel': '取消自动发表', 'article.publish_submit': '提交发表', 'article.published': '已发表', 'article.publish_failed': '发表失败', 'publish.pause': '暂停自己的自动发表', 'publish.resume': '恢复自己的自动发表', 'publish.platform_pause': '暂停全平台自动发表', 'publish.platform_resume': '恢复全平台自动发表',
 }
 const keyNames = {
   account_id: '公众号', column_id: '栏目', plan_id: '计划', job_id: '任务', user_id: '用户', article_type_id: '文章类型', id: '编号',
   ok: '结果', errcode: '微信错误码', enabled: '启用', kind: '类别', model: '模型', reasoning_effort: '推理强度', key: '密钥', tier: '套餐',
   config_ids: '配置顺序', max_accounts: '可绑数量', quota_exempt: '不限篇数', daily_quota: '每日篇数', before: '原有', after: '现在',
-  media_id: '草稿编号', topic: '题目', untouched: '连续未处理篇数', auto_pause_after: '自动暂停篇数', daily_cap: '每日花费上限', price_in_per_m: '输入单价', price_out_per_m: '输出单价', order_id: '订单', complaint_id: '投诉', invitee_id: '被邀请人', bonus: '奖励篇数', price_text: '价格说明', visible: '显示', name: '名称', contact: '联系方式', invite_bonus: '邀请奖励', layout: '排版', rerendered: '重新排版篇数', months: '月数', amount: '金额', role: '角色', status: '状态', error: '错误', reason: '原因',
+  media_id: '草稿编号', topic: '题目', untouched: '连续未处理篇数', auto_pause_after: '自动暂停篇数', daily_cap: '每日花费上限', price_in_per_m: '输入单价', price_out_per_m: '输出单价', order_id: '订单', complaint_id: '投诉', invitee_id: '被邀请人', bonus: '奖励篇数', price_text: '价格说明', visible: '显示', name: '名称', contact: '联系方式', invite_bonus: '邀请奖励', publish_id: '发表编号', review_minutes: '检查时间（分钟）', publish_cap: '每天发表上限', auto_publish: '自动发表', layout: '排版', rerendered: '重新排版篇数', months: '月数', amount: '金额', role: '角色', status: '状态', error: '错误', reason: '原因',
 }
 const valueNames = { replaced: '已更换', kept: '未改', operator: '运营', super_admin: '超级管理员', active: '正常', disabled: '停用', '*': '全部' }
 function val(k, v) {

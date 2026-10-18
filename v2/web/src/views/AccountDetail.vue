@@ -19,6 +19,25 @@
       <p v-if="a.paused && a.paused_reason === 'auto'" class="hint" style="margin:8px 0 0">系统自动暂停的：最近推送到草稿箱的几篇都没有改动、也没有评价。取消勾选即可恢复。</p>
       <label class="row" style="margin-top:10px"><input type="checkbox" :checked="a.confirm_topic" @change="control({ confirm_topic: $event.target.checked })" />
         <span>选题先给我确认<span class="muted"> · 每篇选好题目后先停下，等你点「就写这个」「换一个」或自己改题目（在首页和写作计划页）</span></span></label>
+      <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+        <label class="row"><input type="checkbox" :checked="a.auto_publish" :disabled="!a.verified && !a.auto_publish" @change="control({ auto_publish: $event.target.checked })" />
+          <span>推送到草稿箱后自动发表<span class="muted"> · 默认关闭</span></span></label>
+        <p v-if="!a.verified" class="muted" style="margin:6px 0 0">只有已认证的公众号可以开启。认证状态由管理员核实后标记。</p>
+        <template v-if="a.auto_publish">
+          <p class="hint" style="margin:8px 0">推送到草稿箱后先等一段检查时间，这期间你可以在「文章」页取消；时间到了系统会先确认草稿还在，再通过微信「发表」接口发出去，同一篇只发一次。</p>
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <span>检查时间</span>
+            <select :value="a.review_minutes" @change="control({ review_minutes: Number($event.target.value) })" style="width:auto">
+              <option v-for="m in reviewOpts" :key="m[0]" :value="m[0]">{{ m[1] }}</option>
+              <option v-if="!reviewOpts.some((m) => m[0] === a.review_minutes)" :value="a.review_minutes">{{ a.review_minutes }} 分钟</option>
+            </select>
+            <span style="margin-left:10px">每天最多自动发表</span>
+            <select :value="a.publish_cap" @change="control({ publish_cap: Number($event.target.value) })" style="width:auto">
+              <option v-for="n in 5" :key="n" :value="n">{{ n }} 篇</option>
+            </select>
+          </div>
+        </template>
+      </div>
       <div v-if="ctl" class="msg" :class="{ ok: ctl.ok }">{{ ctl.text }}</div>
     </div>
     <h2>排版</h2>
@@ -52,6 +71,7 @@ import Columns from './Columns.vue'
 const route = useRoute(), router = useRouter()
 const a = ref(null), p = ref(null), err = ref(''), msg = ref(''), ok = ref(false), busy = ref(false), secret = ref(''), ctl = ref(null)
 const base = () => `/api/accounts/${route.params.id}`
+const reviewOpts = [[30, '30 分钟'], [60, '1 小时'], [120, '2 小时（默认）'], [240, '4 小时'], [720, '12 小时'], [1440, '1 天'], [4320, '3 天']]
 const lay = ref(null), layMsg = ref(null)
 async function setLayout(k) {
   try { const r = await put(`${base()}/layout`, { layout: k }); lay.value.layout = k; const n = lay.value.layouts.find((l) => l.key === k)?.name; layMsg.value = { ok: true, text: `已换成「${n}」` + (r.rerendered ? `，重新排版了 ${r.rerendered} 篇还没推送的文章` : '') } }
@@ -63,7 +83,7 @@ async function check() { busy.value = true; try { await post(`${base()}/check`);
 async function saveSecret() { try { await patch(base(), { app_secret: secret.value }); secret.value = ''; await check() } catch (e) { say(e.message) } }
 async function saveProfile() { try { p.value = await put(`${base()}/profile`, p.value); say('设置已保存', true) } catch (e) { say(e.message) } }
 async function control(c) {
-  try { await put(`${base()}/controls`, c); await load(); ctl.value = { ok: true, text: c.paused !== undefined ? (c.paused ? '已暂停' : '已恢复') : (c.confirm_topic ? '已开启选题确认' : '已关闭选题确认') } }
+  try { await put(`${base()}/controls`, c); await load(); ctl.value = { ok: true, text: c.paused !== undefined ? (c.paused ? '已暂停' : '已恢复') : c.confirm_topic !== undefined ? (c.confirm_topic ? '已开启选题确认' : '已关闭选题确认') : c.auto_publish !== undefined ? (c.auto_publish ? '已开启自动发表' : '已关闭自动发表，等待中的文章都不会发了') : '已保存' } }
   catch (e) { ctl.value = { ok: false, text: e.message } }
 }
 async function unbind() { if (!confirm(`确定解绑「${a.value.name}」？`)) return; try { await del(base()); router.push('/accounts') } catch (e) { say(e.message) } }
