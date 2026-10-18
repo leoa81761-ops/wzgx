@@ -134,8 +134,9 @@ type articleRow struct {
 	PublishURL    string          `json:"publish_url"`
 	PublishedAt   *time.Time      `json:"published_at"`
 	Layout        string          `json:"layout"`
-	CoverURL      string          `json:"cover_url"` // generated cover ('' = default cover at push)
-	Images        int             `json:"ai_images"` // generated pictures stored for this article
+	CoverURL      string          `json:"cover_url"`  // generated cover ('' = default cover at push)
+	Images        int             `json:"ai_images"`  // generated pictures stored for this article
+	FactCheck     json.RawMessage `json:"fact_check"` // null = not checked
 	ID            int64           `json:"id"`
 	AccountID     int64           `json:"account_id"`
 	AccountName   string          `json:"account_name"`
@@ -163,11 +164,11 @@ const artCols = `id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = a
 	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id), layout,
 	publish_status, publish_at, publish_note, publish_url, published_at,
 	COALESCE((SELECT '` + render.MediaPrefix + `' || i.key FROM article_image i WHERE i.article_id = article.id AND i.slot = 0 ORDER BY i.id DESC LIMIT 1), ''),
-	(SELECT count(*)::int FROM article_image i WHERE i.article_id = article.id)`
+	(SELECT count(*)::int FROM article_image i WHERE i.article_id = article.id), fact_check`
 
 func (a *articleRow) fields() []any {
 	return []any{&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason,
-		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout, &a.PublishStatus, &a.PublishAt, &a.PublishNote, &a.PublishURL, &a.PublishedAt, &a.CoverURL, &a.Images}
+		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout, &a.PublishStatus, &a.PublishAt, &a.PublishNote, &a.PublishURL, &a.PublishedAt, &a.CoverURL, &a.Images, &a.FactCheck}
 }
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +226,24 @@ func (s *Service) hPreview(w http.ResponseWriter, r *http.Request) {
 	if l := r.URL.Query().Get("layout"); l != "" && l != a.Layout && render.ValidLayout(l) && a.Status != "pushed" && s.Render != nil {
 		if h, err := s.Render.RenderStored(r.Context(), a.ID, l); err == nil {
 			body = h
+		}
+	}
+	// fact check: claims without support in the research are marked in the preview only (never in the draft)
+	if len(a.FactCheck) > 0 && r.URL.Query().Get("marks") != "0" {
+		var fc struct {
+			Claims []struct {
+				Text      string `json:"text"`
+				Supported bool   `json:"supported"`
+			} `json:"claims"`
+		}
+		if json.Unmarshal(a.FactCheck, &fc) == nil {
+			var texts []string
+			for _, c := range fc.Claims {
+				if !c.Supported {
+					texts = append(texts, c.Text)
+				}
+			}
+			body = render.MarkClaims(body, texts)
 		}
 	}
 	w.Write([]byte(render.PreviewPage(a.Title, body, r.URL.Query().Get("theme") == "dark")))

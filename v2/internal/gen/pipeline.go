@@ -137,6 +137,7 @@ type Result struct {
 	Proposal    *Proposal // set when the job stops for topic confirmation
 	Layout      string
 	AIImages    bool // the article was rendered with generated pictures
+	FactCheck   *FactCheck
 }
 
 var ErrNoColumn = errors.New("这个公众号还没有可用的栏目")
@@ -326,7 +327,14 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 			srcs[e.N] = render.Source{N: e.N, Kind: e.Kind, Title: e.Title, Issuer: e.Issuer, DocNumber: e.DocNumber, Date: e.Date, URL: e.URL}
 		}
 	}
-	// ⑤ pictures (only for an article that passed; never blocks it)
+	// ⑤ optional fact check: flags only, for the user; never blocks or rewrites
+	if wc.FactCheck {
+		fc := CheckFacts(art, ev)
+		res.FactCheck = &fc
+		trace(Step{Stage: "fact_check", Note: fmt.Sprintf("%d claims, %d without support in the research", len(fc.Claims), fc.Unsupported)})
+	}
+
+	// ⑤′ pictures (only for an article that passed; never blocks it)
 	var pics map[int]string
 	if block == "" {
 		pics, res.AIImages = p.pictures(ctx, j, tier, art, load, chat, trace)
@@ -477,8 +485,8 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	}
 	var pos, persona, aud, tone, taboos, sig, opening, ending string
 	var ai, review bool
-	err = p.DB.QueryRow(ctx, `SELECT positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review
-		FROM account_profile WHERE account_id=$1`, j.AccountID).Scan(&pos, &persona, &aud, &tone, &taboos, &sig, &opening, &ending, &ai, &review)
+	err = p.DB.QueryRow(ctx, `SELECT positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review, fact_check
+		FROM account_profile WHERE account_id=$1`, j.AccountID).Scan(&pos, &persona, &aud, &tone, &taboos, &sig, &opening, &ending, &ai, &review, &w.FactCheck)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return w, "", 0, false, err
 	}
@@ -559,10 +567,14 @@ func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKin
 	if j.ID > 0 {
 		jobID = j.ID
 	}
+	var fc []byte // NULL = not checked
+	if res.FactCheck != nil {
+		fc, _ = json.Marshal(res.FactCheck)
+	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic, topic_kind, layout, ai_images)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,''),$14,$15) RETURNING id`,
-		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic, topicKind, res.Layout, res.AIImages).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic, topic_kind, layout, ai_images, fact_check)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,''),$14,$15,$16) RETURNING id`,
+		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic, topicKind, res.Layout, res.AIImages, fc).Scan(&id)
 	if err != nil {
 		return 0, err
 	}

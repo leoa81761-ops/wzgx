@@ -19,6 +19,15 @@
         <b>{{ cur.title }}</b>
         <div class="muted" v-if="curAccount">{{ curAccount }}</div>
         <p class="muted" v-if="cur.summary">{{ cur.summary }}</p>
+        <div v-if="cur.fact_check" class="factcheck">
+          <b>事实核对</b>
+          <span v-if="cur.fact_check.no_research" class="muted">：这篇没有检索资料，下面这些都没法核对，请自己确认。</span>
+          <span v-else-if="!cur.fact_check.unsupported" class="muted">：文中 {{ cur.fact_check.claims.length }} 处数字、标准号、日期都能在资料里找到。</span>
+          <span v-else>：{{ cur.fact_check.unsupported }} 处在资料里没找到依据，预览里已标黄，推送前请核对。</span>
+          <ul v-if="cur.fact_check.unsupported">
+            <li v-for="c in cur.fact_check.claims.filter((x) => !x.supported)" :key="c.text"><b>{{ c.text }}</b> <span class="muted">{{ c.context }}</span></li>
+          </ul>
+        </div>
         <div class="cover">
           <img v-if="cur.cover_url" :src="cur.cover_url" alt="封面" />
           <div class="muted">{{ cur.cover_url ? '封面（AI 生成）' : '封面：推送时使用默认封面或文中第一张图' }}</div>

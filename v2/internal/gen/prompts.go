@@ -37,6 +37,7 @@ type writingContext struct {
 	Recentnews  string // what a live search found recently, for news-type columns
 	Today       string
 	Layout      string // render template; not part of any prompt
+	FactCheck   bool   // account setting: check concrete claims against the research after writing (not a prompt)
 	Style       string // the user's style traits (from their sample articles), if switched on
 }
 

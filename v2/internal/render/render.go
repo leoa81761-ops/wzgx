@@ -409,3 +409,34 @@ func Outline(a Article, slots []Slot) string {
 	}
 	return b.String()
 }
+
+// MarkClaims highlights the given phrases in the text parts of an HTML fragment (preview only).
+func MarkClaims(h string, claims []string) string {
+	if len(claims) == 0 {
+		return h
+	}
+	var b strings.Builder
+	for len(h) > 0 {
+		i := strings.IndexByte(h, '<')
+		if i < 0 {
+			i = len(h)
+		}
+		text := h[:i]
+		for _, c := range claims {
+			esc := html.EscapeString(c)
+			if esc != "" && strings.Contains(text, esc) {
+				text = strings.ReplaceAll(text, esc, `<mark style="background:#fff1a8;border-bottom:2px solid #e0a800;" title="资料里没找到依据，请核对">`+esc+`</mark>`)
+			}
+		}
+		b.WriteString(text)
+		h = h[i:]
+		if j := strings.IndexByte(h, '>'); j >= 0 {
+			b.WriteString(h[:j+1])
+			h = h[j+1:]
+		} else {
+			b.WriteString(h)
+			h = ""
+		}
+	}
+	return b.String()
+}

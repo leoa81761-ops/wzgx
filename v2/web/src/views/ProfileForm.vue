@@ -11,6 +11,7 @@
     </div>
     <label class="f"><span>文末签名（可不填）</span><input v-model="p.signature" /></label>
     <label class="row" style="margin-bottom:6px"><input type="checkbox" v-model="p.self_review" /><span>写完后让模型自查一遍（更慢，更稳）</span></label>
+    <label class="row" style="margin-bottom:6px"><input type="checkbox" v-model="p.fact_check" /><span>写完后核对文中的数字、标准号、日期和文号：资料里找不到依据的会在预览里标黄给你看（不改文章，不拦推送）</span></label>
     <label class="row" style="margin-bottom:12px"><input type="checkbox" v-model="p.ai_label" /><span>文末标注“本文由 AI 辅助生成”</span></label>
     <button class="primary">保存设置</button>
   </form>

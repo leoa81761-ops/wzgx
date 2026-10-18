@@ -105,3 +105,6 @@ a.big { padding: 10px 22px; font-size: 16px; }
 
 .cover { margin: 8px 0; }
 .cover img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; display: block; margin-bottom: 4px; }
+
+.factcheck { margin: 8px 0; padding: 8px 12px; border-radius: 6px; background: #fffbe6; font-size: 14px; }
+.factcheck ul { margin: 6px 0 0; padding-left: 18px; }

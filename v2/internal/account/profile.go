@@ -24,6 +24,7 @@ type Profile struct {
 	Ending      string    `json:"ending"`
 	AILabel     bool      `json:"ai_label"`
 	SelfReview  bool      `json:"self_review"`
+	FactCheck   bool      `json:"fact_check"` // check numbers, standards, dates and document numbers against the research (flags only)
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
@@ -34,9 +35,9 @@ func (s *Service) GetProfile(ctx context.Context, actor auth.User, accountID int
 		return Profile{}, err
 	}
 	var p Profile
-	err := s.DB.QueryRow(ctx, `SELECT account_id, positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review, updated_at
+	err := s.DB.QueryRow(ctx, `SELECT account_id, positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review, fact_check, updated_at
 		FROM account_profile WHERE account_id=$1`, accountID).
-		Scan(&p.AccountID, &p.Positioning, &p.Persona, &p.Audience, &p.Tone, &p.Taboos, &p.Signature, &p.Opening, &p.Ending, &p.AILabel, &p.SelfReview, &p.UpdatedAt)
+		Scan(&p.AccountID, &p.Positioning, &p.Persona, &p.Audience, &p.Tone, &p.Taboos, &p.Signature, &p.Opening, &p.Ending, &p.AILabel, &p.SelfReview, &p.FactCheck, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{AccountID: accountID}, nil
 	}
@@ -55,11 +56,11 @@ func (s *Service) SaveProfile(ctx context.Context, actor auth.User, accountID in
 		}
 	}
 	p.AccountID = accountID
-	err = s.DB.QueryRow(ctx, `INSERT INTO account_profile (account_id, positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())
+	err = s.DB.QueryRow(ctx, `INSERT INTO account_profile (account_id, positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review, fact_check, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
 		ON CONFLICT (account_id) DO UPDATE SET positioning=$2, persona=$3, audience=$4, tone=$5, taboos=$6, signature=$7, opening=$8,
-		ending=$9, ai_label=$10, self_review=$11, updated_at=now() RETURNING updated_at`,
-		accountID, p.Positioning, p.Persona, p.Audience, p.Tone, p.Taboos, p.Signature, p.Opening, p.Ending, p.AILabel, p.SelfReview).Scan(&p.UpdatedAt)
+		ending=$9, ai_label=$10, self_review=$11, fact_check=$12, updated_at=now() RETURNING updated_at`,
+		accountID, p.Positioning, p.Persona, p.Audience, p.Tone, p.Taboos, p.Signature, p.Opening, p.Ending, p.AILabel, p.SelfReview, p.FactCheck).Scan(&p.UpdatedAt)
 	if err != nil {
 		return p, err
 	}
