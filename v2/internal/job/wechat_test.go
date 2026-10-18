@@ -26,6 +26,8 @@ type fakeWX struct {
 	submits []string          // freepublish/submit media_ids, in order
 	pubStat map[string]int    // publish_id -> publish_status to report (default 0 = published)
 	subErr  int               // next freepublish/submit answers this errcode once
+	stats   map[string][]any  // publish date -> datacube getarticletotaldetail list
+	statDay []string          // dates asked for, in order
 }
 
 func newFakeWX(t *testing.T) *fakeWX {
@@ -114,6 +116,20 @@ func newFakeWX(t *testing.T) *fakeWX {
 			st := f.pubStat[pid]
 			b, _ := json.Marshal(map[string]any{"publish_id": json.Number(pid), "publish_status": st, "article_id": "ART" + pid,
 				"article_detail": map[string]any{"count": 1, "item": []any{map[string]any{"idx": 1, "article_url": "https://mp.weixin.qq.com/s/fake" + pid}}}, "fail_idx": []int{}})
+			w.Write(b)
+		case "/datacube/getarticletotaldetail":
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			if in["begin_date"] != in["end_date"] {
+				fmt.Fprint(w, `{"errcode":61501,"errmsg":"date range error"}`)
+				return
+			}
+			f.statDay = append(f.statDay, in["begin_date"])
+			list := f.stats[in["begin_date"]]
+			if list == nil {
+				list = []any{}
+			}
+			b, _ := json.Marshal(map[string]any{"list": list})
 			w.Write(b)
 		default:
 			http.NotFound(w, r)

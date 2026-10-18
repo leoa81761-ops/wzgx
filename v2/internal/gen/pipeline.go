@@ -22,6 +22,7 @@ import (
 	"gonghao/internal/gateway"
 	"gonghao/internal/render"
 	"gonghao/internal/search"
+	"gonghao/internal/stats"
 	"gonghao/internal/style"
 )
 
@@ -164,6 +165,9 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	wc, tier, colID, selfReview, err := p.load(ctx, j)
 	if err != nil {
 		return res, err
+	}
+	if wc.Rotation != "" {
+		trace(Step{Stage: "column", Note: wc.Rotation})
 	}
 	load := func(stage string) ([]gateway.Config, error) { return gateway.LoadStage(ctx, p.DB, p.Box, stage, tier) }
 	chat := func(stage string, cfgs []gateway.Config, sys, user string) (gateway.Result, error) {
@@ -515,31 +519,73 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	if j.ColumnID != nil {
 		colID = *j.ColumnID
 	} else {
-		rows, err := p.DB.Query(ctx, `SELECT c.id, c.weight FROM account_column c JOIN article_type t ON t.id=c.article_type_id
-			WHERE c.account_id=$1 AND c.enabled AND t.enabled`, j.AccountID)
+		rows, err := p.DB.Query(ctx, `SELECT c.id, c.name, c.weight FROM account_column c JOIN article_type t ON t.id=c.article_type_id
+			WHERE c.account_id=$1 AND c.enabled AND t.enabled ORDER BY c.id`, j.AccountID)
 		if err != nil {
 			return w, "", 0, false, err
 		}
-		type cw struct{ id, w int64 }
+		type cw struct {
+			id   int64
+			name string
+			w    float64
+		}
 		var cs []cw
-		var total int64
 		for rows.Next() {
 			var c cw
-			rows.Scan(&c.id, &c.w)
+			var wt int64
+			rows.Scan(&c.id, &c.name, &wt)
+			c.w = float64(wt)
 			cs = append(cs, c)
-			total += c.w
 		}
 		rows.Close()
 		if len(cs) == 0 {
 			return w, "", 0, false, ErrNoColumn
 		}
-		pick := rand.Int64N(total)
+		// optional (off by default): reads gently weight the rotation; what it did is recorded
+		var weighting bool
+		p.DB.QueryRow(ctx, `SELECT stats_weighting FROM wx_account WHERE id=$1`, j.AccountID).Scan(&weighting)
+		var parts []string
+		if weighting && len(cs) > 1 {
+			if fs, _, err := stats.Factors(ctx, p.DB, j.AccountID); err == nil {
+				by := map[int64]float64{}
+				for _, f := range fs {
+					by[f.ColumnID] = f.Factor
+				}
+				for i := range cs {
+					if f, ok := by[cs[i].id]; ok && f != 1 {
+						parts = append(parts, fmt.Sprintf("「%s」%g×%.1f", cs[i].name, cs[i].w, f))
+						cs[i].w *= f
+					}
+				}
+			}
+		}
+		var total float64
+		for _, c := range cs {
+			total += c.w
+		}
+		pick := rand.Float64() * total
+		colID = cs[len(cs)-1].id
 		for _, c := range cs {
 			if pick < c.w {
 				colID = c.id
 				break
 			}
 			pick -= c.w
+		}
+		if weighting && len(cs) > 1 {
+			name := ""
+			for _, c := range cs {
+				if c.id == colID {
+					name = c.name
+				}
+			}
+			note := "按阅读数据调整栏目权重：数据还不够，各栏目权重不变"
+			if len(parts) > 0 {
+				note = "按阅读数据调整栏目权重：" + strings.Join(parts, "，") + "（其余不变）"
+			}
+			note += "；这次选了「" + name + "」"
+			w.Rotation = note
+			p.DB.Exec(ctx, `UPDATE wx_account SET rotation_note=$2, rotation_at=now() WHERE id=$1`, j.AccountID, note)
 		}
 	}
 	err = p.DB.QueryRow(ctx, `SELECT c.name, c.note, c.length_hint, t.name, t.description, t.needs_news, t.research

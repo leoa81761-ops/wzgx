@@ -275,3 +275,58 @@ func (c *Client) GetPublish(ctx context.Context, token, publishID string) (Publi
 	}
 	return ps, nil
 }
+
+// ArticleStat is one published article in datacube/getarticletotaldetail. Days are cumulative
+// totals from the publish date up to each stat date (at most 30 days after publishing).
+type ArticleStat struct {
+	MsgID   string
+	Title   string
+	URL     string
+	RefDate string
+	Days    []StatDay
+}
+
+type StatDay struct {
+	Date                                                  string
+	ReadUser, ShareUser, CollectionUser, LikeUser, Zaikan int
+	FinishRate                                            float64
+}
+
+// ArticleTotalDetail reads the stats of everything published on one day (YYYY-MM-DD). Read only.
+func (c *Client) ArticleTotalDetail(ctx context.Context, token, date string) ([]ArticleStat, error) {
+	body, _ := json.Marshal(map[string]string{"begin_date": date, "end_date": date})
+	var out struct {
+		APIError
+		List []struct {
+			RefDate    string `json:"ref_date"`
+			MsgID      string `json:"msgid"`
+			Title      string `json:"title"`
+			ContentURL string `json:"content_url"`
+			DetailList []struct {
+				StatDate       string  `json:"stat_date"`
+				ReadUser       int     `json:"read_user"`
+				ShareUser      int     `json:"share_user"`
+				ZaikanUser     int     `json:"zaikan_user"`
+				LikeUser       int     `json:"like_user"`
+				CollectionUser int     `json:"collection_user"`
+				ReadFinishRate float64 `json:"read_finish_rate"`
+			} `json:"detail_list"`
+		} `json:"list"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/datacube/getarticletotaldetail?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return nil, err
+	}
+	res := make([]ArticleStat, 0, len(out.List))
+	for _, it := range out.List {
+		a := ArticleStat{MsgID: it.MsgID, Title: it.Title, URL: it.ContentURL, RefDate: it.RefDate}
+		if a.RefDate == "" {
+			a.RefDate = date
+		}
+		for _, d := range it.DetailList {
+			a.Days = append(a.Days, StatDay{Date: d.StatDate, ReadUser: d.ReadUser, ShareUser: d.ShareUser, CollectionUser: d.CollectionUser,
+				LikeUser: d.LikeUser, Zaikan: d.ZaikanUser, FinishRate: d.ReadFinishRate})
+		}
+		res = append(res, a)
+	}
+	return res, nil
+}

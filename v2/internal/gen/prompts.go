@@ -23,6 +23,7 @@ const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中�
 const reviewSystem = `你审校一篇公众号文章：只检查事实错误、前后矛盾、没写完、违反用户设置之处。没有问题输出 {"pass":true}；有问题输出 {"pass":false,"problems":["问题"],"article":{与原文相同结构的完整修订稿}}。只输出 JSON。`
 
 type writingContext struct {
+	Rotation    string // what the stats weighting did when picking the column (not given to the model)
 	AccountName string
 	Profile     map[string]string // label -> text, only non-empty
 	ColumnName  string

@@ -16,6 +16,7 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("POST /api/articles/{id}/push", h.Require(auth.UserOnly, http.HandlerFunc(s.hPush)))
 	srv.Handle("POST /api/articles/{id}/readback", h.Require(auth.UserOnly, http.HandlerFunc(s.hReadBack)))
 	srv.Handle("POST /api/articles/{id}/publish/cancel", h.Require(auth.UserOnly, http.HandlerFunc(s.hCancelPublish)))
+	srv.Handle("POST /api/accounts/{id}/stats/refresh", h.Require(auth.UserOnly, http.HandlerFunc(s.hRefreshStats)))
 	srv.Handle("PUT /api/me/publish-pause", h.Require(auth.UserOnly, http.HandlerFunc(s.hPublishPause)))
 	srv.Handle("GET /api/admin/publish-pause", h.Require(auth.StaffOnly, http.HandlerFunc(s.hGetPlatformPause)))
 	srv.Handle("PUT /api/admin/publish-pause", h.Require(auth.StaffOnly, http.HandlerFunc(s.hPlatformPause)))

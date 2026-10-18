@@ -2,7 +2,7 @@
   <p><router-link to="/accounts">← 公众号</router-link></p>
   <div v-if="err" class="msg">{{ err }}</div>
   <template v-if="a">
-    <h1>{{ a.name }}</h1>
+    <h1>{{ a.name }} <router-link :to="`/accounts/${a.id}/stats`" style="font-size:14px;font-weight:normal">文章数据 →</router-link></h1>
     <div class="card">
       <div class="row"><span class="muted">AppID</span> {{ a.app_id }} <span class="muted">AppSecret</span> {{ a.secret_mask }}</div>
       <div class="row" style="margin-top:8px"><span class="muted">接口检查</span> <CheckResult :report="a.check_report" :at="a.checked_at" />

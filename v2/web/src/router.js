@@ -21,6 +21,7 @@ export const router = createRouter({
         { path: '', component: U('Home') },
         { path: 'accounts', component: U('Accounts') },
         { path: 'accounts/:id', component: U('AccountDetail') },
+        { path: 'accounts/:id/stats', component: U('AccountStats') },
         { path: 'plans', component: U('Plans') },
         { path: 'calendar', component: U('Calendar') },
         { path: 'articles', component: U('Articles') },

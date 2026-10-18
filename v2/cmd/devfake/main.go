@@ -47,7 +47,8 @@ type fake struct {
 	tokens    int
 	drafts    int
 	publishes int
-	saved     map[string]draft // media_id -> what was put in the draft box (memory only)
+	saved     map[string]draft    // media_id -> what was put in the draft box (memory only)
+	pubDays   map[string][]string // date -> titles pushed that day; datacube pretends they were published then
 }
 
 type draft struct {
@@ -62,7 +63,7 @@ func main() {
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		log.Fatal("devfake listens on loopback only")
 	}
-	f := &fake{saved: map[string]draft{}}
+	f := &fake{saved: map[string]draft{}, pubDays: map[string][]string{}}
 	log.Printf("devfake on http://%s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, f))
 }
@@ -105,6 +106,8 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id := fmt.Sprintf("FAKEDRAFT-%d-%d", started, f.drafts) // unique across restarts, so old drafts read back as gone
 		if len(in.Articles) > 0 {
 			f.saved[id] = in.Articles[0]
+			day := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+			f.pubDays[day] = append(f.pubDays[day], in.Articles[0].Title)
 		}
 		f.mu.Unlock()
 		log.Printf("draft/add %s received (kept in memory only)", id)
@@ -145,6 +148,30 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&in)
 		pid := fmt.Sprint(in["publish_id"])
 		fmt.Fprintf(w, `{"publish_id":%q,"publish_status":0,"article_id":"FAKEART%s","article_detail":{"count":1,"item":[{"idx":1,"article_url":"https://mp.weixin.qq.com/s/devfake-%s"}]},"fail_idx":[]}`, pid, pid, pid)
+	case p == "/datacube/getarticletotaldetail": // made-up numbers for what was pushed that day
+		var in map[string]string
+		json.NewDecoder(r.Body).Decode(&in)
+		cst := time.FixedZone("CST", 8*3600)
+		start, _ := time.ParseInLocation("2006-01-02", in["begin_date"], cst)
+		yesterday := time.Now().In(cst).AddDate(0, 0, -1)
+		f.mu.Lock()
+		titles := f.pubDays[in["begin_date"]]
+		f.mu.Unlock()
+		list := []any{}
+		for i, t := range titles {
+			seed := 50 + (len([]rune(t))*37+i*91)%400
+			var dl []any
+			cum := 0
+			for d, n := start, 0; !d.After(yesterday) && n < 30; d, n = d.AddDate(0, 0, 1), n+1 {
+				cum += seed / (n + 1)
+				dl = append(dl, map[string]any{"stat_date": d.Format("2006-01-02"), "read_user": cum, "share_user": cum / 12, "collection_user": cum / 25,
+					"like_user": cum / 30, "zaikan_user": cum / 60, "read_finish_rate": 0.4 + float64(seed%40)/100})
+			}
+			list = append(list, map[string]any{"ref_date": in["begin_date"], "msgid": fmt.Sprintf("devfake_%s_%d", in["begin_date"], i), "title": t, "detail_list": dl})
+		}
+		log.Printf("datacube/getarticletotaldetail %s: %d articles (made-up numbers)", in["begin_date"], len(list))
+		b, _ := json.Marshal(map[string]any{"list": list})
+		w.Write(b)
 	case p == "/dev/edit", p == "/dev/delete": // walk-through helpers: pretend the user edited or published a draft
 		id := r.URL.Query().Get("media_id")
 		f.mu.Lock()

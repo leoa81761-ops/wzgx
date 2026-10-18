@@ -26,6 +26,7 @@ import (
 	"gonghao/internal/publish"
 	"gonghao/internal/search"
 	"gonghao/internal/server"
+	"gonghao/internal/stats"
 	"gonghao/internal/style"
 	"gonghao/internal/svccfg"
 	"gonghao/internal/testdb"
@@ -164,6 +165,7 @@ func setup(t *testing.T) (*env, string, string, int64, int64) {
 	})
 
 	(&style.Service{DB: pool, GW: gw, Box: box, Audit: aud}).Register(srv, h)
+	(&stats.Service{DB: pool, Audit: aud}).Register(srv, h)
 	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{BaseURL: tv.URL}, DefaultImageURL: "https://cdn.example/cover.jpg"}
 	js := &job.Service{DB: pool, Runner: pipe, Render: pipe, Auth: as, Audit: aud}
 	js.Register(srv, h)
