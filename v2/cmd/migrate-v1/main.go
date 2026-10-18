@@ -52,12 +52,15 @@ type importer struct {
 
 func main() {
 	dry := flag.Bool("dry-run", false, "report what would be imported, then roll back")
+	flag.BoolVar(&backupConfigs, "backup-configs", false, "also copy v1's ai.1so.org model configs again as separate backup configs (named \"… · ai.1so 备用\"); routes are not changed")
 	flag.Parse()
 	if err := run(context.Background(), *dry); err != nil {
 		fmt.Fprintln(os.Stderr, "migrate-v1:", err)
 		os.Exit(1)
 	}
 }
+
+var backupConfigs bool
 
 func env(k string) string { return strings.TrimSpace(os.Getenv(k)) }
 
@@ -105,7 +108,7 @@ func run(ctx context.Context, dry bool) error {
 		name string
 		f    func(context.Context) error
 	}{
-		{"users", im.users}, {"tavily", im.tavily}, {"configs", im.configs}, {"routes", im.routes},
+		{"users", im.users}, {"tavily", im.tavily}, {"configs", im.configs}, {"backup configs", im.backupConfigs}, {"routes", im.routes},
 		{"accounts", im.accounts}, {"columns", im.columns}, {"plans", im.plans},
 	}
 	for _, s := range steps {
@@ -340,7 +343,18 @@ func (im *importer) tavily(ctx context.Context) error {
 	return nil
 }
 
-func (im *importer) configs(ctx context.Context) error {
+func (im *importer) configs(ctx context.Context) error { return im.copyConfigs(ctx, "config") }
+
+// backupConfigs: with -backup-configs, a second copy of each v1 ai.1so.org config (kind config_backup),
+// so v2 can keep the old relay as a fallback after its main configs moved elsewhere.
+func (im *importer) backupConfigs(ctx context.Context) error {
+	if !backupConfigs {
+		return nil
+	}
+	return im.copyConfigs(ctx, "config_backup")
+}
+
+func (im *importer) copyConfigs(ctx context.Context, kindTag string) error {
 	rows, err := im.v1.Query(ctx, `SELECT id, COALESCE(config_type,''), COALESCE(name,''), COALESCE(protocol,'openai'), COALESCE(base_url,''),
 		COALESCE(api_key_encrypted,''), COALESCE(model_name,''), COALESCE(extra_params,''), COALESCE(priority,100), COALESCE(enabled,1),
 		COALESCE(first_byte_timeout_seconds,0), COALESCE(idle_timeout_seconds,0), COALESCE(total_timeout_seconds,0) FROM service_config ORDER BY id`)
@@ -366,13 +380,22 @@ func (im *importer) configs(ctx context.Context) error {
 	for _, x := range list {
 		kind := kinds[x.typ]
 		if kind == "" {
-			im.rep.skip("config", x.id, "type "+x.typ+" has no v2 equivalent (WeChat and integrations are configured by env in v2)")
+			if kindTag == "config" {
+				im.rep.skip("config", x.id, "type "+x.typ+" has no v2 equivalent (WeChat and integrations are configured by env in v2)")
+			}
 			continue
 		}
-		if _, ok, err := im.mapped(ctx, "config", x.id); err != nil {
+		name := x.name
+		if kindTag == "config_backup" {
+			if !strings.Contains(x.base, "ai.1so.org") {
+				continue
+			}
+			name = strings.TrimSpace(x.name) + " · ai.1so 备用"
+		}
+		if _, ok, err := im.mapped(ctx, kindTag, x.id); err != nil {
 			return err
 		} else if ok {
-			im.rep.already["config"]++
+			im.rep.already[kindTag]++
 			continue
 		}
 		params := map[string]any{}
@@ -389,7 +412,7 @@ func (im *importer) configs(ctx context.Context) error {
 		if x.token != "" {
 			var err error
 			if sealed, mask, err = im.reseal(x.token); err != nil {
-				im.rep.skip("config", x.id, "cannot decrypt key: "+err.Error())
+				im.rep.skip(kindTag, x.id, "cannot decrypt key: "+err.Error())
 				continue
 			}
 		}
@@ -406,10 +429,10 @@ func (im *importer) configs(ctx context.Context) error {
 		var id int64
 		if err := im.tx.QueryRow(ctx, `INSERT INTO service_config (kind, name, protocol, base_url, key_cipher, key_mask, model, reasoning_effort, params,
 			first_byte_timeout_s, idle_timeout_s, total_timeout_s, priority, enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-			kind, x.name, proto, x.base, sealed, mask, x.model, effort, pj, pos(x.fb, 30), pos(x.idle, 180), pos(x.total, 900), x.prio, x.enabled == 1).Scan(&id); err != nil {
+			kind, name, proto, x.base, sealed, mask, x.model, effort, pj, pos(x.fb, 30), pos(x.idle, 180), pos(x.total, 900), x.prio, x.enabled == 1).Scan(&id); err != nil {
 			return err
 		}
-		if err := im.record(ctx, "config", x.id, id); err != nil {
+		if err := im.record(ctx, kindTag, x.id, id); err != nil {
 			return err
 		}
 	}
