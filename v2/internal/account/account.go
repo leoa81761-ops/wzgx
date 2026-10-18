@@ -57,6 +57,7 @@ type Account struct {
 	PausedReason string          `json:"paused_reason"` // user | auto
 	ConfirmTopic bool            `json:"confirm_topic"` // topic confirmation mode
 	AutoPublish  bool            `json:"auto_publish"`
+	AutoPush     bool            `json:"auto_push"`
 	ReviewMin    int             `json:"review_minutes"`
 	PublishCap   int             `json:"publish_cap"`
 	Name         string          `json:"name"`
@@ -110,11 +111,11 @@ func (in *BindInput) normalize() error {
 	return nil
 }
 
-const accCols = `id, user_id, (SELECT u.email FROM users u WHERE u.id = wx_account.user_id), name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, check_report, created_at, paused, paused_reason, confirm_topic, auto_publish, review_minutes, publish_cap`
+const accCols = `id, user_id, (SELECT u.email FROM users u WHERE u.id = wx_account.user_id), name, app_id, secret_mask, subject_type, verified, bind_status, checked_at, check_report, created_at, paused, paused_reason, confirm_topic, auto_publish, review_minutes, publish_cap, auto_push`
 
 func scanAcc(r pgx.Row) (Account, error) {
 	var a Account
-	err := r.Scan(&a.ID, &a.UserID, &a.OwnerEmail, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CheckReport, &a.CreatedAt, &a.Paused, &a.PausedReason, &a.ConfirmTopic, &a.AutoPublish, &a.ReviewMin, &a.PublishCap)
+	err := r.Scan(&a.ID, &a.UserID, &a.OwnerEmail, &a.Name, &a.AppID, &a.SecretMask, &a.SubjectType, &a.Verified, &a.BindStatus, &a.CheckedAt, &a.CheckReport, &a.CreatedAt, &a.Paused, &a.PausedReason, &a.ConfirmTopic, &a.AutoPublish, &a.ReviewMin, &a.PublishCap, &a.AutoPush)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrNotFound
 	}

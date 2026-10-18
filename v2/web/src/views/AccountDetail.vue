@@ -19,6 +19,8 @@
       <p v-if="a.paused && a.paused_reason === 'auto'" class="hint" style="margin:8px 0 0">系统自动暂停的：最近推送到草稿箱的几篇都没有改动、也没有评价。取消勾选即可恢复。</p>
       <label class="row" style="margin-top:10px"><input type="checkbox" :checked="a.confirm_topic" @change="control({ confirm_topic: $event.target.checked })" />
         <span>选题先给我确认<span class="muted"> · 每篇选好题目后先停下，等你点「就写这个」「换一个」或自己改题目（在首页和写作计划页）</span></span></label>
+      <label class="row" style="margin-top:10px"><input type="checkbox" :checked="a.auto_push" @change="control({ auto_push: $event.target.checked })" />
+        <span>写作计划写好后自动推送到草稿箱<span class="muted"> · 默认关闭；只推通过检查的文章，手动「现在写一篇」不自动推</span></span></label>
       <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
         <label class="row"><input type="checkbox" :checked="a.auto_publish" :disabled="!a.verified && !a.auto_publish" @change="control({ auto_publish: $event.target.checked })" />
           <span>推送到草稿箱后自动发表<span class="muted"> · 默认关闭</span></span></label>
@@ -87,7 +89,7 @@ async function check() { busy.value = true; try { await post(`${base()}/check`);
 async function saveSecret() { try { await patch(base(), { app_secret: secret.value }); secret.value = ''; await check() } catch (e) { say(e.message) } }
 async function saveProfile() { try { p.value = await put(`${base()}/profile`, p.value); say('设置已保存', true) } catch (e) { say(e.message) } }
 async function control(c) {
-  try { await put(`${base()}/controls`, c); await load(); ctl.value = { ok: true, text: c.paused !== undefined ? (c.paused ? '已暂停' : '已恢复') : c.confirm_topic !== undefined ? (c.confirm_topic ? '已开启选题确认' : '已关闭选题确认') : c.auto_publish !== undefined ? (c.auto_publish ? '已开启自动发表' : '已关闭自动发表，等待中的文章都不会发了') : '已保存' } }
+  try { await put(`${base()}/controls`, c); await load(); ctl.value = { ok: true, text: c.paused !== undefined ? (c.paused ? '已暂停' : '已恢复') : c.confirm_topic !== undefined ? (c.confirm_topic ? '已开启选题确认' : '已关闭选题确认') : c.auto_push !== undefined ? (c.auto_push ? '已开启自动推送草稿箱' : '已关闭自动推送草稿箱') : c.auto_publish !== undefined ? (c.auto_publish ? '已开启自动发表' : '已关闭自动发表，等待中的文章都不会发了') : '已保存' } }
   catch (e) { ctl.value = { ok: false, text: e.message } }
 }
 async function unbind() { if (!confirm(`确定解绑「${a.value.name}」？`)) return; try { await del(base()); router.push('/accounts') } catch (e) { say(e.message) } }

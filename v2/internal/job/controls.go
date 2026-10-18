@@ -22,6 +22,7 @@ import (
 type Controls struct {
 	Paused       *bool `json:"paused"`
 	ConfirmTopic *bool `json:"confirm_topic"`
+	AutoPush     *bool `json:"auto_push"`      // plan articles that pass the checks go to the draft box by themselves
 	AutoPublish  *bool `json:"auto_publish"`   // verified accounts only
 	ReviewMin    *int  `json:"review_minutes"` // review window after the draft push, 10 min – 7 days
 	PublishCap   *int  `json:"publish_cap"`    // auto-published articles per China day, 1–5
@@ -57,6 +58,12 @@ func (s *Service) SetControls(ctx context.Context, actor auth.User, accountID in
 			s.DB.Exec(ctx, `UPDATE article SET publish_status='cancelled', publish_note='已关闭自动发表' WHERE account_id=$1 AND publish_status='scheduled'`, accountID)
 		}
 		s.Audit.Log(ctx, actor.ID, "account.auto_publish", "", map[string]any{"account_id": accountID, "enabled": c.AutoPublish, "review_minutes": c.ReviewMin, "publish_cap": c.PublishCap})
+	}
+	if c.AutoPush != nil {
+		if _, err := s.DB.Exec(ctx, `UPDATE wx_account SET auto_push=$2, updated_at=now() WHERE id=$1`, accountID, *c.AutoPush); err != nil {
+			return err
+		}
+		s.Audit.Log(ctx, actor.ID, "account.auto_push", "", map[string]any{"account_id": accountID, "enabled": *c.AutoPush})
 	}
 	if c.Paused != nil {
 		if *c.Paused {
