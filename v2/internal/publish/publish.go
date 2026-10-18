@@ -169,9 +169,11 @@ func (s *Service) push(ctx context.Context, a account, articleID int64, title, s
 	var thumb []byte
 	var thumbName string
 	var cover []byte
-	if s.DB.QueryRow(ctx, `SELECT data FROM article_image WHERE article_id=$1 AND slot=0 ORDER BY id DESC LIMIT 1`, articleID).Scan(&cover) == nil && len(cover) > 0 {
+	if s.DB.QueryRow(ctx, `SELECT data FROM article_image WHERE article_id=$1 AND kind='picture' AND slot=0 ORDER BY id DESC LIMIT 1`, articleID).Scan(&cover) == nil && len(cover) > 0 {
 		thumb, thumbName = cover, fmt.Sprintf("cover-%d.jpg", articleID)
 	}
+	var firstImg, anyImg []byte // the first body picture that is not a chart; the first of any kind
+	var firstName, anyName string
 	uploaded := map[string]string{}
 	for _, m := range imgSrc.FindAllStringSubmatch(html, -1) {
 		src := m[1]
@@ -182,8 +184,11 @@ func (s *Service) push(ctx context.Context, a account, articleID int64, title, s
 		if err != nil {
 			return "", "", fmt.Errorf("下载文中图片失败：%w", err)
 		}
-		if thumb == nil {
-			thumb, thumbName = img, name
+		if firstImg == nil && !strings.HasSuffix(name, ".png") {
+			firstImg, firstName = img, name
+		}
+		if anyImg == nil {
+			anyImg, anyName = img, name
 		}
 		u, err := s.withRetry(ctx, a, &tok, func(t string) (string, error) { return s.WX.UploadContentImage(ctx, t, name, img) })
 		if err != nil {
@@ -192,9 +197,15 @@ func (s *Service) push(ctx context.Context, a account, articleID int64, title, s
 		uploaded[src] = u
 	}
 	if thumb == nil && s.DefaultCover != "" {
-		if thumb, thumbName, err = s.download(ctx, s.DefaultCover); err != nil {
+		if thumb, thumbName, err = s.download(ctx, s.DefaultCover); err != nil && firstImg == nil {
 			return "", "", fmt.Errorf("下载默认封面失败：%w", err)
 		}
+	}
+	if thumb == nil {
+		thumb, thumbName = firstImg, firstName
+	}
+	if thumb == nil {
+		thumb, thumbName = anyImg, anyName
 	}
 	if thumb == nil {
 		return "", "", errors.New("文章没有图片，也没有设置默认封面，无法设置封面")
@@ -236,10 +247,15 @@ const maxImage = 2 << 20
 func (s *Service) image(ctx context.Context, src string) ([]byte, string, error) {
 	if key, ok := strings.CutPrefix(src, render.MediaPrefix); ok {
 		var data []byte
-		if err := s.DB.QueryRow(ctx, `SELECT data FROM article_image WHERE key=$1`, key).Scan(&data); err != nil {
+		var mime string
+		if err := s.DB.QueryRow(ctx, `SELECT data, mime FROM article_image WHERE key=$1`, key).Scan(&data, &mime); err != nil {
 			return nil, "", fmt.Errorf("找不到生成的图片：%w", err)
 		}
-		return data, "img-" + key[:8] + ".jpg", nil
+		ext := ".jpg"
+		if mime == "image/png" {
+			ext = ".png"
+		}
+		return data, "img-" + key[:8] + ext, nil
 	}
 	return s.download(ctx, src)
 }

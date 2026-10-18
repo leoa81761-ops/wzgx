@@ -46,8 +46,10 @@ type Options struct {
 	// (1-based, in order). Slots without one are dropped instead of showing the default picture.
 	AIImages bool
 	Images   map[int]string
-	Sources  map[int]Source // official sources only, by evidence number
-	Layout   string         // layout key; empty = classic
+	// Charts[block] is a bar chart picture shown right after that table (see ChartTables).
+	Charts  map[int]string
+	Sources map[int]Source // official sources only, by evidence number
+	Layout  string         // layout key; empty = classic
 }
 
 type Output struct {
@@ -55,6 +57,7 @@ type Output struct {
 	Cited     []Source // official sources actually cited, in order of first use
 	Tables    int
 	Images    int
+	Charts    int
 	PlainText string
 }
 
@@ -241,7 +244,13 @@ func Render(a Article, o Options) Output {
 	para(o.Opening)
 	hasImage := hasImageBlock(a)
 	sections := 0
-	for _, bl := range a.Blocks {
+	chart := func(i int) {
+		if src := o.Charts[i]; src != "" {
+			out.Charts++
+			fmt.Fprintf(&b, `<section style="%s"><img src="%s" alt="数据图表" style="max-width:100%%;"/></section>`, L.Img, html.EscapeString(src))
+		}
+	}
+	for bi, bl := range a.Blocks {
 		switch bl.Type {
 		case "h2":
 			sections++
@@ -255,6 +264,7 @@ func Render(a Article, o Options) Output {
 		case "list":
 			if rows, ok := TableFit(bl.Items); ok {
 				table(append([][]string{{"项目", "说明"}}, rows...), true)
+				chart(bi)
 				continue
 			}
 			fmt.Fprintf(&b, `<ul style="%s">`, L.List)
@@ -267,6 +277,7 @@ func Render(a Article, o Options) Output {
 		case "table":
 			if validTable(bl.Rows) {
 				table(bl.Rows, true)
+				chart(bi)
 			} else { // not a real table: show as a list
 				fmt.Fprintf(&b, `<ul style="%s">`, L.List)
 				for _, r := range bl.Rows {

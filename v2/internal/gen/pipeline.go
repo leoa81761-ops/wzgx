@@ -335,21 +335,28 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	}
 
 	// ⑤′ pictures (only for an article that passed; never blocks it)
-	var pics map[int]string
+	var pics, charts map[int]string
 	if block == "" {
 		pics, res.AIImages = p.pictures(ctx, j, tier, art, load, chat, trace)
+		charts = p.charts(ctx, j, art, trace) // the system decides; a failed chart is skipped
 	}
 	prof := wc.Profile
 	out := render.Render(art, render.Options{Opening: prof["开头"], Ending: prof["结尾"], Signature: prof["签名"],
 		AILabel: prof["AI标识"] == "on", DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: wc.Layout,
-		AIImages: res.AIImages, Images: mediaURLs(pics)})
+		AIImages: res.AIImages, Images: mediaURLs(pics), Charts: chartURLs(charts)})
 	res.Layout = render.LayoutByKey(wc.Layout).Key
 
 	res.Status, res.BlockReason = "ready", block
 	if block != "" {
 		res.Status = "blocked"
 	}
-	res.ArticleID, err = p.save(ctx, j, colID, topic.Topic, topicKind, art, out, res, pics)
+	keys := map[string]bool{}
+	for _, m := range []map[int]string{pics, charts} {
+		for _, k := range m {
+			keys[k] = true
+		}
+	}
+	res.ArticleID, err = p.save(ctx, j, colID, topic.Topic, topicKind, art, out, res, keys)
 	return res, err
 }
 
@@ -552,7 +559,7 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	return w, tier, colID, review, nil
 }
 
-func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKind string, a render.Article, out render.Output, res Result, pics map[int]string) (int64, error) {
+func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKind string, a render.Article, out render.Output, res Result, pics map[string]bool) (int64, error) {
 	body, _ := json.Marshal(a)
 	alts := a.AltTitles
 	if alts == nil {
@@ -580,7 +587,7 @@ func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKin
 	}
 	if len(pics) > 0 {
 		keys := make([]string, 0, len(pics))
-		for _, k := range pics {
+		for k := range pics {
 			keys = append(keys, k)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE article_image SET article_id=$1 WHERE key = ANY($2) AND article_id IS NULL`, id, keys); err != nil {

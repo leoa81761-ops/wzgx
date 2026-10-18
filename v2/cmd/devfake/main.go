@@ -208,6 +208,7 @@ func (f *fake) model(w http.ResponseWriter, r *http.Request, stage string) {
 		text = fmt.Sprintf(`{"title":"%s（演示 %s）","summary":"这是本地演示服务写的假文章，用来走一遍页面。",
 "blocks":[{"type":"p","text":"这是一篇本地演示文章，内容是假模型生成的，只用来看页面效果。"},
 {"type":"h2","text":"先看亮度"},{"type":"p","text":"学习桌面照度不低于 300 lx[1]。"},
+{"type":"table","rows":[["台灯","桌面照度"],["普通台灯","200 lx"],["护眼台灯","500 lx"],["落地阅读灯","350 lx"]]},
 {"type":"h2","text":"再看位置"},{"type":"list","items":["放在写字手的对侧","灯罩不透光","离桌面 40 厘米左右"]},
 {"type":"p","text":"选好台灯，孩子写作业也舒服些。"}]}`, title, stamp)
 	case "review":

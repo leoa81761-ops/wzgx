@@ -52,25 +52,27 @@ func (p *Pipeline) RenderStored(ctx context.Context, articleID int64, layout str
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	pics := map[int]string{}
-	if aiImages {
-		irows, err := p.DB.Query(ctx, `SELECT slot, key FROM article_image WHERE article_id=$1 AND slot > 0`, articleID)
-		if err != nil {
+	pics, charts := map[int]string{}, map[int]string{}
+	irows, err := p.DB.Query(ctx, `SELECT kind, slot, COALESCE(block,-1), key FROM article_image WHERE article_id=$1 AND (kind='chart' OR slot > 0)`, articleID)
+	if err != nil {
+		return "", err
+	}
+	for irows.Next() {
+		var kind, key string
+		var slot, block int
+		if err := irows.Scan(&kind, &slot, &block, &key); err != nil {
+			irows.Close()
 			return "", err
 		}
-		for irows.Next() {
-			var slot int
-			var key string
-			if err := irows.Scan(&slot, &key); err != nil {
-				irows.Close()
-				return "", err
-			}
+		if kind == "chart" {
+			charts[block] = key
+		} else if aiImages {
 			pics[slot] = key
 		}
-		irows.Close()
 	}
+	irows.Close()
 	out := render.Render(art, render.Options{Opening: opening, Ending: ending, Signature: sig, AILabel: ai,
-		DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: layout, AIImages: aiImages, Images: mediaURLs(pics)})
+		DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: layout, AIImages: aiImages, Images: mediaURLs(pics), Charts: chartURLs(charts)})
 	return out.HTML, nil
 }
 

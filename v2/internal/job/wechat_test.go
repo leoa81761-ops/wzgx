@@ -54,7 +54,7 @@ func newFakeWX(t *testing.T) *fakeWX {
 				return
 			}
 			b, _ := io.ReadAll(file)
-			if !bytes.HasPrefix(b, []byte("\xff\xd8")) {
+			if !bytes.HasPrefix(b, []byte("\xff\xd8")) && !bytes.HasPrefix(b, []byte("\x89PNG")) {
 				fmt.Fprint(w, `{"errcode":40113,"errmsg":"unsupported file type"}`)
 				return
 			}

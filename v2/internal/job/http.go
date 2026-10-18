@@ -163,7 +163,7 @@ const artCols = `id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = a
 	summary, status, block_reason, created_at, pushed_at, readback_status, change_ratio, readback_at, readback_note,
 	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id), layout,
 	publish_status, publish_at, publish_note, publish_url, published_at,
-	COALESCE((SELECT '` + render.MediaPrefix + `' || i.key FROM article_image i WHERE i.article_id = article.id AND i.slot = 0 ORDER BY i.id DESC LIMIT 1), ''),
+	COALESCE((SELECT '` + render.MediaPrefix + `' || i.key FROM article_image i WHERE i.article_id = article.id AND i.kind = 'picture' AND i.slot = 0 ORDER BY i.id DESC LIMIT 1), ''),
 	(SELECT count(*)::int FROM article_image i WHERE i.article_id = article.id), fact_check`
 
 func (a *articleRow) fields() []any {
