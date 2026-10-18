@@ -56,6 +56,7 @@
     <div class="card" v-if="p"><ProfileForm :p="p" @save="saveProfile" /></div>
     <h2>栏目</h2>
     <div class="card"><Columns :base="`/api/accounts/${a.id}`" /></div>
+    <div class="card"><StyleCard :base="`/api/accounts/${a.id}`" /></div>
     <div v-if="msg" class="msg" :class="{ ok }">{{ msg }}</div>
     <p style="margin-top:24px"><button class="danger" @click="unbind">解绑这个公众号</button>
       <span class="muted"> 解绑后 30 天内不能再绑定同一个 AppID。</span></p>
@@ -68,6 +69,7 @@ import { get, post, put, patch, del } from '../api.js'
 import CheckResult from './CheckResult.vue'
 import ProfileForm from './ProfileForm.vue'
 import Columns from './Columns.vue'
+import StyleCard from './StyleCard.vue'
 const route = useRoute(), router = useRouter()
 const a = ref(null), p = ref(null), err = ref(''), msg = ref(''), ok = ref(false), busy = ref(false), secret = ref(''), ctl = ref(null)
 const base = () => `/api/accounts/${route.params.id}`

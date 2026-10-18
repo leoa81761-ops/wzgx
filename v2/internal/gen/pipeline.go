@@ -22,6 +22,7 @@ import (
 	"gonghao/internal/gateway"
 	"gonghao/internal/render"
 	"gonghao/internal/search"
+	"gonghao/internal/style"
 )
 
 type Chatter interface {
@@ -539,6 +540,7 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	}
 	rows.Close()
 	w.Today = p.now().Format("2006-01-02")
+	w.Style = style.ForWriter(ctx, p.DB, j.AccountID, colID)
 	return w, tier, colID, review, nil
 }
 

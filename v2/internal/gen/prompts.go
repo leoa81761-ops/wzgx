@@ -37,6 +37,7 @@ type writingContext struct {
 	Recentnews  string // what a live search found recently, for news-type columns
 	Today       string
 	Layout      string // render template; not part of any prompt
+	Style       string // the user's style traits (from their sample articles), if switched on
 }
 
 func (w writingContext) settings() string {
@@ -46,6 +47,9 @@ func (w writingContext) settings() string {
 		if v := w.Profile[k]; v != "" {
 			fmt.Fprintf(&b, "%s：%s\n", k, v)
 		}
+	}
+	if w.Style != "" {
+		fmt.Fprintf(&b, "写作风格（从用户自己的范文里提炼）：%s\n", w.Style)
 	}
 	fmt.Fprintf(&b, "栏目：%s\n文章类型：%s\n", w.ColumnName, w.TypeName)
 	if w.TypeDesc != "" {

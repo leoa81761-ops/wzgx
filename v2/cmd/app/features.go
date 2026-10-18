@@ -18,6 +18,7 @@ import (
 	"gonghao/internal/publish"
 	"gonghao/internal/search"
 	"gonghao/internal/server"
+	"gonghao/internal/style"
 	"gonghao/internal/svccfg"
 	"gonghao/internal/wechat"
 )
@@ -45,6 +46,7 @@ func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Poo
 	gw := gateway.New(gateway.PGRecorder{DB: pool, Log: log})
 	(&svccfg.Service{DB: pool, Box: box, Audit: aud, GW: gw}).Register(srv, ah)
 
+	(&style.Service{DB: pool, GW: gw, Box: box, Audit: aud}).Register(srv, ah)
 	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{BaseURL: cfg.TavilyBase}, DefaultImageURL: cfg.DefaultCoverURL, Log: log}
 	jobs := &job.Service{DB: pool, Runner: pipe, Render: pipe, Auth: authSvc, Audit: aud, Log: log, ServerIP: cfg.ServerIP}
 	jobs.Register(srv, ah)
