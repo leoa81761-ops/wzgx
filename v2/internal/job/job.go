@@ -47,7 +47,8 @@ type Service struct {
 	ServerIP string                        // outbound IP users add to the WeChat IP whitelist (V2_SERVER_IP); shown on the bind screen
 	Tick     []func(context.Context) error // extra periodic work in the worker loop (e.g. draft read-back)
 
-	Render Renderer // optional: layout re-rendering (the pipeline)
+	Render Renderer      // optional: layout re-rendering (the pipeline)
+	Auth   *auth.Service // password confirmation and logout for account deletion
 
 	running runningJobs
 }
@@ -95,7 +96,7 @@ func (s *Service) Enqueue(ctx context.Context, actor auth.User, accountID int64,
 	}
 	defer tx.Rollback(ctx)
 	var quota int
-	var exempt bool
+	var exempt, usedBonus bool
 	if err := tx.QueryRow(ctx, `SELECT daily_quota, quota_exempt FROM users WHERE id=$1 FOR UPDATE`, actor.ID).Scan(&quota, &exempt); err != nil {
 		return 0, err
 	}
@@ -123,7 +124,15 @@ func (s *Service) Enqueue(ctx context.Context, actor auth.User, accountID int64,
 			return 0, err
 		}
 		if used >= quota {
-			return 0, ErrQuota
+			// over today's quota: spend one invite bonus article if there is one
+			tag, err := tx.Exec(ctx, `UPDATE users SET bonus_articles=bonus_articles-1 WHERE id=$1 AND bonus_articles > 0`, actor.ID)
+			if err != nil {
+				return 0, err
+			}
+			if tag.RowsAffected() == 0 {
+				return 0, ErrQuota
+			}
+			usedBonus = true
 		}
 	}
 	if idemKey == "" {
@@ -134,8 +143,8 @@ func (s *Service) Enqueue(ctx context.Context, actor auth.User, accountID int64,
 		source = "plan"
 	}
 	var id int64
-	if err := tx.QueryRow(ctx, `INSERT INTO job (user_id, account_id, column_id, idem_key, dry_run, topic_hint, topic, source, run_at, created_at)
-		VALUES ($1,$2,$3,$4,TRUE,$5,$6,$7,$8,$8) RETURNING id`, actor.ID, accountID, in.ColumnID, idemKey, in.TopicHint, topic, source, s.now()).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO job (user_id, account_id, column_id, idem_key, dry_run, topic_hint, topic, source, run_at, created_at, used_bonus)
+		VALUES ($1,$2,$3,$4,TRUE,$5,$6,$7,$8,$8,$9) RETURNING id`, actor.ID, accountID, in.ColumnID, idemKey, in.TopicHint, topic, source, s.now(), usedBonus).Scan(&id); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

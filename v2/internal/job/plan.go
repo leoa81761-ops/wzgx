@@ -184,7 +184,7 @@ func (s *Service) Schedule(ctx context.Context) (int, error) {
 	rows, err := s.DB.Query(ctx, `SELECT p.id, p.account_id, p.column_id, u.id, u.role FROM write_plan p
 		JOIN users u ON u.id=p.user_id JOIN wx_account a ON a.id=p.account_id
 		WHERE p.enabled AND $1 = ANY(p.weekdays) AND p.at_minute <= $2 AND (p.last_run_on IS NULL OR p.last_run_on < $3)
-		  AND u.status='active' AND a.bind_status='bound' AND NOT a.paused ORDER BY p.at_minute, p.id`, int16(wd), now.Hour()*60+now.Minute(), today)
+		  AND u.status='active' AND u.delete_requested_at IS NULL AND a.bind_status='bound' AND NOT a.paused ORDER BY p.at_minute, p.id`, int16(wd), now.Hour()*60+now.Minute(), today)
 	if err != nil {
 		return 0, err
 	}

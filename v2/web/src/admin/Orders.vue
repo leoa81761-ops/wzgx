@@ -7,7 +7,7 @@
       <label>用户邮箱<input v-model.trim="f.email" placeholder="user@example.com" @change="findUser" /></label>
       <div v-if="user" class="muted">当前：{{ tierText[user.tier] || user.tier }}，可绑 {{ user.max_accounts }} 个公众号，每天 {{ user.daily_quota }} 篇{{ user.tier_expires_at ? '，' + fmtTime(user.tier_expires_at).slice(0, 10) + ' 到期' : '' }}</div>
       <label>套餐
-        <select v-model="f.tier"><option v-for="(v, k) in tierText" :key="k" :value="k">{{ v }}</option></select>
+        <select v-model="f.tier" @change="prefill"><option v-for="(v, k) in tierText" :key="k" :value="k">{{ v }}</option></select>
       </label>
       <label>可绑公众号数量<input type="number" min="0" max="100" v-model.number="f.max_accounts" /></label>
       <label>每天可写篇数<input type="number" min="0" max="1000" v-model.number="f.daily_quota" /></label>
@@ -37,10 +37,12 @@
 <script setup>
 import { reactive, ref, onMounted } from 'vue'
 import { get, post, fmtTime } from '../api.js'
-const tierText = { free: '免费', standard: '标准版', premium: '高级版', buyout: '买断', custom: '定制' }
+const tierText = reactive({ free: '免费', standard: '标准版', premium: '高级版', buyout: '买断', custom: '定制' })
 const f = reactive({ email: '', tier: 'standard', max_accounts: 1, daily_quota: 1, months: 1, amount: null, note: '' })
 const user = ref(null), orders = ref([]), msg = ref(null), busy = ref(false)
 let users = []
+const tierDefs = ref([])
+function prefill() { const t = tierDefs.value.find((x) => x.key === f.tier); if (t) Object.assign(f, { max_accounts: t.max_accounts, daily_quota: t.daily_quota }) }
 async function findUser() {
   if (!f.email) { user.value = null; msg.value = null; return }
   users = await get('/api/admin/users?q=' + encodeURIComponent(f.email)).catch(() => [])
@@ -58,5 +60,9 @@ async function activate() {
     orders.value = await get('/api/admin/orders')
   } catch (e) { msg.value = { ok: false, text: e.message } } finally { busy.value = false }
 }
-onMounted(async () => { orders.value = await get('/api/admin/orders').catch(() => []) })
+onMounted(async () => {
+  orders.value = await get('/api/admin/orders').catch(() => [])
+  tierDefs.value = await get('/api/admin/tiers').catch(() => [])
+  for (const t of tierDefs.value) tierText[t.key] = t.name
+})
 </script>

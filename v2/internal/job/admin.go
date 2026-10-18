@@ -24,15 +24,16 @@ func (s *Service) hToday(w http.ResponseWriter, r *http.Request) {
 		Queued     int  `json:"queued"`
 		ReadyCount int  `json:"ready_articles"`
 		Accounts   int  `json:"accounts"`
+		Bonus      int  `json:"bonus_articles"`
 	}
 	err := s.DB.QueryRow(r.Context(), `SELECT u.daily_quota, u.quota_exempt,
 		(SELECT count(*) FROM job WHERE user_id=u.id AND created_at >= $2 AND status IN ('queued','running','done')),
 		(SELECT count(*) FROM job WHERE user_id=u.id AND status='running'),
 		(SELECT count(*) FROM job WHERE user_id=u.id AND status='queued'),
 		(SELECT count(*) FROM article WHERE user_id=u.id AND status='ready'),
-		(SELECT count(*) FROM wx_account WHERE user_id=u.id AND bind_status='bound')
+		(SELECT count(*) FROM wx_account WHERE user_id=u.id AND bind_status='bound'), u.bonus_articles
 		FROM users u WHERE u.id=$1`, u.ID, dayStart).
-		Scan(&out.DailyQuota, &out.Exempt, &out.UsedToday, &out.Running, &out.Queued, &out.ReadyCount, &out.Accounts)
+		Scan(&out.DailyQuota, &out.Exempt, &out.UsedToday, &out.Running, &out.Queued, &out.ReadyCount, &out.Accounts, &out.Bonus)
 	if err != nil {
 		fail(w, err)
 		return
@@ -44,8 +45,9 @@ func (s *Service) hToday(w http.ResponseWriter, r *http.Request) {
 func (s *Service) hUsers(w http.ResponseWriter, r *http.Request) {
 	q := "%" + r.URL.Query().Get("q") + "%"
 	rows, err := s.DB.Query(r.Context(), `SELECT u.id, u.email, u.display_name, u.tier, u.max_accounts, u.quota_exempt, u.daily_quota, u.status, u.created_at,
-		(SELECT count(*) FROM wx_account a WHERE a.user_id=u.id AND a.bind_status='bound'), u.tier_expires_at
-		FROM users u WHERE u.role='user' AND (u.email ILIKE $1 OR u.display_name ILIKE $1) ORDER BY u.id DESC LIMIT 200`, q)
+		(SELECT count(*) FROM wx_account a WHERE a.user_id=u.id AND a.bind_status='bound'), u.tier_expires_at,
+		u.bonus_articles, u.delete_requested_at, (SELECT count(*) FROM invite i WHERE i.inviter_id=u.id AND i.status='valid')
+		FROM users u WHERE u.role='user' AND u.deleted_at IS NULL AND (u.email ILIKE $1 OR u.display_name ILIKE $1) ORDER BY u.id DESC LIMIT 200`, q)
 	if err != nil {
 		fail(w, err)
 		return
@@ -63,11 +65,14 @@ func (s *Service) hUsers(w http.ResponseWriter, r *http.Request) {
 		CreatedAt   time.Time  `json:"created_at"`
 		Accounts    int        `json:"accounts"`
 		ExpiresAt   *time.Time `json:"tier_expires_at"`
+		Bonus       int        `json:"bonus_articles"`
+		DeleteReq   *time.Time `json:"delete_requested_at"`
+		Invited     int        `json:"valid_invites"`
 	}
 	out := []row{}
 	for rows.Next() {
 		var x row
-		if err := rows.Scan(&x.ID, &x.Email, &x.Name, &x.Tier, &x.MaxAccounts, &x.Exempt, &x.DailyQuota, &x.Status, &x.CreatedAt, &x.Accounts, &x.ExpiresAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.Email, &x.Name, &x.Tier, &x.MaxAccounts, &x.Exempt, &x.DailyQuota, &x.Status, &x.CreatedAt, &x.Accounts, &x.ExpiresAt, &x.Bonus, &x.DeleteReq, &x.Invited); err != nil {
 			fail(w, err)
 			return
 		}

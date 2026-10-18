@@ -30,7 +30,16 @@ func WithUser(ctx context.Context, u User) context.Context {
 type Handlers struct {
 	svc          *Service
 	cookieSecure bool
+
+	// optional hooks (set by the app): after a successful registration, with the invite code and
+	// the browser's device id; after a successful login, returning true when a pending account
+	// deletion was cancelled by it.
+	OnRegister func(ctx context.Context, u User, invite, ip, device string)
+	OnLogin    func(ctx context.Context, u User) bool
 }
+
+// ClientIP is the request's client address (first X-Forwarded-For hop when behind the proxy).
+func ClientIP(r *http.Request) string { return clientIP(r) }
 
 func NewHandlers(svc *Service, cookieSecure bool) *Handlers {
 	return &Handlers{svc: svc, cookieSecure: cookieSecure}
@@ -99,6 +108,8 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) {
 		Email, Password, Name string
 		TermsVersion          string `json:"terms_version"`
 		PrivacyVersion        string `json:"privacy_version"`
+		Invite                string `json:"invite"`
+		DeviceID              string `json:"device_id"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -111,6 +122,13 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if h.OnRegister != nil {
+		dev := in.DeviceID
+		if len(dev) > 64 {
+			dev = dev[:64]
+		}
+		h.OnRegister(r.Context(), u, strings.TrimSpace(in.Invite), clientIP(r), dev)
 	}
 	server.WriteJSON(w, http.StatusCreated, u)
 }
@@ -136,7 +154,11 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 		Name: CookieName, Value: tok, Path: "/", HttpOnly: true, Secure: h.cookieSecure,
 		SameSite: http.SameSiteLaxMode, MaxAge: int(h.svc.ttl.Seconds()),
 	})
-	server.WriteJSON(w, http.StatusOK, u)
+	cancelled := h.OnLogin != nil && h.OnLogin(r.Context(), u)
+	server.WriteJSON(w, http.StatusOK, struct {
+		User
+		DeletionCancelled bool `json:"deletion_cancelled,omitempty"`
+	}{u, cancelled})
 }
 
 func (h *Handlers) logout(w http.ResponseWriter, r *http.Request) {

@@ -30,6 +30,17 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("GET /api/site", anyR(s.hSite))
 	srv.Handle("PUT /api/accounts/{id}/controls", user(s.hControls))
 	srv.Handle("GET /api/accounts/{id}/layout", user(s.hGetLayout))
+	srv.Handle("GET /api/site/plans", http.HandlerFunc(s.hPublicPlans))
+	srv.Handle("POST /api/complaints", http.HandlerFunc(s.hComplain))
+	srv.Handle("GET /api/admin/tiers", staff(s.hAdminTiers))
+	srv.Handle("PUT /api/admin/tiers/{key}", staff(s.hSaveTier))
+	srv.Handle("GET /api/admin/complaints", staff(s.hAdminComplaints))
+	srv.Handle("PUT /api/admin/complaints/{id}", staff(s.hHandleComplaint))
+	srv.Handle("GET /api/me/export", user(s.hExport))
+	srv.Handle("POST /api/me/delete", user(s.hRequestDeletion))
+	srv.Handle("GET /api/me/invite", user(s.hMyInvite))
+	h.OnRegister = s.OnRegistered
+	h.OnLogin = s.CancelDeletion
 	srv.Handle("PUT /api/accounts/{id}/layout", user(s.hSetLayout))
 	srv.Handle("GET /api/accounts/{id}/calendar", user(s.hCalendar))
 	srv.Handle("GET /api/me/topics", user(s.hPendingTopics))

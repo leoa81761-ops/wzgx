@@ -52,11 +52,17 @@ curl -fs -b "$JAR" "$B/api/admin/costs?days=7" | grep -q '"by_day"' || fail "cos
 curl -fs -b "$JAR" "$B/api/admin/budget" | grep -q '"any_hit":false' || fail "budget banner"
 curl -fs -b "$JAR" "$B/api/admin/orders" >/dev/null || fail "orders"
 curl -fs -b "$JAR" -X PUT -H 'Content-Type: application/json' -d '{"auto_pause_after":3,"daily_cap":50}' "$B/api/admin/settings" | grep -q '"daily_cap":50' || fail "platform cap"
+# P1-5 public pages (no login)
+curl -fs "$B/api/site/plans" | grep -q '"tiers"' || fail "public plans"
+for pg in welcome pricing help complaint; do curl -fs "$B/$pg" | grep -q '<div id="app">' || fail "page /$pg"; done
+curl -fs -H 'Content-Type: application/json' -d '{"kind":"other","content":"冒烟测试：这是一条测试投诉内容"}' "$B/api/complaints" >/dev/null || fail "complaint"
+curl -fs -b "$JAR" "$B/api/admin/complaints" | grep -q '冒烟测试' || fail "admin complaints"
+curl -fs -b "$JAR" "$B/api/admin/tiers" | grep -q '"standard"' || fail "admin tiers"
 # the built UI carries the P1-1 and P1-6 screens (no browser: look for their Chinese labels in the bundle)
-for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限 内容日历 用这个排版 深色; do
+for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限 内容日历 用这个排版 深色 IP白名单 投诉与举报 导出我的数据 注销账号 邀请好友 套餐设置 投诉处理 联系管理员; do
   grep -rqF "$label" web/dist/assets/ || fail "UI label missing: $label"
 done
-for chunk in TopicConfirm Jobs Costs Orders Feedback Settings Calendar; do
+for chunk in TopicConfirm Jobs Costs Orders Feedback Settings Calendar Landing Pricing Help Complaint Tiers Complaints; do
   ls web/dist/assets/ | grep -q "^$chunk-.*\.js$" || grep -rqF "$chunk" web/dist/assets/index-*.js || fail "chunk $chunk"
 done
 echo "SMOKE OK"

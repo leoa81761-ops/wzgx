@@ -5,6 +5,8 @@
       <router-link to="/admin/users">用户与额度</router-link>
       <router-link to="/admin/accounts">公众号</router-link>
       <router-link to="/admin/orders">订单与开通</router-link>
+      <router-link to="/admin/tiers">套餐设置</router-link>
+      <router-link to="/admin/complaints">投诉处理</router-link>
       <router-link to="/admin/jobs">任务监控</router-link>
       <router-link to="/admin/costs">模型花费</router-link>
       <router-link to="/admin/types">文章类型</router-link>

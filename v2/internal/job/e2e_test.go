@@ -162,7 +162,7 @@ func setup(t *testing.T) (*env, string, string, int64, int64) {
 	})
 
 	pipe := &gen.Pipeline{DB: pool, GW: gw, Box: box, Tavily: search.Tavily{BaseURL: tv.URL}, DefaultImageURL: "https://cdn.example/cover.jpg"}
-	js := &job.Service{DB: pool, Runner: pipe, Render: pipe, Audit: aud}
+	js := &job.Service{DB: pool, Runner: pipe, Render: pipe, Auth: as, Audit: aud}
 	js.Register(srv, h)
 	wx := newFakeWX(t)
 	pub := &publish.Service{DB: pool, Box: box, Audit: aud, WX: &wechat.Client{Base: wx.srv.URL}, Fetch: &http.Client{Transport: imageTransport{}}}

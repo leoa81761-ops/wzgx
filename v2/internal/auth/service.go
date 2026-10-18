@@ -282,3 +282,20 @@ func (s *Service) ChangePassword(ctx context.Context, actor User, old, new strin
 	_ = s.store.Audit(ctx, &id, "auth.password", "", nil)
 	return nil
 }
+
+// ConfirmPassword checks the user's current password (for sensitive actions like account deletion).
+func (s *Service) ConfirmPassword(ctx context.Context, userID int64, password string) error {
+	u, err := s.store.UserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !VerifyPassword(password, u.PasswordHash) {
+		return errors.New("密码不正确")
+	}
+	return nil
+}
+
+// LogoutAll ends every session of the user.
+func (s *Service) LogoutAll(ctx context.Context, userID int64) error {
+	return s.store.DeleteUserSessions(ctx, userID)
+}

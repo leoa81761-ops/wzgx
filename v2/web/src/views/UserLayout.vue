@@ -10,7 +10,7 @@
       <router-link to="/me">我的</router-link>
       <div class="foot">{{ session.me?.display_name || session.me?.email }}</div>
     </nav>
-    <main class="main"><router-view /></main>
+    <main class="main"><div v-if="session.notice" class="msg ok">{{ session.notice }} <a href="#" @click.prevent="session.notice = ''">知道了</a></div><router-view /></main>
   </div>
 </template>
 <script setup>

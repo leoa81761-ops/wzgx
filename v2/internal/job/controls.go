@@ -191,11 +191,14 @@ func (s *Service) SaveFeedback(ctx context.Context, actor auth.User, articleID i
 type Settings struct {
 	AutoPauseAfter int     `json:"auto_pause_after"` // pause an account's plans after this many pushed-but-untouched articles with no feedback
 	DailyCap       float64 `json:"daily_cap"`        // platform-wide daily model spend cap in yuan; 0 = off
+	InviteBonus    *int    `json:"invite_bonus"`     // bonus articles per valid invite; 0 = off. nil on save = keep
+	Contact        *string `json:"contact"`          // how to reach the admin (pricing / complaint pages). nil on save = keep
 }
 
 func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
-	var st Settings
-	rows, err := s.DB.Query(ctx, `SELECT key, value FROM platform_setting WHERE key IN ('auto_pause_after','daily_cap')`)
+	zero, empty := 0, ""
+	st := Settings{InviteBonus: &zero, Contact: &empty}
+	rows, err := s.DB.Query(ctx, `SELECT key, value FROM platform_setting WHERE key IN ('auto_pause_after','daily_cap','invite_bonus','contact')`)
 	if err != nil {
 		return st, err
 	}
@@ -211,6 +214,10 @@ func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
 			json.Unmarshal(raw, &st.AutoPauseAfter)
 		case "daily_cap":
 			json.Unmarshal(raw, &st.DailyCap)
+		case "invite_bonus":
+			json.Unmarshal(raw, st.InviteBonus)
+		case "contact":
+			json.Unmarshal(raw, st.Contact)
 		}
 	}
 	return st, rows.Err()
@@ -223,22 +230,41 @@ func (s *Service) SaveSettings(ctx context.Context, actor auth.User, st Settings
 	if st.AutoPauseAfter < 0 || st.AutoPauseAfter > 50 {
 		return ErrInvalid{"篇数请填 0 到 50（0 表示不自动暂停）"}
 	}
-	if cur, err := s.GetSettings(ctx); err != nil {
+	cur, err := s.GetSettings(ctx)
+	if err != nil {
 		return err
-	} else if cur.DailyCap != st.DailyCap && actor.Role != auth.RoleSuperAdmin {
+	}
+	if cur.DailyCap != st.DailyCap && actor.Role != auth.RoleSuperAdmin {
 		return ErrInvalid{"每日花费上限只有超级管理员可以修改"}
 	}
+	if st.InviteBonus == nil {
+		st.InviteBonus = cur.InviteBonus
+	}
+	if st.Contact == nil {
+		st.Contact = cur.Contact
+	}
+	if *st.InviteBonus != *cur.InviteBonus && actor.Role != auth.RoleSuperAdmin {
+		return ErrInvalid{"邀请奖励只有超级管理员可以修改"}
+	}
+	if *st.InviteBonus < 0 || *st.InviteBonus > 100 {
+		return ErrInvalid{"邀请奖励请填 0 到 100 篇（0 表示不开启）"}
+	}
+	c := strings.TrimSpace(*st.Contact)
+	if utf8.RuneCountInString(c) > 200 {
+		return ErrInvalid{"联系方式不超过 200 字"}
+	}
+	st.Contact = &c
 	if st.DailyCap < 0 || st.DailyCap > 1e7 {
 		return ErrInvalid{"每日花费上限请填 0 或正数（0 表示不限）"}
 	}
-	for k, v := range map[string]any{"auto_pause_after": st.AutoPauseAfter, "daily_cap": st.DailyCap} {
+	for k, v := range map[string]any{"auto_pause_after": st.AutoPauseAfter, "daily_cap": st.DailyCap, "invite_bonus": *st.InviteBonus, "contact": *st.Contact} {
 		b, _ := json.Marshal(v)
 		if _, err := s.DB.Exec(ctx, `INSERT INTO platform_setting (key, value, updated_by) VALUES ($1,$2,$3)
 			ON CONFLICT (key) DO UPDATE SET value=$2, updated_by=$3, updated_at=now()`, k, b, actor.ID); err != nil {
 			return err
 		}
 	}
-	s.Audit.Log(ctx, actor.ID, "settings.save", "", map[string]any{"auto_pause_after": st.AutoPauseAfter, "daily_cap": st.DailyCap})
+	s.Audit.Log(ctx, actor.ID, "settings.save", "", map[string]any{"auto_pause_after": st.AutoPauseAfter, "daily_cap": st.DailyCap, "invite_bonus": *st.InviteBonus, "contact": *st.Contact})
 	return nil
 }
 
@@ -398,5 +424,10 @@ func (s *Service) hSaveSettings(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	server.WriteJSON(w, 200, st)
+	saved, err := s.GetSettings(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 200, saved)
 }

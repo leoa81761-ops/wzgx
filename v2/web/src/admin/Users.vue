@@ -5,7 +5,8 @@
   <table>
     <tr><th>用户</th><th>套餐</th><th>可绑定公众号</th><th>每日额度</th><th>不限额度</th><th>状态</th><th></th></tr>
     <tr v-for="u in list" :key="u.id">
-      <td>{{ u.email }}<div class="muted">{{ u.display_name }} · 已绑 {{ u.accounts }} 个 · {{ fmtTime(u.created_at) }}<template v-if="u.tier_expires_at"> · 套餐 {{ fmtTime(u.tier_expires_at).slice(0, 10) }} 到期</template></div></td>
+      <td>{{ u.email }}<div class="muted">{{ u.display_name }} · 已绑 {{ u.accounts }} 个 · {{ fmtTime(u.created_at) }}<template v-if="u.tier_expires_at"> · 套餐 {{ fmtTime(u.tier_expires_at).slice(0, 10) }} 到期</template><template v-if="u.bonus_articles"> · 额外 {{ u.bonus_articles }} 篇</template><template v-if="u.valid_invites"> · 有效邀请 {{ u.valid_invites }} 人</template></div>
+        <div v-if="u.delete_requested_at" class="bad">已申请注销（{{ fmtTime(u.delete_requested_at) }}），7 天后删除数据，用户登录即取消</div></td>
       <td><select v-model="u.tier"><option v-for="t in tiers" :key="t[0]" :value="t[0]">{{ t[1] }}</option></select></td>
       <td style="width:90px"><input type="number" min="0" v-model.number="u.max_accounts" /></td>
       <td style="width:90px"><input type="number" min="0" v-model.number="u.daily_quota" /></td>

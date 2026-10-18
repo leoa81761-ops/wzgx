@@ -11,6 +11,10 @@ export const router = createRouter({
     { path: '/register', component: U('Register'), meta: { public: true } },
     { path: '/terms', component: U('Terms'), meta: { public: true } },
     { path: '/privacy', component: U('Privacy'), meta: { public: true } },
+    { path: '/welcome', component: U('Landing'), meta: { public: true } },
+    { path: '/pricing', component: U('Pricing'), meta: { public: true } },
+    { path: '/help', component: U('Help'), meta: { public: true } },
+    { path: '/complaint', component: U('Complaint'), meta: { public: true } },
     {
       path: '/', component: U('UserLayout'), meta: { role: 'user' },
       children: [
@@ -41,6 +45,8 @@ export const router = createRouter({
         { path: 'jobs', component: A('Jobs') },
         { path: 'costs', component: A('Costs') },
         { path: 'orders', component: A('Orders') },
+        { path: 'tiers', component: A('Tiers') },
+        { path: 'complaints', component: A('Complaints') },
       ],
     },
     { path: '/:rest(.*)*', redirect: '/' },
@@ -51,7 +57,7 @@ router.beforeEach(async (to) => {
   if (!session.loaded) await loadMe()
   if (to.meta.public) return true
   const me = session.me
-  if (!me) return { path: '/login', query: { next: to.fullPath } }
+  if (!me) return to.path === '/' ? '/welcome' : { path: '/login', query: { next: to.fullPath } }
   const want = to.matched.find((r) => r.meta.role)?.meta.role
   if (want === 'user' && isStaff(me)) return '/admin'
   if (want === 'staff' && !isStaff(me)) return '/'
