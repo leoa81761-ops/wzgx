@@ -5,6 +5,7 @@
       <router-link to="/" active-class="" exact-active-class="router-link-active">首页</router-link>
       <router-link to="/accounts">公众号</router-link>
       <router-link to="/plans">写作计划</router-link>
+      <router-link to="/calendar">内容日历</router-link>
       <router-link to="/articles">文章</router-link>
       <router-link to="/me">我的</router-link>
       <div class="foot">{{ session.me?.display_name || session.me?.email }}</div>

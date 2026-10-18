@@ -55,3 +55,21 @@ td.act .row { flex-wrap: nowrap; gap: 8px; }
 .pw .eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); padding: 3px 8px; font-size: 13px; border: 0; background: transparent; color: var(--c); }
 .timepick { display: flex; gap: 4px; align-items: center; }
 .timepick select { width: auto; padding: 6px 6px; }
+
+.phone.dark { background: #191919; border-color: #000; }
+.layouts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.layout-opt { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.layout-opt.on { border-color: var(--brand, #2f7d5b); background: #f0f7f4; }
+.layout-opt input { display: none; }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal .wd { text-align: center; font-size: 13px; color: #888; padding: 4px 0; }
+.cal .day { min-height: 92px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 12px; background: #fff; overflow: hidden; }
+.cal .day.other { visibility: hidden; }
+.cal .day.today { border-color: var(--brand, #2f7d5b); box-shadow: inset 0 0 0 1px var(--brand, #2f7d5b); }
+.cal .day.past { background: #fafafa; }
+.cal .num { font-weight: bold; color: #555; margin-bottom: 2px; }
+.cal .it { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 4px; margin: 2px 0; border-radius: 3px; color: inherit; text-decoration: none; }
+.cal .it.art { background: #eef4ff; }
+.cal .it.art.pushed { background: #e7f6ee; }
+.cal .it.art.blocked, .cal .it.art.failed { background: #fdecec; }
+.cal .it.plan { border: 1px dashed #bbb; color: #777; }

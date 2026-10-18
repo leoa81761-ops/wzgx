@@ -47,6 +47,8 @@ type Service struct {
 	ServerIP string                        // outbound IP users add to the WeChat IP whitelist (V2_SERVER_IP); shown on the bind screen
 	Tick     []func(context.Context) error // extra periodic work in the worker loop (e.g. draft read-back)
 
+	Render Renderer // optional: layout re-rendering (the pipeline)
+
 	running runningJobs
 }
 

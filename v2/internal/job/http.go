@@ -29,6 +29,9 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("PUT /api/admin/sensitive-words", staff(s.hSaveSensitive))
 	srv.Handle("GET /api/site", anyR(s.hSite))
 	srv.Handle("PUT /api/accounts/{id}/controls", user(s.hControls))
+	srv.Handle("GET /api/accounts/{id}/layout", user(s.hGetLayout))
+	srv.Handle("PUT /api/accounts/{id}/layout", user(s.hSetLayout))
+	srv.Handle("GET /api/accounts/{id}/calendar", user(s.hCalendar))
 	srv.Handle("GET /api/me/topics", user(s.hPendingTopics))
 	srv.Handle("POST /api/jobs/{id}/topic", user(s.hDecideTopic))
 	srv.Handle("PUT /api/articles/{id}/feedback", user(s.hFeedback))
@@ -113,6 +116,7 @@ func (s *Service) hJob(w http.ResponseWriter, r *http.Request) {
 }
 
 type articleRow struct {
+	Layout       string          `json:"layout"`
 	ID           int64           `json:"id"`
 	AccountID    int64           `json:"account_id"`
 	AccountName  string          `json:"account_name"`
@@ -137,11 +141,11 @@ type articleRow struct {
 
 const artCols = `id, account_id, (SELECT w.name FROM wx_account w WHERE w.id = article.account_id), column_id, title, topic, topic_kind,
 	summary, status, block_reason, created_at, pushed_at, readback_status, change_ratio, readback_at, readback_note,
-	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id)`
+	(SELECT f.rating::int FROM article_feedback f WHERE f.article_id = article.id), (SELECT f.note FROM article_feedback f WHERE f.article_id = article.id), layout`
 
 func (a *articleRow) fields() []any {
 	return []any{&a.ID, &a.AccountID, &a.AccountName, &a.ColumnID, &a.Title, &a.Topic, &a.TopicKind, &a.Summary, &a.Status, &a.BlockReason,
-		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note}
+		&a.CreatedAt, &a.PushedAt, &a.Readback, &a.ChangeRatio, &a.ReadbackAt, &a.ReadbackNote, &a.Rating, &a.Note, &a.Layout}
 }
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +198,14 @@ func (s *Service) hPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src * data:; style-src 'unsafe-inline'")
-	w.Write([]byte(render.PreviewPage(a.Title, a.HTML)))
+	body := a.HTML
+	// ?layout= shows this article in another template without saving (only while it is not in a WeChat draft)
+	if l := r.URL.Query().Get("layout"); l != "" && l != a.Layout && render.ValidLayout(l) && a.Status != "pushed" && s.Render != nil {
+		if h, err := s.Render.RenderStored(r.Context(), a.ID, l); err == nil {
+			body = h
+		}
+	}
+	w.Write([]byte(render.PreviewPage(a.Title, body, r.URL.Query().Get("theme") == "dark")))
 }
 
 func (s *Service) hQuota(w http.ResponseWriter, r *http.Request) {

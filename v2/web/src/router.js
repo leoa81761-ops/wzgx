@@ -18,6 +18,7 @@ export const router = createRouter({
         { path: 'accounts', component: U('Accounts') },
         { path: 'accounts/:id', component: U('AccountDetail') },
         { path: 'plans', component: U('Plans') },
+        { path: 'calendar', component: U('Calendar') },
         { path: 'articles', component: U('Articles') },
         { path: 'me', component: U('Me') },
       ],

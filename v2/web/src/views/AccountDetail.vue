@@ -21,6 +21,18 @@
         <span>选题先给我确认<span class="muted"> · 每篇选好题目后先停下，等你点「就写这个」「换一个」或自己改题目（在首页和写作计划页）</span></span></label>
       <div v-if="ctl" class="msg" :class="{ ok: ctl.ok }">{{ ctl.text }}</div>
     </div>
+    <h2>排版</h2>
+    <div class="card" v-if="lay">
+      <p class="muted" style="margin-top:0">只改文章的样子（颜色、小标题、间距），不改文字。换了之后，还没推送到草稿箱的文章会马上重新排版，已推送的不动。表格和配图仍由系统决定。</p>
+      <div class="layouts">
+        <label v-for="l in lay.layouts" :key="l.key" class="layout-opt" :class="{ on: lay.layout === l.key }">
+          <input type="radio" name="layout" :value="l.key" :checked="lay.layout === l.key" @change="setLayout(l.key)" />
+          <b>{{ l.name }}</b><span class="muted">{{ l.note }}</span>
+        </label>
+      </div>
+      <div v-if="layMsg" class="msg" :class="{ ok: layMsg.ok }">{{ layMsg.text }}</div>
+      <p class="muted" style="margin-bottom:0">想先看看效果：在<router-link to="/articles">文章</router-link>页的手机预览上方可以试看各个排版和深色模式。</p>
+    </div>
     <h2>写作设置</h2>
     <div class="card" v-if="p"><ProfileForm :p="p" @save="saveProfile" /></div>
     <h2>栏目</h2>
@@ -40,8 +52,13 @@ import Columns from './Columns.vue'
 const route = useRoute(), router = useRouter()
 const a = ref(null), p = ref(null), err = ref(''), msg = ref(''), ok = ref(false), busy = ref(false), secret = ref(''), ctl = ref(null)
 const base = () => `/api/accounts/${route.params.id}`
+const lay = ref(null), layMsg = ref(null)
+async function setLayout(k) {
+  try { const r = await put(`${base()}/layout`, { layout: k }); lay.value.layout = k; const n = lay.value.layouts.find((l) => l.key === k)?.name; layMsg.value = { ok: true, text: `已换成「${n}」` + (r.rerendered ? `，重新排版了 ${r.rerendered} 篇还没推送的文章` : '') } }
+  catch (e) { layMsg.value = { ok: false, text: e.message } }
+}
 const say = (m, good = false) => { msg.value = m; ok.value = good }
-async function load() { a.value = await get(base()); p.value = await get(`${base()}/profile`) }
+async function load() { a.value = await get(base()); p.value = await get(`${base()}/profile`); lay.value = await get(`${base()}/layout`).catch(() => null) }
 async function check() { busy.value = true; try { await post(`${base()}/check`); await load() } catch (e) { say(e.message) } finally { busy.value = false } }
 async function saveSecret() { try { await patch(base(), { app_secret: secret.value }); secret.value = ''; await check() } catch (e) { say(e.message) } }
 async function saveProfile() { try { p.value = await put(`${base()}/profile`, p.value); say('设置已保存', true) } catch (e) { say(e.message) } }

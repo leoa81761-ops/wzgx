@@ -39,7 +39,25 @@
           <span v-if="fbMsg" :class="fbMsg.ok ? 'ok' : 'bad'" style="margin-left:8px">{{ fbMsg.text }}</span>
         </div>
       </div>
-      <div class="phone"><iframe :src="`/api/articles/${cur.id}/preview`" sandbox="" title="手机预览" /></div>
+      <div>
+        <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
+          <button :class="{ primary: theme === 'light' }" @click="theme = 'light'">浅色</button>
+          <button :class="{ primary: theme === 'dark' }" @click="theme = 'dark'">深色</button>
+          <template v-if="layouts.length && cur.status !== 'pushed'">
+            <span class="muted" style="margin-left:6px">排版</span>
+            <select v-model="tryLayout" style="width:auto">
+              <option v-for="l in layouts" :key="l.key" :value="l.key">{{ l.name }}{{ l.key === cur.layout ? '（当前）' : '' }}</option>
+            </select>
+            <button v-if="tryLayout !== cur.layout" @click="applyLayout" :disabled="busy">用这个排版</button>
+          </template>
+        </div>
+        <div class="phone" :class="{ dark: theme === 'dark' }"><iframe :src="previewURL" sandbox="" title="手机预览" /></div>
+        <p class="muted" style="margin:6px 0 0;max-width:390px">
+          <template v-if="theme === 'dark'">深色是模拟微信深色模式的大致效果，实际以手机为准。</template>
+          <template v-if="tryLayout !== cur.layout && cur.status !== 'pushed'">正在试看「{{ layoutName(tryLayout) }}」，点「用这个排版」会应用到这个公众号，并重新排版还没推送的文章（文字不变）。</template>
+          <template v-if="layoutMsg">{{ layoutMsg }}</template>
+        </p>
+      </div>
     </div>
   </div>
   <div v-if="confirming" class="modal-bg" @click.self="confirming = false">
@@ -57,11 +75,30 @@ import { get, post, put, fmtTime, statusText } from '../api.js'
 const list = ref([]), cur = ref(null), err = ref(''), pushErr = ref(''), confirming = ref(false), busy = ref(false)
 const fb = reactive({ rating: 0, note: '' }), fbMsg = ref(null), fbBusy = ref(false), rbErr = ref('')
 const route = useRoute()
+const theme = ref('light'), layouts = ref([]), tryLayout = ref(''), layoutMsg = ref('')
+const layoutName = (k) => layouts.value.find((l) => l.key === k)?.name || k
+const previewURL = computed(() => {
+  const q = new URLSearchParams()
+  if (theme.value === 'dark') q.set('theme', 'dark')
+  if (tryLayout.value && tryLayout.value !== cur.value.layout) q.set('layout', tryLayout.value)
+  const s = q.toString()
+  return `/api/articles/${cur.value.id}/preview` + (s ? '?' + s : '') + (cur.value._v ? (s ? '&' : '?') + 'v=' + cur.value._v : '')
+})
+async function applyLayout() {
+  busy.value = true
+  try {
+    const r = await put(`/api/accounts/${cur.value.account_id}/layout`, { layout: tryLayout.value })
+    const id = cur.value.id; await open(id); cur.value._v = Date.now()
+    layoutMsg.value = `已换成「${layoutName(r.layout)}」，重新排版了 ${r.rerendered} 篇还没推送的文章。`
+  } catch (e) { layoutMsg.value = e.message } finally { busy.value = false }
+}
 const curAccount = computed(() => list.value.find((a) => a.id === cur.value?.id)?.account_name || '')
 async function load() { list.value = await get('/api/articles') }
 async function open(id) {
   pushErr.value = ''; fbMsg.value = null; rbErr.value = ''
   cur.value = await get(`/api/articles/${id}`)
+  tryLayout.value = cur.value.layout; layoutMsg.value = ''
+  if (!layouts.value.length) layouts.value = (await get(`/api/accounts/${cur.value.account_id}/layout`).catch(() => ({ layouts: [] }))).layouts
   fb.rating = cur.value.rating || 0; fb.note = cur.value.feedback_note || ''
 }
 function readbackText(a) {

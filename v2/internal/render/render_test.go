@@ -55,3 +55,23 @@ func TestTableFit(t *testing.T) {
 		t.Fatal("mixed list")
 	}
 }
+
+func TestLayoutsKeepWords(t *testing.T) {
+	a := Article{Title: "t", Blocks: []Block{{Type: "p", Text: "第一段[1]"}, {Type: "h2", Text: "小标题"},
+		{Type: "list", Items: []string{"甲：一", "乙：二", "丙：三"}}, {Type: "quote", Text: "引用"}}}
+	o := Options{Signature: "签名", Sources: map[int]Source{1: {N: 1, Kind: "national_standard", Title: "GB 1"}}}
+	base := Render(a, o)
+	for _, l := range Layouts {
+		o.Layout = l.Key
+		out := Render(a, o)
+		if out.PlainText != base.PlainText || out.Tables != base.Tables || len(out.Cited) != len(base.Cited) {
+			t.Fatalf("%s changed content", l.Key)
+		}
+		if l.Key != "classic" && out.HTML == base.HTML {
+			t.Fatalf("%s looks the same as classic", l.Key)
+		}
+	}
+	if LayoutByKey("nope").Key != "classic" || ValidLayout("nope") {
+		t.Fatal("unknown layout")
+	}
+}

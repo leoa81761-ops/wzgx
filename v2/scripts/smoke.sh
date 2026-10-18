@@ -53,10 +53,10 @@ curl -fs -b "$JAR" "$B/api/admin/budget" | grep -q '"any_hit":false' || fail "bu
 curl -fs -b "$JAR" "$B/api/admin/orders" >/dev/null || fail "orders"
 curl -fs -b "$JAR" -X PUT -H 'Content-Type: application/json' -d '{"auto_pause_after":3,"daily_cap":50}' "$B/api/admin/settings" | grep -q '"daily_cap":50' || fail "platform cap"
 # the built UI carries the P1-1 and P1-6 screens (no browser: look for their Chinese labels in the bundle)
-for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限; do
+for label in 确认选题 写作控制 文章反馈 平台设置 任务监控 模型花费 订单与开通 同意记录 每日花费上限 内容日历 用这个排版 深色; do
   grep -rqF "$label" web/dist/assets/ || fail "UI label missing: $label"
 done
-for chunk in TopicConfirm Jobs Costs Orders Feedback Settings; do
+for chunk in TopicConfirm Jobs Costs Orders Feedback Settings Calendar; do
   ls web/dist/assets/ | grep -q "^$chunk-.*\.js$" || grep -rqF "$chunk" web/dist/assets/index-*.js || fail "chunk $chunk"
 done
 echo "SMOKE OK"

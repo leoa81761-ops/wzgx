@@ -134,6 +134,7 @@ type Result struct {
 	BlockReason string
 	Trace       []Step
 	Proposal    *Proposal // set when the job stops for topic confirmation
+	Layout      string
 }
 
 var ErrNoColumn = errors.New("这个公众号还没有可用的栏目")
@@ -325,7 +326,8 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	}
 	prof := wc.Profile
 	out := render.Render(art, render.Options{Opening: prof["开头"], Ending: prof["结尾"], Signature: prof["签名"],
-		AILabel: prof["AI标识"] == "on", DefaultImageURL: p.DefaultImageURL, Sources: srcs})
+		AILabel: prof["AI标识"] == "on", DefaultImageURL: p.DefaultImageURL, Sources: srcs, Layout: wc.Layout})
+	res.Layout = render.LayoutByKey(wc.Layout).Key
 
 	res.Status, res.BlockReason = "ready", block
 	if block != "" {
@@ -460,8 +462,8 @@ func (p *Pipeline) sensitive(ctx context.Context) []string {
 func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int64, bool, error) {
 	var w writingContext
 	var tier string
-	err := p.DB.QueryRow(ctx, `SELECT u.tier, a.name FROM wx_account a JOIN users u ON u.id=a.user_id WHERE a.id=$1 AND a.user_id=$2`,
-		j.AccountID, j.UserID).Scan(&tier, &w.AccountName)
+	err := p.DB.QueryRow(ctx, `SELECT u.tier, a.name, a.layout FROM wx_account a JOIN users u ON u.id=a.user_id WHERE a.id=$1 AND a.user_id=$2`,
+		j.AccountID, j.UserID).Scan(&tier, &w.AccountName, &w.Layout)
 	if err != nil {
 		return w, "", 0, false, fmt.Errorf("读取公众号：%w", err)
 	}
@@ -549,9 +551,9 @@ func (p *Pipeline) save(ctx context.Context, j Job, colID int64, topic, topicKin
 		jobID = j.ID
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic, topic_kind)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,'')) RETURNING id`,
-		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic, topicKind).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO article (job_id, user_id, account_id, column_id, title, alt_titles, summary, body_json, html, status, block_reason, topic, topic_kind, layout)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,''),$14) RETURNING id`,
+		jobID, j.UserID, j.AccountID, colID, a.Title, alts, a.Summary, body, out.HTML, res.Status, res.BlockReason, topic, topicKind, res.Layout).Scan(&id)
 	if err != nil {
 		return 0, err
 	}

@@ -43,6 +43,7 @@ type Options struct {
 	AILabel                    bool
 	DefaultImageURL            string
 	Sources                    map[int]Source // official sources only, by evidence number
+	Layout                     string         // layout key; empty = classic
 }
 
 type Output struct {
@@ -53,17 +54,84 @@ type Output struct {
 	PlainText string
 }
 
-const (
-	stH2    = `margin:28px 0 12px;font-size:18px;font-weight:bold;color:#222;`
-	stP     = `margin:0 0 16px;font-size:16px;line-height:1.8;color:#333;`
-	stList  = `margin:0 0 16px;padding-left:22px;font-size:16px;line-height:1.8;color:#333;`
-	stQuote = `margin:0 0 16px;padding:10px 14px;border-left:3px solid #ccc;background:#f7f7f7;color:#555;font-size:15px;line-height:1.7;`
-	stTable = `width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px;`
-	stTd    = `border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top;`
-	stTh    = `border:1px solid #ddd;padding:6px 8px;text-align:left;background:#f2f2f2;font-weight:bold;`
-	stImg   = `margin:0 0 16px;text-align:center;`
-	stSmall = `margin:24px 0 0;font-size:13px;line-height:1.7;color:#888;`
-)
+// Layout is a set of inline styles. The layout changes only how the article looks; the words,
+// the order of blocks and the table / image decisions stay the same.
+type Layout struct {
+	Key, Name, Note                                             string
+	H2, P, List, Quote, Table, Td, Th, Img, Small, Caption, Sig string
+}
+
+// Layouts: a few clean templates; "classic" is the default and matches the original look.
+var Layouts = []Layout{
+	{Key: "classic", Name: "经典", Note: "黑灰正文，简洁小标题，适合大多数号",
+		H2:      `margin:28px 0 12px;font-size:18px;font-weight:bold;color:#222;`,
+		P:       `margin:0 0 16px;font-size:16px;line-height:1.8;color:#333;`,
+		List:    `margin:0 0 16px;padding-left:22px;font-size:16px;line-height:1.8;color:#333;`,
+		Quote:   `margin:0 0 16px;padding:10px 14px;border-left:3px solid #ccc;background:#f7f7f7;color:#555;font-size:15px;line-height:1.7;`,
+		Table:   `width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px;`,
+		Td:      `border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top;`,
+		Th:      `border:1px solid #ddd;padding:6px 8px;text-align:left;background:#f2f2f2;font-weight:bold;`,
+		Img:     `margin:0 0 16px;text-align:center;`,
+		Small:   `margin:24px 0 0;font-size:13px;line-height:1.7;color:#888;`,
+		Caption: `font-size:13px;color:#999;margin:6px 0 0;`,
+		Sig:     `text-align:right;color:#666;`},
+	{Key: "fresh", Name: "清新", Note: "绿色小标题竖条，适合生活、健康类",
+		H2:      `margin:30px 0 14px;padding-left:10px;border-left:4px solid #3a9d6a;font-size:18px;font-weight:bold;color:#1f5f3f;line-height:1.4;`,
+		P:       `margin:0 0 16px;font-size:16px;line-height:1.85;color:#333;letter-spacing:0.5px;`,
+		List:    `margin:0 0 16px;padding-left:22px;font-size:16px;line-height:1.85;color:#333;`,
+		Quote:   `margin:0 0 16px;padding:12px 14px;border-radius:6px;background:#eef7f1;color:#2f5d45;font-size:15px;line-height:1.75;`,
+		Table:   `width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px;`,
+		Td:      `border:1px solid #d5e9dc;padding:7px 8px;text-align:left;vertical-align:top;`,
+		Th:      `border:1px solid #d5e9dc;padding:7px 8px;text-align:left;background:#e3f2e8;color:#1f5f3f;font-weight:bold;`,
+		Img:     `margin:0 0 18px;text-align:center;`,
+		Small:   `margin:26px 0 0;font-size:13px;line-height:1.7;color:#8a9a90;`,
+		Caption: `font-size:13px;color:#8a9a90;margin:6px 0 0;`,
+		Sig:     `text-align:right;color:#3a9d6a;`},
+	{Key: "warm", Name: "暖色", Note: "暖橙色居中小标题，适合家庭、情感类",
+		H2:      `margin:32px 0 16px;padding-bottom:6px;border-bottom:2px solid #e8a65d;text-align:center;font-size:18px;font-weight:bold;color:#8a4b14;`,
+		P:       `margin:0 0 16px;font-size:16px;line-height:1.9;color:#3d3530;`,
+		List:    `margin:0 0 16px;padding-left:22px;font-size:16px;line-height:1.9;color:#3d3530;`,
+		Quote:   `margin:0 0 16px;padding:12px 16px;background:#fdf3e7;border-left:3px solid #e8a65d;color:#6b4a2b;font-size:15px;line-height:1.8;`,
+		Table:   `width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px;`,
+		Td:      `border:1px solid #f0dcc4;padding:7px 8px;text-align:left;vertical-align:top;`,
+		Th:      `border:1px solid #f0dcc4;padding:7px 8px;text-align:left;background:#fbe9d4;color:#8a4b14;font-weight:bold;`,
+		Img:     `margin:0 0 18px;text-align:center;`,
+		Small:   `margin:26px 0 0;font-size:13px;line-height:1.7;color:#a08c7a;`,
+		Caption: `font-size:13px;color:#a08c7a;margin:6px 0 0;`,
+		Sig:     `text-align:center;color:#8a4b14;`},
+	{Key: "plain", Name: "素雅", Note: "大留白、深灰细字，适合资讯、技术类",
+		H2:      `margin:34px 0 14px;font-size:17px;font-weight:bold;color:#111;letter-spacing:1px;`,
+		P:       `margin:0 0 18px;font-size:15px;line-height:2;color:#444;letter-spacing:0.5px;`,
+		List:    `margin:0 0 18px;padding-left:20px;font-size:15px;line-height:2;color:#444;`,
+		Quote:   `margin:0 0 18px;padding:4px 0 4px 14px;border-left:2px solid #999;color:#666;font-size:15px;line-height:1.9;`,
+		Table:   `width:100%;border-collapse:collapse;margin:0 0 18px;font-size:14px;`,
+		Td:      `border-bottom:1px solid #e5e5e5;padding:8px 6px;text-align:left;vertical-align:top;`,
+		Th:      `border-bottom:2px solid #333;padding:8px 6px;text-align:left;font-weight:bold;color:#111;`,
+		Img:     `margin:0 0 20px;text-align:center;`,
+		Small:   `margin:28px 0 0;font-size:12px;line-height:1.8;color:#999;`,
+		Caption: `font-size:12px;color:#999;margin:6px 0 0;`,
+		Sig:     `text-align:right;color:#777;`},
+}
+
+// LayoutByKey returns the layout, or the default one for an unknown key.
+func LayoutByKey(k string) Layout {
+	for _, l := range Layouts {
+		if l.Key == k {
+			return l
+		}
+	}
+	return Layouts[0]
+}
+
+// ValidLayout reports whether k names a layout.
+func ValidLayout(k string) bool {
+	for _, l := range Layouts {
+		if l.Key == k {
+			return true
+		}
+	}
+	return false
+}
 
 var citeRe = regexp.MustCompile(`\[(\d{1,2})\]`)
 
@@ -105,6 +173,7 @@ func Render(a Article, o Options) Output {
 	out := Output{}
 	cited := map[int]bool{}
 	var plain strings.Builder
+	L := LayoutByKey(o.Layout)
 
 	inline := func(s string) string {
 		plain.WriteString(s + "\n")
@@ -125,7 +194,7 @@ func Render(a Article, o Options) Output {
 	}
 	para := func(s string) {
 		if strings.TrimSpace(s) != "" {
-			fmt.Fprintf(&b, `<p style="%s">%s</p>`, stP, inline(s))
+			fmt.Fprintf(&b, `<p style="%s">%s</p>`, L.P, inline(s))
 		}
 	}
 	image := func(caption string) {
@@ -133,21 +202,21 @@ func Render(a Article, o Options) Output {
 			return
 		}
 		out.Images++
-		fmt.Fprintf(&b, `<section style="%s"><img src="%s" alt="%s" style="max-width:100%%;"/>`, stImg, html.EscapeString(o.DefaultImageURL), html.EscapeString(caption))
+		fmt.Fprintf(&b, `<section style="%s"><img src="%s" alt="%s" style="max-width:100%%;"/>`, L.Img, html.EscapeString(o.DefaultImageURL), html.EscapeString(caption))
 		if caption != "" {
-			fmt.Fprintf(&b, `<p style="font-size:13px;color:#999;margin:6px 0 0;">%s</p>`, html.EscapeString(caption))
+			fmt.Fprintf(&b, `<p style="%s">%s</p>`, L.Caption, html.EscapeString(caption))
 		}
 		b.WriteString(`</section>`)
 	}
 	table := func(rows [][]string, header bool) {
 		out.Tables++
-		fmt.Fprintf(&b, `<table style="%s">`, stTable)
+		fmt.Fprintf(&b, `<table style="%s">`, L.Table)
 		for i, r := range rows {
 			b.WriteString("<tr>")
 			for _, c := range r {
-				st, tag := stTd, "td"
+				st, tag := L.Td, "td"
 				if header && i == 0 {
-					st, tag = stTh, "th"
+					st, tag = L.Th, "th"
 				}
 				fmt.Fprintf(&b, `<%s style="%s">%s</%s>`, tag, st, inline(c), tag)
 			}
@@ -173,14 +242,14 @@ func Render(a Article, o Options) Output {
 				image("")
 			}
 			if t := strings.TrimSpace(bl.Text); t != "" {
-				fmt.Fprintf(&b, `<h2 style="%s">%s</h2>`, stH2, inline(t))
+				fmt.Fprintf(&b, `<h2 style="%s">%s</h2>`, L.H2, inline(t))
 			}
 		case "list":
 			if rows, ok := TableFit(bl.Items); ok {
 				table(append([][]string{{"项目", "说明"}}, rows...), true)
 				continue
 			}
-			fmt.Fprintf(&b, `<ul style="%s">`, stList)
+			fmt.Fprintf(&b, `<ul style="%s">`, L.List)
 			for _, it := range bl.Items {
 				if strings.TrimSpace(it) != "" {
 					fmt.Fprintf(&b, `<li>%s</li>`, inline(it))
@@ -191,14 +260,14 @@ func Render(a Article, o Options) Output {
 			if validTable(bl.Rows) {
 				table(bl.Rows, true)
 			} else { // not a real table: show as a list
-				fmt.Fprintf(&b, `<ul style="%s">`, stList)
+				fmt.Fprintf(&b, `<ul style="%s">`, L.List)
 				for _, r := range bl.Rows {
 					fmt.Fprintf(&b, `<li>%s</li>`, inline(strings.Join(r, "，")))
 				}
 				b.WriteString(`</ul>`)
 			}
 		case "quote":
-			fmt.Fprintf(&b, `<blockquote style="%s">%s</blockquote>`, stQuote, inline(bl.Text))
+			fmt.Fprintf(&b, `<blockquote style="%s">%s</blockquote>`, L.Quote, inline(bl.Text))
 		case "image":
 			image(bl.Caption)
 		default:
@@ -207,10 +276,10 @@ func Render(a Article, o Options) Output {
 	}
 	para(o.Ending)
 	if s := strings.TrimSpace(o.Signature); s != "" {
-		fmt.Fprintf(&b, `<p style="%stext-align:right;color:#666;">%s</p>`, stP, html.EscapeString(s))
+		fmt.Fprintf(&b, `<p style="%s%s">%s</p>`, L.P, L.Sig, html.EscapeString(s))
 	}
 	if len(out.Cited) > 0 {
-		fmt.Fprintf(&b, `<section style="%s"><p style="margin:0 0 4px;">依据</p>`, stSmall)
+		fmt.Fprintf(&b, `<section style="%s"><p style="margin:0 0 4px;">依据</p>`, L.Small)
 		for _, s := range out.Cited {
 			line := s.Title
 			if s.DocNumber != "" && !strings.Contains(line, s.DocNumber) {
@@ -227,17 +296,25 @@ func Render(a Article, o Options) Output {
 		b.WriteString(`</section>`)
 	}
 	if o.AILabel {
-		fmt.Fprintf(&b, `<p style="%s">本文由 AI 辅助生成</p>`, stSmall)
+		fmt.Fprintf(&b, `<p style="%s">本文由 AI 辅助生成</p>`, L.Small)
 	}
 	out.HTML = b.String()
 	out.PlainText = plain.String()
 	return out
 }
 
-// PreviewPage wraps rendered HTML in a phone-width page for local preview.
-func PreviewPage(title, body string) string {
+// PreviewPage wraps rendered HTML in a phone-width page for local preview. dark approximates
+// WeChat's dark mode, which recolours the article itself: light backgrounds turn dark and dark text
+// turns light, while pictures keep their colours.
+func PreviewPage(title, body string, dark bool) string {
+	bg, h1 := "#fff", "#111"
+	wrap := ""
+	if dark {
+		bg = "#191919"
+		wrap = `<style>.dk{filter:invert(0.9) hue-rotate(180deg);background:#fff}.dk img{filter:invert(1) hue-rotate(180deg)}</style>`
+	}
 	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
-		`<title>` + html.EscapeString(title) + `</title></head><body style="margin:0;background:#fff;">` +
-		`<div style="max-width:420px;margin:0 auto;background:#fff;padding:20px 16px;">` +
-		`<h1 style="font-size:22px;line-height:1.4;margin:0 0 20px;color:#111;">` + html.EscapeString(title) + `</h1>` + body + `</div></body></html>`
+		`<title>` + html.EscapeString(title) + `</title>` + wrap + `</head><body style="margin:0;background:` + bg + `;">` +
+		`<div class="dk" style="max-width:420px;margin:0 auto;padding:20px 16px;">` +
+		`<h1 style="font-size:22px;line-height:1.4;margin:0 0 20px;color:` + h1 + `;">` + html.EscapeString(title) + `</h1>` + body + `</div></body></html>`
 }
