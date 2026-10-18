@@ -255,7 +255,7 @@ func (s *Service) hCosts(w http.ResponseWriter, r *http.Request) {
 		return out, rows.Err()
 	}
 	byConfig, err := q(`SELECT COALESCE(m.config_id::text,'-'), COALESCE(c.name,'（已删除）') || COALESCE(' · ' || NULLIF(c.model,''),''), count(*),
-		sum(m.tokens_in), sum(m.tokens_out), sum(m.cost)::float8, bool_or(c.price_in_per_m IS NOT NULL OR c.price_out_per_m IS NOT NULL)
+		sum(m.tokens_in), sum(m.tokens_out), sum(m.cost)::float8, bool_or(c.price_in_per_m IS NOT NULL OR c.price_out_per_m IS NOT NULL OR c.price_per_image IS NOT NULL)
 		FROM model_call m LEFT JOIN service_config c ON c.id=m.config_id WHERE m.created_at >= $1 GROUP BY 1,2 ORDER BY 6 DESC, 4 DESC`)
 	if err != nil {
 		fail(w, err)

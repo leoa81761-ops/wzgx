@@ -104,7 +104,8 @@ func (r PGRecorder) Record(ctx context.Context, stage string, jobID int64, a Att
 	_, err := r.DB.Exec(context.WithoutCancel(ctx), `INSERT INTO model_call (job_id, stage, config_id, model, effort, attempt, outcome,
 		first_byte_ms, total_ms, finish_reason, tokens_in, tokens_out, error, cost)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-		  COALESCE((SELECT ($11::int * COALESCE(price_in_per_m,0) + $12::int * COALESCE(price_out_per_m,0)) / 1000000 FROM service_config WHERE id=$3), 0))`,
+		  COALESCE((SELECT ($11::int * COALESCE(price_in_per_m,0) + $12::int * COALESCE(price_out_per_m,0)) / 1000000
+		    + CASE WHEN kind='image' AND $7='ok' THEN COALESCE(price_per_image,0) ELSE 0 END FROM service_config WHERE id=$3), 0))`,
 		job, stage, a.ConfigID, a.Model, a.Effort, a.N, string(a.Outcome), fb, a.TotalMs, a.Finish, a.TokensIn, a.TokensOut, a.Err)
 	if err != nil && r.Log != nil {
 		r.Log.Warn("model_call insert failed", "err", err)

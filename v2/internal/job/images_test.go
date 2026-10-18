@@ -221,6 +221,22 @@ func TestImages(t *testing.T) {
 	if fi.calls() != before+1 || a["cover_url"] == "" {
 		t.Fatal("tier switch ignored")
 	}
+
+	// per-image price: image spend counts toward the config's daily cap; over it, pictures are skipped
+	if code, _, b := do(t, e.srv, "PUT", fmt.Sprintf("/api/admin/configs/%v/pricing", imgID), root, map[string]any{"price_per_image": 0.7, "daily_cap": 0.5}); code != 200 || !strings.Contains(b, `"price_per_image":0.7`) {
+		t.Fatal(b)
+	}
+	e.fm.set("topic", "", `{"cover":"晾衣架","images":[]}`)
+	a = e.gen1(gen, "阴天衣服怎么晾")
+	var spent float64
+	e.pool.QueryRow(ctx, `SELECT COALESCE(sum(cost),0)::float8 FROM model_call WHERE config_id=$1`, imgID).Scan(&spent)
+	if fi.calls() != before+2 || spent < 0.69 || spent > 0.71 {
+		t.Fatalf("priced image: calls %d spent %v", fi.calls()-before, spent)
+	}
+	a = e.gen1(gen, "阴天衣服怎么晾才不臭")
+	if fi.calls() != before+2 || a["cover_url"] != "" {
+		t.Fatal("image cap ignored")
+	}
 }
 
 func (e *env) gen1(f func(string) map[string]any, topic string) map[string]any { return f(topic) }
