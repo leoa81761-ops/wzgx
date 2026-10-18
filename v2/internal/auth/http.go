@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -91,14 +93,85 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-func clientIP(r *http.Request) string {
-	if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
-		first, _, _ := strings.Cut(xf, ",")
-		return strings.TrimSpace(first)
+// DefaultTrustedProxies: loopback and the private ranges docker networks use.
+const DefaultTrustedProxies = "127.0.0.0/8,::1/128,172.16.0.0/12"
+
+var trustedProxies = mustPrefixes(DefaultTrustedProxies)
+
+// SetTrustedProxies sets the proxies whose X-Forwarded-For is believed (comma-separated CIDRs or IPs).
+func SetTrustedProxies(list string) error {
+	ps, err := parsePrefixes(list)
+	if err != nil {
+		return err
 	}
+	trustedProxies = ps
+	return nil
+}
+
+func parsePrefixes(list string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.Split(list, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if !strings.Contains(f, "/") {
+			a, err := netip.ParseAddr(f)
+			if err != nil {
+				return nil, fmt.Errorf("trusted proxy %q: %w", f, err)
+			}
+			out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
+			continue
+		}
+		p, err := netip.ParsePrefix(f)
+		if err != nil {
+			return nil, fmt.Errorf("trusted proxy %q: %w", f, err)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
+}
+
+func mustPrefixes(list string) []netip.Prefix {
+	ps, err := parsePrefixes(list)
+	if err != nil {
+		panic(err)
+	}
+	return ps
+}
+
+func trusted(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, p := range trustedProxies {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP: the remote address, unless it is a trusted proxy; then X-Forwarded-For is read from
+// the right, skipping trusted hops, and the first untrusted address is the client.
+func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	remote, err := netip.ParseAddr(host)
+	if err != nil || !trusted(remote) {
+		return host
+	}
+	hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		h := strings.TrimSpace(hops[i])
+		a, err := netip.ParseAddr(h)
+		if err != nil {
+			break // garbage: stop believing the header
+		}
+		if !trusted(a) {
+			return a.Unmap().String()
+		}
+		host = a.Unmap().String()
 	}
 	return host
 }

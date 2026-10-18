@@ -24,6 +24,8 @@ type Config struct {
 	ReadBackAfter   time.Duration // V2_READBACK_AFTER, first draft read-back after a push (default 2h; local walk-throughs use a minute)
 	TavilyBase      string        // V2_TAVILY_BASE, Tavily API base URL (default https://api.tavily.com; local tests use a fake)
 	WeChatBase      string        // V2_WECHAT_BASE, WeChat API base URL (default https://api.weixin.qq.com; local tests use a fake)
+	TrustedProxies  string        // V2_TRUSTED_PROXIES, CIDRs whose X-Forwarded-For is believed (default loopback + docker 172.16.0.0/12)
+	AutoPublish     bool          // V2_AUTOPUBLISH=on enables the auto-publish worker (default off: nothing is ever published)
 
 	// Optional first super admin, created only when no super admin exists.
 	BootstrapAdminEmail    string // V2_BOOTSTRAP_ADMIN_EMAIL
@@ -45,6 +47,8 @@ func load(get func(string) string) (Config, error) {
 		ServerIP:               get("V2_SERVER_IP"),
 		WeChatBase:             get("V2_WECHAT_BASE"),
 		TavilyBase:             get("V2_TAVILY_BASE"),
+		TrustedProxies:         or(get("V2_TRUSTED_PROXIES"), "127.0.0.0/8,::1/128,172.16.0.0/12"),
+		AutoPublish:            get("V2_AUTOPUBLISH") == "on",
 		BootstrapAdminEmail:    get("V2_BOOTSTRAP_ADMIN_EMAIL"),
 		BootstrapAdminPassword: get("V2_BOOTSTRAP_ADMIN_PASSWORD"),
 	}

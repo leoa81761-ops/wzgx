@@ -551,9 +551,24 @@ func (s *Service) hMyInvite(w http.ResponseWriter, r *http.Request) {
 	server.WriteJSON(w, 200, map[string]any{"code": *code, "bonus_per_invite": *st.InviteBonus, "bonus_articles": bonusLeft, "invites": list})
 }
 
-// GrowthTick: periodic work for invites and deletions.
+// RefundBonuses gives a bonus article back when the job that spent it was cancelled or failed.
+// Each job refunds at most once (used_bonus is cleared in the same statement).
+func (s *Service) RefundBonuses(ctx context.Context) (int, error) {
+	var n int
+	err := s.DB.QueryRow(ctx, `WITH r AS (
+			UPDATE job SET used_bonus=FALSE WHERE used_bonus AND status IN ('failed','cancelled') RETURNING user_id
+		), c AS (SELECT user_id, count(*) AS n FROM r GROUP BY user_id),
+		u AS (UPDATE users SET bonus_articles=bonus_articles + c.n FROM c WHERE users.id=c.user_id AND users.deleted_at IS NULL RETURNING c.n)
+		SELECT COALESCE(sum(n),0) FROM c`).Scan(&n)
+	return n, err
+}
+
+// GrowthTick: periodic work for invites, bonus refunds and deletions.
 func (s *Service) GrowthTick(ctx context.Context) error {
 	if err := s.RewardInvites(ctx); err != nil {
+		return err
+	}
+	if _, err := s.RefundBonuses(ctx); err != nil {
 		return err
 	}
 	return s.PurgeDeleted(ctx)

@@ -191,3 +191,33 @@ func TestOperatorsBySuperAdminOnly(t *testing.T) {
 }
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+func TestClientIPTrustedProxies(t *testing.T) {
+	defer SetTrustedProxies(DefaultTrustedProxies)
+	if err := SetTrustedProxies("10.0.0.0/8, 127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if SetTrustedProxies("nope") == nil {
+		t.Fatal("bad CIDR accepted")
+	}
+	SetTrustedProxies("10.0.0.0/8, 127.0.0.1")
+	cases := []struct{ remote, xff, want string }{
+		{"203.0.113.5:1234", "1.2.3.4", "203.0.113.5"},               // not a proxy: header ignored
+		{"127.0.0.1:1234", "198.51.100.7", "198.51.100.7"},           // trusted proxy
+		{"127.0.0.1:1234", "6.6.6.6, 198.51.100.7", "198.51.100.7"},  // spoofed left hop ignored
+		{"127.0.0.1:1234", "198.51.100.7, 10.1.2.3", "198.51.100.7"}, // chain of trusted proxies
+		{"127.0.0.1:1234", "", "127.0.0.1"},                          // no header
+		{"127.0.0.1:1234", "junk, 198.51.100.7", "198.51.100.7"},
+		{"[::ffff:127.0.0.1]:1", "198.51.100.8", "198.51.100.8"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := ClientIP(r); got != c.want {
+			t.Errorf("%s %q: got %s want %s", c.remote, c.xff, got, c.want)
+		}
+	}
+}

@@ -136,6 +136,18 @@ func TestGrowth(t *testing.T) {
 	if bonus != 1 || !used {
 		t.Fatalf("bonus left %d used %v", bonus, used)
 	}
+	// cancelled (or failed) -> the bonus article comes back, once
+	var jid int64
+	e.pool.QueryRow(ctx, `SELECT id FROM job ORDER BY id DESC LIMIT 1`).Scan(&jid)
+	if code, _, b := do(t, e.srv, "POST", fmt.Sprintf("/api/admin/jobs/%d/cancel", jid), root, nil); code != 200 {
+		t.Fatal(b)
+	}
+	e.jobs.GrowthTick(ctx)
+	e.jobs.GrowthTick(ctx)
+	e.pool.QueryRow(ctx, `SELECT bonus_articles FROM users WHERE id=$1`, uid).Scan(&bonus)
+	if bonus != 2 {
+		t.Fatalf("bonus not refunded once: %d", bonus)
+	}
 
 	// export: everything of the user, no secrets
 	code, ex, raw := do(t, e.srv, "GET", "/api/me/export", user, nil)

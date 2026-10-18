@@ -24,6 +24,9 @@ import (
 
 // registerFeatures mounts feature packages.
 func registerFeatures(ctx context.Context, srv *server.Server, pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) error {
+	if err := auth.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		return err
+	}
 	authSvc := auth.NewService(auth.NewPGStore(pool), cfg.SessionTTL)
 	if created, err := authSvc.Bootstrap(ctx, cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword); err != nil {
 		return err

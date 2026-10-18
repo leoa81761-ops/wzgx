@@ -131,6 +131,7 @@ const research = `{"facts":[
 
 func setup(t *testing.T) (*env, string, string, int64, int64) {
 	pool := testdb.Open(t)
+	auth.SetTrustedProxies("192.0.2.0/24,127.0.0.0/8") // httptest requests come from 192.0.2.1
 	ctx := context.Background()
 	box, _ := crypto.NewBox("0123456789abcdef0123456789abcdef")
 	as := auth.NewService(auth.NewPGStore(pool), time.Hour)
