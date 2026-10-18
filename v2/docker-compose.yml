@@ -19,6 +19,9 @@ services:
     build:
       context: .
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.org}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
         COMMIT: ${COMMIT:-dev}
         BUILT_AT: ${BUILT_AT:-}
     restart: unless-stopped
