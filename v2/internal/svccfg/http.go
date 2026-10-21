@@ -3,8 +3,10 @@ package svccfg
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"gonghao/internal/auth"
 	"gonghao/internal/server"
@@ -14,6 +16,8 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	staff := func(f http.HandlerFunc) http.Handler { return h.Require(auth.StaffOnly, f) }
 	root := func(f http.HandlerFunc) http.Handler { return h.Require(auth.SuperAdminOnly, f) }
 	srv.Handle("GET /api/admin/configs", staff(s.hList))
+	srv.Handle("GET /api/admin/configs/export", root(s.hExport))
+	srv.Handle("POST /api/admin/configs/import", root(s.hImport))
 	srv.Handle("GET /api/admin/configs/{id}", staff(s.hGet))
 	srv.Handle("POST /api/admin/configs", root(s.hSave))
 	srv.Handle("PUT /api/admin/configs/{id}", root(s.hSave))
@@ -110,5 +114,25 @@ func (s *Service) hPricing(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		out, err := s.SavePricing(r.Context(), actor(r), id, p)
 		reply(w, 200, out, err)
+	}
+}
+
+func (s *Service) hExport(w http.ResponseWriter, r *http.Request) {
+	data, err := s.Export(r.Context(), actor(r))
+	if err != nil {
+		reply(w, 500, nil, err)
+		return
+	}
+	filename := fmt.Sprintf("gonghao-config-%s.json", time.Now().Format("20060102-150405"))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	server.WriteJSON(w, 200, data)
+}
+
+func (s *Service) hImport(w http.ResponseWriter, r *http.Request) {
+	var in ExportData
+	if decode(w, r, &in) {
+		res, err := s.Import(r.Context(), actor(r), in)
+		reply(w, 200, res, err)
 	}
 }

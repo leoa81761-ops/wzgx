@@ -9,7 +9,7 @@
       <router-link to="/admin/complaints">投诉处理</router-link>
       <router-link to="/admin/jobs">任务监控</router-link>
       <router-link to="/admin/costs">模型花费</router-link>
-      <router-link to="/admin/types">文章类型</router-link>
+      <router-link to="/admin/types">栏目类型 (文章类型)</router-link>
       <router-link to="/admin/configs">模型配置</router-link>
       <router-link to="/admin/routes">环节路由</router-link>
       <router-link v-if="isRoot" to="/admin/operators">运营人员</router-link>

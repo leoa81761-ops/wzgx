@@ -1,7 +1,7 @@
 <template>
   <h1>模型配置</h1>
   <p class="muted" v-if="!isRoot">运营人员只能查看；修改需要超级管理员。</p>
-  <p class="muted" v-else>密钥只写不读：保存后只显示前后几位；留空表示不修改。接口需兼容 OpenAI（或选 Anthropic 协议）。</p>
+  <p class="muted" v-else>密钥只写不读：保存后只显示前后几位；留空表示不修改。接口需兼容 OpenAI（或选 Anthropic 协议）。支持一键导出和导入全站配置。</p>
   <div v-if="msg" class="msg" :class="{ ok }">{{ msg }}</div>
   <table>
     <tr><th>名称</th><th>模型</th><th>推理强度</th><th>密钥</th><th>超时（首字/空闲/总）</th><th>单价（元/百万 tokens 或每张）</th><th>每日上限</th><th>启用</th><th class="act"></th></tr>
@@ -15,7 +15,14 @@
       <td class="act"><div class="row" v-if="isRoot"><button @click="edit(c)">编辑</button><button @click="test(c)" :disabled="busy">连接测试</button></div></td>
     </tr>
   </table>
-  <button v-if="isRoot" style="margin-top:10px" @click="edit(null)">新增配置</button>
+  <div class="row" v-if="isRoot" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+    <button class="primary" @click="edit(null)">新增配置</button>
+    <button @click="exportConfigs" :disabled="busy">📤 导出全部配置</button>
+    <label class="btn-import" :class="{ disabled: busy }">
+      <input type="file" accept=".json" @change="importConfigs" style="display:none" :disabled="busy" />
+      📥 导入配置
+    </label>
+  </div>
   <div v-if="testOut" class="card" style="margin-top:12px"><b>{{ testOut.ok ? '连接正常' : '连接失败' }}</b>
     <div class="muted">{{ testOut.model }} {{ testOut.error }}</div><div>{{ testOut.reply }}</div>
     <img v-if="testOut.image" :src="testOut.image" alt="测试图片" style="max-width:360px;margin-top:8px;border-radius:4px" /></div>
@@ -76,5 +83,65 @@ async function save() {
   } catch (e) { say(e.message) }
 }
 async function test(c) { busy.value = true; testOut.value = null; try { testOut.value = await post(`/api/admin/configs/${c.id}/test`) } catch (e) { say(e.message) } finally { busy.value = false } }
+
+async function exportConfigs() {
+  busy.value = true
+  try {
+    const data = await get('/api/admin/configs/export')
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `gonghao-configs-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    say('配置导出成功！', true)
+  } catch (e) {
+    say('导出失败：' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function importConfigs(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  busy.value = true
+  try {
+    const text = await file.text()
+    const json = JSON.parse(text)
+    const res = await post('/api/admin/configs/import', json)
+    await load()
+    say(`配置导入成功！已处理 ${res.configs_count || 0} 个模型配置、${res.routes_count || 0} 条环节路由、${res.types_count || 0} 种栏目类型、${res.settings_count || 0} 项平台设置。`, true)
+  } catch (e) {
+    say('导入失败：' + e.message)
+  } finally {
+    busy.value = false
+    e.target.value = ''
+  }
+}
+
 onMounted(() => load().catch((e) => say(e.message)))
 </script>
+<style scoped>
+.btn-import {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border: 1px solid var(--line, #ccc);
+  border-radius: 4px;
+  background: var(--btn-bg, #f5f5f5);
+  cursor: pointer;
+  font-size: 14px;
+}
+.btn-import:hover {
+  background: var(--btn-hover, #eee);
+}
+.btn-import.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+</style>

@@ -20,6 +20,7 @@ var (
 // "（来源：标题｜文号｜日期）" tail. Lines without a source are kept as facts with no title.
 // Returns nothing when the model says it found nothing.
 func ParseFacts(text string) []Evidence {
+	text = thinkRe.ReplaceAllString(text, "")
 	text = strings.TrimSpace(text)
 	if text == "" || strings.Contains(text, "未检索到可靠来源") && len([]rune(text)) < 40 {
 		return nil

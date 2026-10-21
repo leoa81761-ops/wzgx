@@ -500,3 +500,307 @@ func (s *Service) testImage(ctx context.Context, actor auth.User, id int64, c ga
 	s.Audit.Log(ctx, actor.ID, "config.test", c.Name, map[string]any{"id": id, "ok": out.OK, "attempts": len(out.Attempts)})
 	return out, nil
 }
+
+// ---------- Export & Import (Super Admin) ----------
+
+type ExportData struct {
+	Version          string                     `json:"version"`
+	ExportedAt       time.Time                  `json:"exported_at"`
+	Configs          []ExportConfig             `json:"configs"`
+	Routes           []ExportRoute              `json:"routes"`
+	ArticleTypes     []ExportArticleType        `json:"article_types,omitempty"`
+	PlatformSettings map[string]json.RawMessage `json:"platform_settings,omitempty"`
+}
+
+type ExportConfig struct {
+	Kind            string          `json:"kind"`
+	Name            string          `json:"name"`
+	Protocol        string          `json:"protocol"`
+	BaseURL         string          `json:"base_url"`
+	APIKey          string          `json:"api_key,omitempty"`
+	Model           string          `json:"model"`
+	ReasoningEffort string          `json:"reasoning_effort"`
+	Params          json.RawMessage `json:"params"`
+	FirstByteS      int             `json:"first_byte_timeout_s"`
+	IdleS           int             `json:"idle_timeout_s"`
+	TotalS          int             `json:"total_timeout_s"`
+	Priority        int             `json:"priority"`
+	Enabled         bool            `json:"enabled"`
+	PriceIn         *float64        `json:"price_in_per_m,omitempty"`
+	PriceOut        *float64        `json:"price_out_per_m,omitempty"`
+	DailyCap        *float64        `json:"daily_cap,omitempty"`
+	PricePerImage   *float64        `json:"price_per_image,omitempty"`
+}
+
+type ExportRoute struct {
+	Stage       string   `json:"stage"`
+	Tier        string   `json:"tier"`
+	ConfigNames []string `json:"config_names"`
+}
+
+type ExportArticleType struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	NeedsNews   bool   `json:"needs_news"`
+	Research    bool   `json:"research"`
+	Enabled     bool   `json:"enabled"`
+	Sort        int    `json:"sort"`
+}
+
+type ImportResult struct {
+	ConfigsCount  int `json:"configs_count"`
+	RoutesCount   int `json:"routes_count"`
+	TypesCount    int `json:"types_count"`
+	SettingsCount int `json:"settings_count"`
+}
+
+func (s *Service) Export(ctx context.Context, actor auth.User) (ExportData, error) {
+	if actor.Role != auth.RoleSuperAdmin {
+		return ExportData{}, ErrForbidden
+	}
+	out := ExportData{
+		Version:          "2.0",
+		ExportedAt:       time.Now(),
+		Configs:          []ExportConfig{},
+		Routes:           []ExportRoute{},
+		ArticleTypes:     []ExportArticleType{},
+		PlatformSettings: map[string]json.RawMessage{},
+	}
+
+	rows, err := s.DB.Query(ctx, `SELECT id, kind, name, protocol, base_url, key_cipher, model, reasoning_effort, params,
+		first_byte_timeout_s, idle_timeout_s, total_timeout_s, priority, enabled,
+		price_in_per_m::float8, price_out_per_m::float8, daily_cap::float8, price_per_image::float8
+		FROM service_config ORDER BY kind, priority, id`)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+
+	idToName := make(map[int64]string)
+	for rows.Next() {
+		var id int64
+		var c ExportConfig
+		var cipher string
+		if err := rows.Scan(&id, &c.Kind, &c.Name, &c.Protocol, &c.BaseURL, &cipher, &c.Model, &c.ReasoningEffort, &c.Params,
+			&c.FirstByteS, &c.IdleS, &c.TotalS, &c.Priority, &c.Enabled, &c.PriceIn, &c.PriceOut, &c.DailyCap, &c.PricePerImage); err != nil {
+			return out, err
+		}
+		idToName[id] = c.Name
+		// API keys are never exported: the file must be safe to store anywhere.
+		// On import an existing config keeps its key; a new one needs its key entered again.
+		_ = cipher
+		out.Configs = append(out.Configs, c)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+
+	rRows, err := s.DB.Query(ctx, `SELECT stage, tier, config_ids FROM stage_route ORDER BY stage, tier`)
+	if err == nil {
+		defer rRows.Close()
+		for rRows.Next() {
+			var r ExportRoute
+			var cids []int64
+			if err := rRows.Scan(&r.Stage, &r.Tier, &cids); err == nil {
+				for _, cid := range cids {
+					if name, ok := idToName[cid]; ok {
+						r.ConfigNames = append(r.ConfigNames, name)
+					}
+				}
+				out.Routes = append(out.Routes, r)
+			}
+		}
+	}
+
+	tRows, err := s.DB.Query(ctx, `SELECT key, name, description, needs_news, research, enabled, sort FROM article_type ORDER BY sort, id`)
+	if err == nil {
+		defer tRows.Close()
+		for tRows.Next() {
+			var t ExportArticleType
+			if err := tRows.Scan(&t.Key, &t.Name, &t.Description, &t.NeedsNews, &t.Research, &t.Enabled, &t.Sort); err == nil {
+				out.ArticleTypes = append(out.ArticleTypes, t)
+			}
+		}
+	}
+
+	sRows, err := s.DB.Query(ctx, `SELECT key, value FROM platform_setting ORDER BY key`)
+	if err == nil {
+		defer sRows.Close()
+		for sRows.Next() {
+			var k string
+			var v json.RawMessage
+			if err := sRows.Scan(&k, &v); err == nil {
+				out.PlatformSettings[k] = v
+			}
+		}
+	}
+
+	s.Audit.Log(ctx, actor.ID, "config.export", "all", map[string]any{
+		"configs": len(out.Configs),
+		"routes":  len(out.Routes),
+	})
+	return out, nil
+}
+
+func (s *Service) Import(ctx context.Context, actor auth.User, in ExportData) (ImportResult, error) {
+	if actor.Role != auth.RoleSuperAdmin {
+		return ImportResult{}, ErrForbidden
+	}
+	if len(in.Configs) == 0 && len(in.Routes) == 0 && len(in.ArticleTypes) == 0 && len(in.PlatformSettings) == 0 {
+		return ImportResult{}, ValidationError("导入配置内容为空")
+	}
+
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	res := ImportResult{}
+	nameToID := make(map[string]int64)
+
+	for _, c := range in.Configs {
+		if c.Kind == "" || c.Name == "" {
+			continue
+		}
+		if len(c.Params) == 0 || string(c.Params) == "null" {
+			c.Params = json.RawMessage(`{}`)
+		}
+		if c.FirstByteS <= 0 {
+			c.FirstByteS = 30
+		}
+		if c.IdleS <= 0 {
+			c.IdleS = 180
+		}
+		if c.TotalS <= 0 {
+			c.TotalS = 900
+		}
+
+		var existingID int64
+		err := tx.QueryRow(ctx, `SELECT id FROM service_config WHERE kind=$1 AND name=$2`, c.Kind, c.Name).Scan(&existingID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var cipher, mask string
+			if c.APIKey != "" && s.Box != nil {
+				if sealed, err := s.Box.Seal(c.APIKey); err == nil {
+					cipher = sealed
+					mask = crypto.Mask(c.APIKey)
+				}
+			}
+			var newID int64
+			err := tx.QueryRow(ctx, `INSERT INTO service_config (kind, name, protocol, base_url, key_cipher, key_mask, model,
+				reasoning_effort, params, first_byte_timeout_s, idle_timeout_s, total_timeout_s, priority, enabled,
+				price_in_per_m, price_out_per_m, daily_cap, price_per_image)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+				c.Kind, c.Name, c.Protocol, c.BaseURL, cipher, mask, c.Model, c.ReasoningEffort, []byte(c.Params),
+				c.FirstByteS, c.IdleS, c.TotalS, c.Priority, c.Enabled,
+				c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage).Scan(&newID)
+			if err != nil {
+				return ImportResult{}, fmt.Errorf("导入配置 %s 失败: %w", c.Name, err)
+			}
+			nameToID[c.Name] = newID
+			res.ConfigsCount++
+		} else if err != nil {
+			return ImportResult{}, err
+		} else {
+			nameToID[c.Name] = existingID
+			if c.APIKey != "" && s.Box != nil {
+				if sealed, err := s.Box.Seal(c.APIKey); err == nil {
+					mask := crypto.Mask(c.APIKey)
+					if _, err := tx.Exec(ctx, `UPDATE service_config SET protocol=$2, base_url=$3, model=$4, reasoning_effort=$5, params=$6,
+						first_byte_timeout_s=$7, idle_timeout_s=$8, total_timeout_s=$9, priority=$10, enabled=$11,
+						price_in_per_m=$12, price_out_per_m=$13, daily_cap=$14, price_per_image=$15,
+						key_cipher=$16, key_mask=$17, updated_at=now() WHERE id=$1`,
+						existingID, c.Protocol, c.BaseURL, c.Model, c.ReasoningEffort, []byte(c.Params),
+						c.FirstByteS, c.IdleS, c.TotalS, c.Priority, c.Enabled,
+						c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage, sealed, mask); err != nil {
+						return ImportResult{}, err
+					}
+				}
+			} else {
+				if _, err := tx.Exec(ctx, `UPDATE service_config SET protocol=$2, base_url=$3, model=$4, reasoning_effort=$5, params=$6,
+					first_byte_timeout_s=$7, idle_timeout_s=$8, total_timeout_s=$9, priority=$10, enabled=$11,
+					price_in_per_m=$12, price_out_per_m=$13, daily_cap=$14, price_per_image=$15, updated_at=now() WHERE id=$1`,
+					existingID, c.Protocol, c.BaseURL, c.Model, c.ReasoningEffort, []byte(c.Params),
+					c.FirstByteS, c.IdleS, c.TotalS, c.Priority, c.Enabled,
+					c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage); err != nil {
+					return ImportResult{}, err
+				}
+			}
+			res.ConfigsCount++
+		}
+	}
+
+	existingRows, _ := tx.Query(ctx, `SELECT id, name FROM service_config`)
+	if existingRows != nil {
+		for existingRows.Next() {
+			var eid int64
+			var ename string
+			if existingRows.Scan(&eid, &ename) == nil {
+				nameToID[ename] = eid
+			}
+		}
+		existingRows.Close()
+	}
+
+	for _, r := range in.Routes {
+		if r.Stage == "" {
+			continue
+		}
+		tier := strings.TrimSpace(r.Tier)
+		if tier == "" {
+			tier = "*"
+		}
+		var cids []int64
+		for _, name := range r.ConfigNames {
+			if id, ok := nameToID[name]; ok {
+				cids = append(cids, id)
+			}
+		}
+		if len(cids) > 0 {
+			_, err := tx.Exec(ctx, `INSERT INTO stage_route (stage, tier, config_ids) VALUES ($1,$2,$3)
+				ON CONFLICT (stage, tier) DO UPDATE SET config_ids=$3`, r.Stage, tier, cids)
+			if err != nil {
+				return ImportResult{}, err
+			}
+			res.RoutesCount++
+		}
+	}
+
+	for _, t := range in.ArticleTypes {
+		if t.Key == "" || t.Name == "" {
+			continue
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO article_type (key, name, description, needs_news, research, enabled, sort)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			ON CONFLICT (key) DO UPDATE SET name=$2, description=$3, needs_news=$4, research=$5, enabled=$6, sort=$7`,
+			t.Key, t.Name, t.Description, t.NeedsNews, t.Research, t.Enabled, t.Sort)
+		if err != nil {
+			return ImportResult{}, err
+		}
+		res.TypesCount++
+	}
+
+	for k, v := range in.PlatformSettings {
+		if k == "" || len(v) == 0 {
+			continue
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO platform_setting (key, value, updated_by) VALUES ($1, $2, $3)
+			ON CONFLICT (key) DO UPDATE SET value=$2, updated_by=$3, updated_at=now()`, k, []byte(v), actor.ID)
+		if err != nil {
+			return ImportResult{}, err
+		}
+		res.SettingsCount++
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return ImportResult{}, err
+	}
+	s.Audit.Log(ctx, actor.ID, "config.import", "all", map[string]any{
+		"configs":  res.ConfigsCount,
+		"routes":   res.RoutesCount,
+		"types":    res.TypesCount,
+		"settings": res.SettingsCount,
+	})
+
+	return res, nil
+}

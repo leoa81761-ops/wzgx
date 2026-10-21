@@ -4,3 +4,4 @@ web/dist/*
 !web/dist/robots.txt
 /app
 /cmd/trial/
+pgdata/
