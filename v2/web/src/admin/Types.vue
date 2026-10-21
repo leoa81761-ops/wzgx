@@ -1,9 +1,9 @@
 <template>
-  <h1>文章类型</h1>
-  <p class="muted">用户的每个栏目选一种类型。「需要近期动态」的类型会先搜近期事件再选题；「检索资料」关掉后，这类文章不再联网查资料（适合故事、随笔）。</p>
+  <h1>栏目类型 (文章类型)</h1>
+  <p class="muted">此处定义系统支持的所有栏目文章类型。普通用户在绑定公众号后，为每个公众号添加栏目时，即可选择在此处配置的类型。「需要近期动态」的类型会先搜近期事件再选题；「检索资料」关掉后，这类文章不再联网查资料（适合故事、随笔）。</p>
   <div v-if="msg" class="msg" :class="{ ok }">{{ msg }}</div>
   <table>
-    <tr><th>名称</th><th>标识</th><th>说明（给写作模型看）</th><th>需要近期动态</th><th>检索资料</th><th>启用</th><th>排序</th><th></th></tr>
+    <tr><th>名称</th><th>标识</th><th>说明（给写作模型看）</th><th>需要近期动态</th><th>检索资料</th><th>启用</th><th>排序</th><th>关联栏目数</th><th></th></tr>
     <tr v-for="t in list" :key="t.id || 'new'">
       <td><input v-model.trim="t.name" /></td>
       <td style="width:110px"><input v-model.trim="t.key" :disabled="!!t.id" placeholder="英文小写" /></td>
@@ -11,7 +11,8 @@
       <td><input type="checkbox" v-model="t.needs_news" /></td>
       <td><input type="checkbox" v-model="t.research" /></td>
       <td><input type="checkbox" v-model="t.enabled" /></td>
-      <td style="width:90px"><input type="number" v-model.number="t.sort" style="min-width:72px" /></td>
+      <td style="width:80px"><input type="number" v-model.number="t.sort" style="min-width:60px" /></td>
+      <td class="nowrap" style="text-align:center"><span class="tag">{{ t.column_count || 0 }} 个栏目</span></td>
       <td class="act"><button @click="save(t)">保存</button></td>
     </tr>
   </table>

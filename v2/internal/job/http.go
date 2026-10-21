@@ -3,8 +3,10 @@ package job
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"gonghao/internal/auth"
@@ -20,6 +22,7 @@ func (s *Service) Register(srv *server.Server, h *auth.Handlers) {
 	srv.Handle("GET /api/jobs/{id}", anyR(s.hJob))
 	srv.Handle("GET /api/articles", anyR(s.hArticles))
 	srv.Handle("GET /api/articles/{id}", anyR(s.hArticle))
+	srv.Handle("PUT /api/articles/{id}", user(s.hUpdateArticle))
 	srv.Handle("GET /api/articles/{id}/preview", anyR(s.hPreview))
 	srv.Handle("GET "+render.MediaPrefix+"{key}", http.HandlerFunc(s.hMedia))
 	srv.Handle("PUT /api/admin/users/{uid}/daily-quota", staff(s.hQuota))
@@ -179,6 +182,16 @@ func (a *articleRow) fields() []any {
 
 func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
 	cl, args := ownerClause(actor(r), "user_id", 1)
+	if accStr := r.URL.Query().Get("account_id"); accStr != "" {
+		if accID, err := strconv.ParseInt(accStr, 10, 64); err == nil && accID > 0 {
+			cl += fmt.Sprintf(" AND account_id=$%d", len(args)+1)
+			args = append(args, accID)
+		}
+	}
+	if st := r.URL.Query().Get("status"); st != "" {
+		cl += fmt.Sprintf(" AND status=$%d", len(args)+1)
+		args = append(args, st)
+	}
 	rows, err := s.DB.Query(r.Context(), `SELECT `+artCols+` FROM article WHERE `+cl+` ORDER BY id DESC LIMIT 100`, args...)
 	if err != nil {
 		fail(w, err)
@@ -195,6 +208,63 @@ func (s *Service) hArticles(w http.ResponseWriter, r *http.Request) {
 		out = append(out, a)
 	}
 	server.WriteJSON(w, 200, out)
+}
+
+type updateArticleInput struct {
+	Title   *string `json:"title"`
+	Summary *string `json:"summary"`
+	HTML    *string `json:"html"`
+}
+
+func (s *Service) hUpdateArticle(w http.ResponseWriter, r *http.Request) {
+	act := actor(r)
+	artID := pid(r, "id")
+	cl, args := ownerClause(act, "user_id", 2)
+
+	var in updateArticleInput
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		server.WriteError(w, http.StatusBadRequest, "请求格式不正确")
+		return
+	}
+
+	var curStatus string
+	err := s.DB.QueryRow(r.Context(), `SELECT status FROM article WHERE id=$1 AND `+cl, append([]any{artID}, args...)...).Scan(&curStatus)
+	if err != nil {
+		server.WriteError(w, http.StatusNotFound, "文章不存在")
+		return
+	}
+
+	sets := []string{}
+	setArgs := []any{artID}
+	if in.Title != nil {
+		setArgs = append(setArgs, strings.TrimSpace(*in.Title))
+		sets = append(sets, fmt.Sprintf("title=$%d", len(setArgs)))
+	}
+	if in.Summary != nil {
+		setArgs = append(setArgs, strings.TrimSpace(*in.Summary))
+		sets = append(sets, fmt.Sprintf("summary=$%d", len(setArgs)))
+	}
+	if in.HTML != nil {
+		setArgs = append(setArgs, *in.HTML)
+		sets = append(sets, fmt.Sprintf("html=$%d", len(setArgs)))
+	}
+
+	if len(sets) > 0 {
+		query := fmt.Sprintf("UPDATE article SET %s WHERE id=$1", strings.Join(sets, ", "))
+		if _, err := s.DB.Exec(r.Context(), query, setArgs...); err != nil {
+			fail(w, err)
+			return
+		}
+		s.Audit.Log(r.Context(), act.ID, "article.edit", fmt.Sprintf("%d", artID), map[string]any{"article_id": artID})
+	}
+
+	a, err := s.article(r)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	server.WriteJSON(w, 200, a)
 }
 
 func (s *Service) article(r *http.Request) (articleRow, error) {

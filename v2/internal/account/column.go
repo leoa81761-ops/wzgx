@@ -24,6 +24,7 @@ type ArticleType struct {
 	Enabled     bool      `json:"enabled"`
 	Sort        int       `json:"sort"`
 	CreatedAt   time.Time `json:"created_at"`
+	ColumnCount int       `json:"column_count"`
 }
 
 var typeKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,39}$`)
@@ -42,11 +43,12 @@ func (t *ArticleType) validate() error {
 	return nil
 }
 
-const typeCols = `id, key, name, description, needs_news, research, enabled, sort, created_at`
+const typeCols = `id, key, name, description, needs_news, research, enabled, sort, created_at,
+	COALESCE((SELECT count(*)::int FROM account_column WHERE article_type_id = article_type.id), 0)`
 
 func scanType(r pgx.Row) (ArticleType, error) {
 	var t ArticleType
-	err := r.Scan(&t.ID, &t.Key, &t.Name, &t.Description, &t.NeedsNews, &t.Research, &t.Enabled, &t.Sort, &t.CreatedAt)
+	err := r.Scan(&t.ID, &t.Key, &t.Name, &t.Description, &t.NeedsNews, &t.Research, &t.Enabled, &t.Sort, &t.CreatedAt, &t.ColumnCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ErrNotFound
 	}
