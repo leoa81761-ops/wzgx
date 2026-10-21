@@ -1,0 +1,38 @@
+# v2 runs beside the old system: own port, own database, own volume.
+# Secrets come from v2/.env.v2 (not committed): V2_MASTER_KEY, V2_DB_PASSWORD, optional V2_BOOTSTRAP_ADMIN_*.
+services:
+  db2:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gonghao2
+      POSTGRES_USER: gonghao2
+      POSTGRES_PASSWORD: ${V2_DB_PASSWORD:?set V2_DB_PASSWORD}
+    volumes:
+      - db2data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gonghao2 -d gonghao2"]
+      interval: 5s
+      retries: 20
+
+  app2:
+    build:
+      context: .
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.org}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+        COMMIT: ${COMMIT:-dev}
+        BUILT_AT: ${BUILT_AT:-}
+    restart: unless-stopped
+    depends_on:
+      db2:
+        condition: service_healthy
+    env_file: [.env.v2]
+    environment:
+      V2_DATABASE_URL: postgres://gonghao2:${V2_DB_PASSWORD}@db2:5432/gonghao2?sslmode=disable
+    ports:
+      - "127.0.0.1:8090:8090"
+
+volumes:
+  db2data:

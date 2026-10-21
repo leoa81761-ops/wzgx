@@ -1,0 +1,332 @@
+// Package wechat talks to the WeChat Official Account API: access tokens (bind check), image
+// uploads and draft creation. It never publishes; a draft only lands in the account's draft box.
+package wechat
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+	"sync"
+	"time"
+)
+
+const DefaultBase = "https://api.weixin.qq.com"
+
+type Client struct {
+	Base string       // default DefaultBase; tests point it at a fake server
+	HTTP *http.Client // default 20s timeout
+	Now  func() time.Time
+
+	mu     sync.Mutex
+	tokens map[string]cached // appID -> token
+}
+
+type cached struct {
+	token string
+	until time.Time
+}
+
+// APIError is an errcode/errmsg answer from WeChat.
+type APIError struct {
+	Code int    `json:"errcode"`
+	Msg  string `json:"errmsg"`
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("微信接口错误 %d：%s", e.Code, e.Msg) }
+
+// Hint turns the common errcodes into an actionable Chinese explanation.
+func (e *APIError) Hint() string {
+	switch e.Code {
+	case 40013:
+		return "AppID 不正确"
+	case 40125, 40001:
+		return "AppSecret 不正确或已重置"
+	case 40164, 61004:
+		return "服务器 IP 不在公众号的 IP 白名单里，请在公众号后台「设置与开发 → 基本配置」中添加"
+	case 48001:
+		return "公众号没有这个接口的权限（个人订阅号或未认证账号可能无法使用草稿接口）"
+	case 45009:
+		return "接口调用次数已达今日上限"
+	}
+	return ""
+}
+
+func (c *Client) base() string {
+	if c.Base != "" {
+		return c.Base
+	}
+	return DefaultBase
+}
+
+func (c *Client) http() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return &http.Client{Timeout: 20 * time.Second}
+}
+
+func (c *Client) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+// Token returns an access token from the stable_token endpoint (which does not invalidate tokens other
+// systems hold for the same account), cached until shortly before it expires.
+func (c *Client) Token(ctx context.Context, appID, secret string, force bool) (string, error) {
+	c.mu.Lock()
+	if t, ok := c.tokens[appID]; ok && !force && c.now().Before(t.until) {
+		c.mu.Unlock()
+		return t.token, nil
+	}
+	c.mu.Unlock()
+	body, _ := json.Marshal(map[string]any{"grant_type": "client_credential", "appid": appID, "secret": secret, "force_refresh": false})
+	var out struct {
+		APIError
+		Token   string `json:"access_token"`
+		Expires int    `json:"expires_in"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/stable_token", "application/json", bytes.NewReader(body), &out); err != nil {
+		return "", err
+	}
+	if out.Token == "" {
+		return "", errors.New("微信没有返回 access_token")
+	}
+	ttl := time.Duration(out.Expires)*time.Second - 5*time.Minute
+	if ttl < time.Minute {
+		ttl = time.Minute
+	}
+	c.mu.Lock()
+	if c.tokens == nil {
+		c.tokens = map[string]cached{}
+	}
+	c.tokens[appID] = cached{out.Token, c.now().Add(ttl)}
+	c.mu.Unlock()
+	return out.Token, nil
+}
+
+// Forget drops a cached token (after WeChat says it is invalid).
+func (c *Client) Forget(appID string) {
+	c.mu.Lock()
+	delete(c.tokens, appID)
+	c.mu.Unlock()
+}
+
+// UploadContentImage uploads an image used inside the article body and returns its mmbiz URL.
+func (c *Client) UploadContentImage(ctx context.Context, token string, name string, img []byte) (string, error) {
+	var out struct {
+		APIError
+		URL string `json:"url"`
+	}
+	if err := c.upload(ctx, "/cgi-bin/media/uploadimg?access_token="+url.QueryEscape(token), name, img, &out); err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}
+
+// UploadThumb uploads the cover as a permanent image material and returns its media_id.
+func (c *Client) UploadThumb(ctx context.Context, token string, name string, img []byte) (string, error) {
+	var out struct {
+		APIError
+		MediaID string `json:"media_id"`
+	}
+	if err := c.upload(ctx, "/cgi-bin/material/add_material?type=image&access_token="+url.QueryEscape(token), name, img, &out); err != nil {
+		return "", err
+	}
+	return out.MediaID, nil
+}
+
+type Draft struct {
+	Title        string `json:"title"`
+	Author       string `json:"author,omitempty"`
+	Digest       string `json:"digest,omitempty"`
+	Content      string `json:"content"`
+	ThumbMediaID string `json:"thumb_media_id"`
+	OpenComment  int    `json:"need_open_comment"`
+}
+
+// AddDraft creates a draft in the account's draft box. It does not publish.
+func (c *Client) AddDraft(ctx context.Context, token string, d Draft) (string, error) {
+	body, _ := json.Marshal(map[string]any{"articles": []Draft{d}})
+	var out struct {
+		APIError
+		MediaID string `json:"media_id"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/draft/add?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return "", err
+	}
+	if out.MediaID == "" {
+		return "", errors.New("微信没有返回草稿 media_id")
+	}
+	return out.MediaID, nil
+}
+
+func (c *Client) upload(ctx context.Context, path, name string, img []byte, out apiErr) error {
+	var b bytes.Buffer
+	mw := multipart.NewWriter(&b)
+	fw, _ := mw.CreateFormFile("media", name)
+	fw.Write(img)
+	mw.Close()
+	return c.do(ctx, "POST", c.base()+path, mw.FormDataContentType(), &b, out)
+}
+
+type apiErr interface{ apiError() *APIError }
+
+func (e *APIError) apiError() *APIError { return e }
+
+func (c *Client) do(ctx context.Context, method, u, ctype string, body io.Reader, out apiErr) error {
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", ctype)
+	resp, err := c.http().Do(req)
+	if err != nil {
+		return fmt.Errorf("连接微信失败：%w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("微信接口 HTTP %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("微信返回无法解析：%w", err)
+	}
+	if e := out.apiError(); e.Code != 0 {
+		return &APIError{Code: e.Code, Msg: e.Msg}
+	}
+	return nil
+}
+
+// DraftItem is one article of a draft as WeChat returns it.
+type DraftItem struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+// GetDraft reads a draft back (draft/get). A draft that was published or deleted answers 40007.
+func (c *Client) GetDraft(ctx context.Context, token, mediaID string) ([]DraftItem, error) {
+	body, _ := json.Marshal(map[string]string{"media_id": mediaID})
+	var out struct {
+		APIError
+		NewsItem []DraftItem `json:"news_item"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/draft/get?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return nil, err
+	}
+	return out.NewsItem, nil
+}
+
+// SubmitPublish publishes a draft (freepublish/submit). WeChat answers with a publish_id; the
+// result comes later and is read with GetPublish.
+func (c *Client) SubmitPublish(ctx context.Context, token, mediaID string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"media_id": mediaID})
+	var out struct {
+		APIError
+		PublishID json.Number `json:"publish_id"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/freepublish/submit?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return "", err
+	}
+	if out.PublishID == "" {
+		return "", errors.New("微信没有返回 publish_id")
+	}
+	return out.PublishID.String(), nil
+}
+
+// PublishStatus is freepublish/get. Status: 0 published, 1 publishing, 2 original-check failed,
+// 3 normal failure, 4 platform review failed, 5 deleted after publishing, 6 banned after publishing.
+type PublishStatus struct {
+	Status    int
+	ArticleID string
+	URLs      []string
+	FailIdx   []int
+}
+
+func (c *Client) GetPublish(ctx context.Context, token, publishID string) (PublishStatus, error) {
+	body, _ := json.Marshal(map[string]any{"publish_id": json.Number(publishID)})
+	var out struct {
+		APIError
+		Status        int    `json:"publish_status"`
+		ArticleID     string `json:"article_id"`
+		ArticleDetail struct {
+			Item []struct {
+				URL string `json:"article_url"`
+			} `json:"item"`
+		} `json:"article_detail"`
+		FailIdx []int `json:"fail_idx"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/cgi-bin/freepublish/get?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return PublishStatus{}, err
+	}
+	ps := PublishStatus{Status: out.Status, ArticleID: out.ArticleID, FailIdx: out.FailIdx}
+	for _, it := range out.ArticleDetail.Item {
+		ps.URLs = append(ps.URLs, it.URL)
+	}
+	return ps, nil
+}
+
+// ArticleStat is one published article in datacube/getarticletotaldetail. Days are cumulative
+// totals from the publish date up to each stat date (at most 30 days after publishing).
+type ArticleStat struct {
+	MsgID   string
+	Title   string
+	URL     string
+	RefDate string
+	Days    []StatDay
+}
+
+type StatDay struct {
+	Date                                                  string
+	ReadUser, ShareUser, CollectionUser, LikeUser, Zaikan int
+	FinishRate                                            float64
+}
+
+// ArticleTotalDetail reads the stats of everything published on one day (YYYY-MM-DD). Read only.
+func (c *Client) ArticleTotalDetail(ctx context.Context, token, date string) ([]ArticleStat, error) {
+	body, _ := json.Marshal(map[string]string{"begin_date": date, "end_date": date})
+	var out struct {
+		APIError
+		List []struct {
+			RefDate    string `json:"ref_date"`
+			MsgID      string `json:"msgid"`
+			Title      string `json:"title"`
+			ContentURL string `json:"content_url"`
+			DetailList []struct {
+				StatDate       string  `json:"stat_date"`
+				ReadUser       int     `json:"read_user"`
+				ShareUser      int     `json:"share_user"`
+				ZaikanUser     int     `json:"zaikan_user"`
+				LikeUser       int     `json:"like_user"`
+				CollectionUser int     `json:"collection_user"`
+				ReadFinishRate float64 `json:"read_finish_rate"`
+			} `json:"detail_list"`
+		} `json:"list"`
+	}
+	if err := c.do(ctx, "POST", c.base()+"/datacube/getarticletotaldetail?access_token="+url.QueryEscape(token), "application/json", bytes.NewReader(body), &out); err != nil {
+		return nil, err
+	}
+	res := make([]ArticleStat, 0, len(out.List))
+	for _, it := range out.List {
+		a := ArticleStat{MsgID: it.MsgID, Title: it.Title, URL: it.ContentURL, RefDate: it.RefDate}
+		if a.RefDate == "" {
+			a.RefDate = date
+		}
+		for _, d := range it.DetailList {
+			a.Days = append(a.Days, StatDay{Date: d.StatDate, ReadUser: d.ReadUser, ShareUser: d.ShareUser, CollectionUser: d.CollectionUser,
+				LikeUser: d.LikeUser, Zaikan: d.ZaikanUser, FinishRate: d.ReadFinishRate})
+		}
+		res = append(res, a)
+	}
+	return res, nil
+}

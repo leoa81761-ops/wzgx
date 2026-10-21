@@ -1,0 +1,260 @@
+// Command devfake is a local stand-in for every outside service v2 talks to, for browser walk-throughs:
+// the WeChat API (token, image upload, draft box), an OpenAI-compatible streaming model (one path per
+// stage: /topic/v1, /research/v1, /write/v1, /review/v1), Tavily, and a cover image at /cover.jpg.
+// It listens on loopback only and never forwards anything anywhere. Not for production.
+//
+// AppSecret behaviour: a secret starting with "bad" fails as a wrong secret (40125), one starting with
+// "ip" fails as a missing IP whitelist entry (40164); anything else is accepted.
+package main
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"image"
+	"image/color"
+	jpg "image/jpeg"
+	"io"
+	"log"
+	"math/rand/v2"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// jpeg is a real 900×500 cover (soft green gradient) so previews and uploads look like a picture.
+var started = time.Now().Unix()
+
+var jpeg = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 900, 500))
+	for y := 0; y < 500; y++ {
+		for x := 0; x < 900; x++ {
+			img.Set(x, y, color.RGBA{uint8(200 - y/10), uint8(230 - x/30), uint8(215 - y/12), 255})
+		}
+	}
+	var b bytes.Buffer
+	jpg.Encode(&b, img, &jpg.Options{Quality: 80})
+	return b.Bytes()
+}()
+
+type fake struct {
+	mu        sync.Mutex
+	topic     string // last topic handed out; the next write uses it as the title (single-user local tool)
+	tokens    int
+	drafts    int
+	publishes int
+	saved     map[string]draft    // media_id -> what was put in the draft box (memory only)
+	pubDays   map[string][]string // date -> titles pushed that day; datacube pretends they were published then
+}
+
+type draft struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+func main() {
+	addr := flag.String("addr", "127.0.0.1:8099", "loopback listen address")
+	flag.Parse()
+	host, _, _ := net.SplitHostPort(*addr)
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		log.Fatal("devfake listens on loopback only")
+	}
+	f := &fake{saved: map[string]draft{}, pubDays: map[string][]string{}}
+	log.Printf("devfake on http://%s", *addr)
+	log.Fatal(http.ListenAndServe(*addr, f))
+}
+
+func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Path
+	switch {
+	case p == "/cover.jpg":
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(jpeg)
+	case p == "/cgi-bin/stable_token":
+		var in map[string]any
+		json.NewDecoder(r.Body).Decode(&in)
+		sec, _ := in["secret"].(string)
+		switch {
+		case strings.HasPrefix(sec, "bad"):
+			fmt.Fprint(w, `{"errcode":40125,"errmsg":"invalid appsecret"}`)
+		case strings.HasPrefix(sec, "ip"):
+			fmt.Fprint(w, `{"errcode":40164,"errmsg":"invalid ip 127.0.0.1, not in whitelist"}`)
+		default:
+			f.mu.Lock()
+			f.tokens++
+			n := f.tokens
+			f.mu.Unlock()
+			fmt.Fprintf(w, `{"access_token":"FAKETOKEN%d","expires_in":7200}`, n)
+		}
+	case p == "/cgi-bin/media/uploadimg":
+		io.Copy(io.Discard, r.Body)
+		fmt.Fprint(w, `{"url":"http://mmbiz.qpic.cn/mmbiz_jpg/devfake/0"}`)
+	case p == "/cgi-bin/material/add_material":
+		io.Copy(io.Discard, r.Body)
+		fmt.Fprint(w, `{"media_id":"FAKETHUMB","url":"http://mmbiz.qpic.cn/devfake/thumb"}`)
+	case p == "/cgi-bin/draft/add":
+		var in struct {
+			Articles []draft `json:"articles"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		f.drafts++
+		id := fmt.Sprintf("FAKEDRAFT-%d-%d", started, f.drafts) // unique across restarts, so old drafts read back as gone
+		if len(in.Articles) > 0 {
+			f.saved[id] = in.Articles[0]
+			day := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+			f.pubDays[day] = append(f.pubDays[day], in.Articles[0].Title)
+		}
+		f.mu.Unlock()
+		log.Printf("draft/add %s received (kept in memory only)", id)
+		fmt.Fprintf(w, `{"media_id":%q}`, id)
+	case p == "/cgi-bin/draft/get":
+		var in struct {
+			MediaID string `json:"media_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		d, ok := f.saved[in.MediaID]
+		f.mu.Unlock()
+		if !ok {
+			fmt.Fprint(w, `{"errcode":40007,"errmsg":"invalid media_id"}`)
+			return
+		}
+		b, _ := json.Marshal(map[string]any{"news_item": []map[string]string{{"title": d.Title, "content": d.Content}}})
+		w.Write(b)
+	case p == "/cgi-bin/freepublish/submit": // pretend to publish: the draft leaves the draft box
+		var in struct {
+			MediaID string `json:"media_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		_, ok := f.saved[in.MediaID]
+		delete(f.saved, in.MediaID)
+		f.publishes++
+		n := f.publishes
+		f.mu.Unlock()
+		if !ok {
+			fmt.Fprint(w, `{"errcode":40007,"errmsg":"invalid media_id"}`)
+			return
+		}
+		log.Printf("freepublish/submit %s (fake, nothing is published)", in.MediaID)
+		fmt.Fprintf(w, `{"errcode":0,"errmsg":"ok","publish_id":%d,"msg_data_id":%d}`, started*100+int64(n), n)
+	case p == "/cgi-bin/freepublish/get":
+		var in map[string]any
+		json.NewDecoder(r.Body).Decode(&in)
+		pid := fmt.Sprint(in["publish_id"])
+		fmt.Fprintf(w, `{"publish_id":%q,"publish_status":0,"article_id":"FAKEART%s","article_detail":{"count":1,"item":[{"idx":1,"article_url":"https://mp.weixin.qq.com/s/devfake-%s"}]},"fail_idx":[]}`, pid, pid, pid)
+	case p == "/datacube/getarticletotaldetail": // made-up numbers for what was pushed that day
+		var in map[string]string
+		json.NewDecoder(r.Body).Decode(&in)
+		cst := time.FixedZone("CST", 8*3600)
+		start, _ := time.ParseInLocation("2006-01-02", in["begin_date"], cst)
+		yesterday := time.Now().In(cst).AddDate(0, 0, -1)
+		f.mu.Lock()
+		titles := f.pubDays[in["begin_date"]]
+		f.mu.Unlock()
+		list := []any{}
+		for i, t := range titles {
+			seed := 50 + (len([]rune(t))*37+i*91)%400
+			var dl []any
+			cum := 0
+			for d, n := start, 0; !d.After(yesterday) && n < 30; d, n = d.AddDate(0, 0, 1), n+1 {
+				cum += seed / (n + 1)
+				dl = append(dl, map[string]any{"stat_date": d.Format("2006-01-02"), "read_user": cum, "share_user": cum / 12, "collection_user": cum / 25,
+					"like_user": cum / 30, "zaikan_user": cum / 60, "read_finish_rate": 0.4 + float64(seed%40)/100})
+			}
+			list = append(list, map[string]any{"ref_date": in["begin_date"], "msgid": fmt.Sprintf("devfake_%s_%d", in["begin_date"], i), "title": t, "detail_list": dl})
+		}
+		log.Printf("datacube/getarticletotaldetail %s: %d articles (made-up numbers)", in["begin_date"], len(list))
+		b, _ := json.Marshal(map[string]any{"list": list})
+		w.Write(b)
+	case p == "/dev/edit", p == "/dev/delete": // walk-through helpers: pretend the user edited or published a draft
+		id := r.URL.Query().Get("media_id")
+		f.mu.Lock()
+		if id == "" { // the latest draft
+			id = fmt.Sprintf("FAKEDRAFT-%d-%d", started, f.drafts)
+		}
+		d, ok := f.saved[id]
+		if ok && p == "/dev/edit" {
+			d.Content += "<p>这一段是在公众号后台手动加上的，用来演示「改过」。</p>"
+			f.saved[id] = d
+		} else if ok {
+			delete(f.saved, id)
+		}
+		f.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintln(w, "ok", p, id)
+	case strings.HasSuffix(p, "/images/generations"): // OpenAI images API: a real JPEG, as b64_json with a data: prefix
+		io.Copy(io.Discard, r.Body)
+		fmt.Fprintf(w, `{"data":[{"b64_json":"data:image/jpeg;base64,%s","mime_type":"image/jpeg"}]}`, base64.StdEncoding.EncodeToString(jpeg))
+	case p == "/search": // Tavily
+		io.Copy(io.Discard, r.Body)
+		fmt.Fprint(w, `{"results":[{"title":"建筑照明设计标准","url":"https://www.mohurd.gov.cn/devfake","content":"学习桌面照度不低于 300 lx。","published_date":"2026-09-01"}]}`)
+	case strings.HasSuffix(p, "/chat/completions"):
+		f.model(w, r, strings.Split(strings.TrimPrefix(p, "/"), "/")[0])
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (f *fake) model(w http.ResponseWriter, r *http.Request, stage string) {
+	body, _ := io.ReadAll(r.Body)
+	if stage == "topic" && bytes.Contains(body, []byte("安排配图")) { // the picture plan rides on the topic route
+		stage = "image_plan"
+	}
+	// one shared counter used to number titles, so topic/research/write calls of one article skipped
+	// numbers and a restart repeated them; label by time instead
+	stamp := time.Now().Format("01-02 15:04:05")
+	text := ""
+	switch stage {
+	case "topic":
+		// the pipeline refuses a topic it already used for the account, so rotate through a few
+		ts := []string{"家里的台灯怎么选才护眼", "冰箱里的剩菜放几天", "老人手机字太小怎么调", "雨天衣服怎么晾干得快", "厨房下水道有味怎么办", "孩子写作业坐姿怎么纠正"}
+		pick := ts[rand.IntN(len(ts))]
+		t := pick + "（" + stamp + "）"
+		f.mu.Lock()
+		f.topic = pick
+		f.mu.Unlock()
+		text = `{"topic":"` + t + `","angle":"从日常使用说起","search_query":"生活 小窍门"}`
+	case "research":
+		text = "- 学习桌面照度不低于 300 lx（来源：建筑照明设计标准｜GB 50034-2024｜2024-03-01）\n- 台灯放在写字手的对侧，减少阴影（来源：演示资料｜｜2026-09-01）"
+	case "write":
+		f.mu.Lock()
+		title := f.topic
+		f.mu.Unlock()
+		if title == "" {
+			title = "台灯怎么选才护眼"
+		}
+		text = fmt.Sprintf(`{"title":"%s（演示 %s）","summary":"这是本地演示服务写的假文章，用来走一遍页面。",
+"blocks":[{"type":"p","text":"这是一篇本地演示文章，内容是假模型生成的，只用来看页面效果。"},
+{"type":"h2","text":"先看亮度"},{"type":"p","text":"学习桌面照度不低于 300 lx[1]。"},
+{"type":"table","rows":[["台灯","桌面照度"],["普通台灯","200 lx"],["护眼台灯","500 lx"],["落地阅读灯","350 lx"]]},
+{"type":"h2","text":"再看位置"},{"type":"list","items":["放在写字手的对侧","灯罩不透光","离桌面 40 厘米左右"]},
+{"type":"p","text":"选好台灯，孩子写作业也舒服些。"}]}`, title, stamp)
+	case "review":
+		text = `{"pass":true,"problems":[]}`
+	case "image_plan":
+		text = `{"cover":"书桌上一盏台灯，暖色灯光","images":[{"slot":1,"prompt":"台灯照亮作业本"}]}`
+	default:
+		text = "未检索到可靠来源"
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	fl, _ := w.(http.Flusher)
+	rs := []rune(text)
+	for i := 0; i < len(rs); i += 60 {
+		b, _ := json.Marshal(map[string]any{"model": "devfake-" + stage, "choices": []any{map[string]any{"delta": map[string]string{"content": string(rs[i:min(i+60, len(rs))])}}}})
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		if fl != nil {
+			fl.Flush()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+}
