@@ -75,3 +75,13 @@ func TestLayoutsKeepWords(t *testing.T) {
 		t.Fatal("unknown layout")
 	}
 }
+
+func TestBold(t *testing.T) {
+	if got := Bold("先说**结论**：别急，a**b"); got != "先说<strong>结论</strong>：别急，ab" {
+		t.Fatal(got)
+	}
+	out := Render(Article{Title: "t", Blocks: []Block{{Type: "h2", Text: "**第一部分**"}, {Type: "p", Text: "**⚠️ 红线**：x"}}}, Options{})
+	if strings.Contains(out.HTML, "**") || !strings.Contains(out.HTML, "<strong>⚠️ 红线</strong>") {
+		t.Fatal(out.HTML)
+	}
+}

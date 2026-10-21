@@ -18,7 +18,7 @@ const scanSystem = `你是资料检索助手。请立刻联网搜索，先用中
 每条写一行，以「- 」开头：事件内容（来源：来源名称或文件标题｜文号，没有就省略｜日期）
 只有完全没有搜到时，才只写：未检索到可靠来源`
 
-const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。用到标记为【官方依据】的资料（国家标准、政府部门正式文件）时，在该句末标注它的 [编号]；其他资料不标注编号。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
+const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。用到标记为【官方依据】的资料（国家标准、政府部门正式文件）时，在该句末标注它的 [编号]；其他资料不标注编号。需要加粗的词句用 **加粗** 标出。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
 
 const reviewSystem = `你审校一篇公众号文章：只检查事实错误、前后矛盾、没写完、违反用户设置之处。语气和写法以用户设置为准：不要为了稳妥把明确的经验判断改成含糊说法，不要加限定词、免责声明或“仅供参考”之类的话，不要改动没有问题的句子。没有问题输出 {"pass":true}；有问题输出 {"pass":false,"problems":["问题"],"article":{与原文相同结构的完整修订稿}}。只输出 JSON。`
 
@@ -126,6 +126,9 @@ func writeUser(w writingContext, topic, angle string, ev []Evidence) string {
 		} else {
 			other = append(other, line)
 		}
+	}
+	if e := strings.TrimSpace(w.Profile["结尾"]); e != "" {
+		fmt.Fprintf(&b, "文末会自动接上用户设置的结尾语：「%s」，正文最后不要再写一遍意思相同的话。\n", e)
 	}
 	for i, x := range w.Excerpts {
 		fmt.Fprintf(&b, "\n范文片段 %d（用户提供的范文，只学语气和写法，不抄内容，不照搬其中的事实、数字和做法）：\n%s\n", i+1, x)
