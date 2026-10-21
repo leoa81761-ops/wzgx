@@ -501,7 +501,6 @@ func (s *Service) testImage(ctx context.Context, actor auth.User, id int64, c ga
 	return out, nil
 }
 
-
 // ---------- Export & Import (Super Admin) ----------
 
 type ExportData struct {
@@ -588,11 +587,9 @@ func (s *Service) Export(ctx context.Context, actor auth.User) (ExportData, erro
 			return out, err
 		}
 		idToName[id] = c.Name
-		if cipher != "" && s.Box != nil {
-			if plain, err := s.Box.Open(cipher); err == nil {
-				c.APIKey = plain
-			}
-		}
+		// API keys are never exported: the file must be safe to store anywhere.
+		// On import an existing config keeps its key; a new one needs its key entered again.
+		_ = cipher
 		out.Configs = append(out.Configs, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -654,6 +651,11 @@ func (s *Service) Import(ctx context.Context, actor auth.User, in ExportData) (I
 		return ImportResult{}, ValidationError("导入配置内容为空")
 	}
 
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	defer tx.Rollback(ctx)
 	res := ImportResult{}
 	nameToID := make(map[string]int64)
 
@@ -675,7 +677,7 @@ func (s *Service) Import(ctx context.Context, actor auth.User, in ExportData) (I
 		}
 
 		var existingID int64
-		err := s.DB.QueryRow(ctx, `SELECT id FROM service_config WHERE kind=$1 AND name=$2`, c.Kind, c.Name).Scan(&existingID)
+		err := tx.QueryRow(ctx, `SELECT id FROM service_config WHERE kind=$1 AND name=$2`, c.Kind, c.Name).Scan(&existingID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			var cipher, mask string
 			if c.APIKey != "" && s.Box != nil {
@@ -685,43 +687,50 @@ func (s *Service) Import(ctx context.Context, actor auth.User, in ExportData) (I
 				}
 			}
 			var newID int64
-			err := s.DB.QueryRow(ctx, `INSERT INTO service_config (kind, name, protocol, base_url, key_cipher, key_mask, model,
+			err := tx.QueryRow(ctx, `INSERT INTO service_config (kind, name, protocol, base_url, key_cipher, key_mask, model,
 				reasoning_effort, params, first_byte_timeout_s, idle_timeout_s, total_timeout_s, priority, enabled,
 				price_in_per_m, price_out_per_m, daily_cap, price_per_image)
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
 				c.Kind, c.Name, c.Protocol, c.BaseURL, cipher, mask, c.Model, c.ReasoningEffort, []byte(c.Params),
 				c.FirstByteS, c.IdleS, c.TotalS, c.Priority, c.Enabled,
 				c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage).Scan(&newID)
-			if err == nil {
-				nameToID[c.Name] = newID
-				res.ConfigsCount++
+			if err != nil {
+				return ImportResult{}, fmt.Errorf("导入配置 %s 失败: %w", c.Name, err)
 			}
-		} else if err == nil {
+			nameToID[c.Name] = newID
+			res.ConfigsCount++
+		} else if err != nil {
+			return ImportResult{}, err
+		} else {
 			nameToID[c.Name] = existingID
 			if c.APIKey != "" && s.Box != nil {
 				if sealed, err := s.Box.Seal(c.APIKey); err == nil {
 					mask := crypto.Mask(c.APIKey)
-					_, _ = s.DB.Exec(ctx, `UPDATE service_config SET protocol=$2, base_url=$3, model=$4, reasoning_effort=$5, params=$6,
+					if _, err := tx.Exec(ctx, `UPDATE service_config SET protocol=$2, base_url=$3, model=$4, reasoning_effort=$5, params=$6,
 						first_byte_timeout_s=$7, idle_timeout_s=$8, total_timeout_s=$9, priority=$10, enabled=$11,
 						price_in_per_m=$12, price_out_per_m=$13, daily_cap=$14, price_per_image=$15,
 						key_cipher=$16, key_mask=$17, updated_at=now() WHERE id=$1`,
 						existingID, c.Protocol, c.BaseURL, c.Model, c.ReasoningEffort, []byte(c.Params),
 						c.FirstByteS, c.IdleS, c.TotalS, c.Priority, c.Enabled,
-						c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage, sealed, mask)
+						c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage, sealed, mask); err != nil {
+						return ImportResult{}, err
+					}
 				}
 			} else {
-				_, _ = s.DB.Exec(ctx, `UPDATE service_config SET protocol=$2, base_url=$3, model=$4, reasoning_effort=$5, params=$6,
+				if _, err := tx.Exec(ctx, `UPDATE service_config SET protocol=$2, base_url=$3, model=$4, reasoning_effort=$5, params=$6,
 					first_byte_timeout_s=$7, idle_timeout_s=$8, total_timeout_s=$9, priority=$10, enabled=$11,
 					price_in_per_m=$12, price_out_per_m=$13, daily_cap=$14, price_per_image=$15, updated_at=now() WHERE id=$1`,
 					existingID, c.Protocol, c.BaseURL, c.Model, c.ReasoningEffort, []byte(c.Params),
 					c.FirstByteS, c.IdleS, c.TotalS, c.Priority, c.Enabled,
-					c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage)
+					c.PriceIn, c.PriceOut, c.DailyCap, c.PricePerImage); err != nil {
+					return ImportResult{}, err
+				}
 			}
 			res.ConfigsCount++
 		}
 	}
 
-	existingRows, _ := s.DB.Query(ctx, `SELECT id, name FROM service_config`)
+	existingRows, _ := tx.Query(ctx, `SELECT id, name FROM service_config`)
 	if existingRows != nil {
 		for existingRows.Next() {
 			var eid int64
@@ -748,11 +757,12 @@ func (s *Service) Import(ctx context.Context, actor auth.User, in ExportData) (I
 			}
 		}
 		if len(cids) > 0 {
-			_, err := s.DB.Exec(ctx, `INSERT INTO stage_route (stage, tier, config_ids) VALUES ($1,$2,$3)
+			_, err := tx.Exec(ctx, `INSERT INTO stage_route (stage, tier, config_ids) VALUES ($1,$2,$3)
 				ON CONFLICT (stage, tier) DO UPDATE SET config_ids=$3`, r.Stage, tier, cids)
-			if err == nil {
-				res.RoutesCount++
+			if err != nil {
+				return ImportResult{}, err
 			}
+			res.RoutesCount++
 		}
 	}
 
@@ -760,26 +770,31 @@ func (s *Service) Import(ctx context.Context, actor auth.User, in ExportData) (I
 		if t.Key == "" || t.Name == "" {
 			continue
 		}
-		_, err := s.DB.Exec(ctx, `INSERT INTO article_type (key, name, description, needs_news, research, enabled, sort)
+		_, err := tx.Exec(ctx, `INSERT INTO article_type (key, name, description, needs_news, research, enabled, sort)
 			VALUES ($1,$2,$3,$4,$5,$6,$7)
 			ON CONFLICT (key) DO UPDATE SET name=$2, description=$3, needs_news=$4, research=$5, enabled=$6, sort=$7`,
 			t.Key, t.Name, t.Description, t.NeedsNews, t.Research, t.Enabled, t.Sort)
-		if err == nil {
-			res.TypesCount++
+		if err != nil {
+			return ImportResult{}, err
 		}
+		res.TypesCount++
 	}
 
 	for k, v := range in.PlatformSettings {
 		if k == "" || len(v) == 0 {
 			continue
 		}
-		_, err := s.DB.Exec(ctx, `INSERT INTO platform_setting (key, value, updated_by) VALUES ($1, $2, $3)
+		_, err := tx.Exec(ctx, `INSERT INTO platform_setting (key, value, updated_by) VALUES ($1, $2, $3)
 			ON CONFLICT (key) DO UPDATE SET value=$2, updated_by=$3, updated_at=now()`, k, []byte(v), actor.ID)
-		if err == nil {
-			res.SettingsCount++
+		if err != nil {
+			return ImportResult{}, err
 		}
+		res.SettingsCount++
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return ImportResult{}, err
+	}
 	s.Audit.Log(ctx, actor.ID, "config.import", "all", map[string]any{
 		"configs":  res.ConfigsCount,
 		"routes":   res.RoutesCount,

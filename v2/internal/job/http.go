@@ -234,6 +234,16 @@ func (s *Service) hUpdateArticle(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusNotFound, "文章不存在")
 		return
 	}
+	if curStatus == "pushed" {
+		server.WriteError(w, http.StatusConflict, "这篇已经推送到草稿箱，请在公众号后台修改")
+		return
+	}
+	if in.Title != nil {
+		if n := len([]rune(strings.TrimSpace(*in.Title))); n == 0 || n > 64 {
+			server.WriteError(w, http.StatusBadRequest, "标题需要 1 到 64 个字")
+			return
+		}
+	}
 
 	sets := []string{}
 	setArgs := []any{artID}
@@ -246,12 +256,13 @@ func (s *Service) hUpdateArticle(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, fmt.Sprintf("summary=$%d", len(setArgs)))
 	}
 	if in.HTML != nil {
-		setArgs = append(setArgs, *in.HTML)
+		setArgs = append(setArgs, sanitizeArticleHTML(*in.HTML))
 		sets = append(sets, fmt.Sprintf("html=$%d", len(setArgs)))
 	}
 
 	if len(sets) > 0 {
-		query := fmt.Sprintf("UPDATE article SET %s WHERE id=$1", strings.Join(sets, ", "))
+		sets = append(sets, "updated_at=now()")
+		query := fmt.Sprintf("UPDATE article SET %s WHERE id=$1 AND status<>'pushed'", strings.Join(sets, ", "))
 		if _, err := s.DB.Exec(r.Context(), query, setArgs...); err != nil {
 			fail(w, err)
 			return
