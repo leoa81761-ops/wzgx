@@ -305,10 +305,11 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	if err != nil {
 		return res, fmt.Errorf("写作：%w", err)
 	}
-	var art render.Article
+	art, perr := parseArticle(wr.Text)
 	block := ""
-	if decodeJSON(wr.Text, &art) != nil {
+	if perr != nil {
 		block = "空：模型没有返回可解析的文章"
+		trace(Step{Stage: "write", Note: rawNote("write reply not readable", wr.Text)})
 	} else {
 		block = Gate(art, wr.FinishReason, p.sensitive(ctx))
 	}
@@ -316,46 +317,44 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	// agent mode ③b: compare the draft with the user's own settings and excerpts, revise once.
 	// The revision replaces the draft only if it is a complete article that passes the gates.
 	if block == "" && agent {
-		orig, _ := json.Marshal(art)
-		rr, err := chat("revise", wcfgs, reviseSystem, brief+"\n初稿：\n"+string(orig))
-		var rv reviseReply
-		switch {
-		case err != nil:
-			trace(Step{Stage: "revise", Note: "revise failed, keeping draft"})
-		case parseRevise(rr.Text, &rv) != nil:
-			trace(Step{Stage: "revise", Note: "revise reply not structured, keeping draft"})
-		case len(rv.Article.Blocks) == 0:
-			trace(Step{Stage: "revise", Note: "no revision: " + strings.Join(rv.Gaps, "；")})
-		case Gate(rv.Article, rr.FinishReason, p.sensitive(ctx)) == "":
-			art = rv.Article
-			trace(Step{Stage: "revise", Note: "revised: " + strings.Join(rv.Gaps, "；")})
-		default:
-			trace(Step{Stage: "revise", Note: "revision rejected by gates, keeping draft"})
-		}
+		func() {
+			rr, err := chat("revise", wcfgs, reviseSystem, brief+"\n初稿：\n"+articleMarkdown(art))
+			if err != nil {
+				trace(Step{Stage: "revise", Note: "revise failed, keeping draft"})
+			} else if gaps, head, body := splitNotes(rr.Text); body == "" && (strings.Contains(head, "无差距") || strings.HasPrefix(strings.TrimSpace(head), "{")) {
+				var rv reviseReply
+				if strings.HasPrefix(strings.TrimSpace(head), "{") && parseRevise(head, &rv) == nil && len(rv.Article.Blocks) > 0 && Gate(rv.Article, rr.FinishReason, p.sensitive(ctx)) == "" {
+					art = rv.Article
+					trace(Step{Stage: "revise", Note: "revised: " + strings.Join(rv.Gaps, "；")})
+					return
+				}
+				trace(Step{Stage: "revise", Note: "no gaps"})
+			} else if ra, err := parseArticle(body); body == "" || err != nil {
+				trace(Step{Stage: "revise", Note: rawNote("revise reply not structured, keeping draft", rr.Text)})
+			} else if why := Gate(ra, rr.FinishReason, p.sensitive(ctx)); why == "" {
+				art = ra
+				trace(Step{Stage: "revise", Note: "revised: " + strings.Join(gaps, "；")})
+			} else {
+				trace(Step{Stage: "revise", Note: "revision rejected by gates (" + why + "), keeping draft"})
+			}
+		}()
 	}
 
 	// ④ optional self-review: a revision replaces the draft only if it is a complete article that passes the gates
 	if block == "" && selfReview {
 		if rcfgs, err := load("review"); err == nil {
-			orig, _ := json.Marshal(art)
-			rr, err := chat("review", rcfgs, reviewSystem, wc.settings()+"\n文章：\n"+string(orig))
-			var rv struct {
-				Pass     *bool          `json:"pass"`
-				Problems []string       `json:"problems"`
-				Article  render.Article `json:"article"`
-			}
-			switch {
-			case err != nil:
+			rr, err := chat("review", rcfgs, reviewSystem, wc.settings()+"\n文章：\n"+articleMarkdown(art))
+			if err != nil {
 				trace(Step{Stage: "review", Note: "review failed, keeping draft"})
-			case decodeJSON(rr.Text, &rv) != nil || rv.Pass == nil:
-				trace(Step{Stage: "review", Note: "review reply not structured, keeping draft"})
-			case *rv.Pass:
+			} else if probs, head, body := splitNotes(rr.Text); body == "" && ((strings.Contains(head, "通过") && !strings.Contains(head, "需修改")) || jsonPass(head)) {
 				trace(Step{Stage: "review", Note: "pass"})
-			case Gate(rv.Article, rr.FinishReason, p.sensitive(ctx)) == "" && len(rv.Article.Blocks) > 0:
-				art = rv.Article
-				trace(Step{Stage: "review", Note: "revised: " + strings.Join(rv.Problems, "；")})
-			default:
-				trace(Step{Stage: "review", Note: "revision rejected by gates, keeping draft"})
+			} else if ra, err := parseArticle(body); body == "" || err != nil {
+				trace(Step{Stage: "review", Note: rawNote("review reply not structured, keeping draft; problems: "+strings.Join(probs, "；"), rr.Text)})
+			} else if why := Gate(ra, rr.FinishReason, p.sensitive(ctx)); why == "" {
+				art = ra
+				trace(Step{Stage: "review", Note: "revised: " + strings.Join(probs, "；")})
+			} else {
+				trace(Step{Stage: "review", Note: "revision rejected by gates (" + why + "), keeping draft; problems: " + strings.Join(probs, "；")})
 			}
 		}
 	}
