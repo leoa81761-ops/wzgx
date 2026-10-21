@@ -176,6 +176,13 @@ func validTable(rows [][]string) bool {
 	return true
 }
 
+var boldRe = regexp.MustCompile(`\*\*([^*\n]+?)\*\*`)
+
+// Bold turns **text** (already HTML-escaped) into <strong>; stray ** are dropped so they never show.
+func Bold(esc string) string {
+	return strings.ReplaceAll(boldRe.ReplaceAllString(esc, "<strong>$1</strong>"), "**", "")
+}
+
 func Render(a Article, o Options) Output {
 	var b strings.Builder
 	out := Output{}
@@ -184,8 +191,8 @@ func Render(a Article, o Options) Output {
 	L := LayoutByKey(o.Layout)
 
 	inline := func(s string) string {
-		plain.WriteString(s + "\n")
-		esc := html.EscapeString(strings.TrimSpace(s))
+		plain.WriteString(strings.ReplaceAll(s, "**", "") + "\n")
+		esc := Bold(html.EscapeString(strings.TrimSpace(s)))
 		return citeRe.ReplaceAllStringFunc(esc, func(m string) string {
 			var n int
 			fmt.Sscanf(m, "[%d]", &n)
