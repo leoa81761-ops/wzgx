@@ -20,7 +20,13 @@ const scanSystem = `你是资料检索助手。请立刻联网搜索，先用中
 
 const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。用到标记为【官方依据】的资料（国家标准、政府部门正式文件）时，在该句末标注它的 [编号]；其他资料不标注编号。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
 
-const reviewSystem = `你审校一篇公众号文章：只检查事实错误、前后矛盾、没写完、违反用户设置之处。没有问题输出 {"pass":true}；有问题输出 {"pass":false,"problems":["问题"],"article":{与原文相同结构的完整修订稿}}。只输出 JSON。`
+const reviewSystem = `你审校一篇公众号文章：只检查事实错误、前后矛盾、没写完、违反用户设置之处。语气和写法以用户设置为准：不要为了稳妥把明确的经验判断改成含糊说法，不要加限定词、免责声明或“仅供参考”之类的话，不要改动没有问题的句子。没有问题输出 {"pass":true}；有问题输出 {"pass":false,"problems":["问题"],"article":{与原文相同结构的完整修订稿}}。只输出 JSON。`
+
+// Agent mode (account setting): plan before writing, then compare the draft with the user's own
+// settings and excerpts and revise once. Both prompts carry no tone of their own.
+const planSystem = `你是这篇公众号文章的作者，动笔前先做写作计划，不写正文。按用户给出的账号设置、栏目设置、范文片段和资料来想：这个号的读者卡在哪件具体的事上，这篇从哪个角度切进去，读者读完能直接拿走什么（例如清单、表格、模板、话术、判断方法，按题目需要选，不需要就不写），全文分几部分、每部分讲什么，用什么口吻和写法才像这个号自己写的。不编造数据、案例、文号。只输出 JSON：{"reader_pain":"","angle":"","takeaway":"","outline":[{"heading":"","point":""}],"voice":""}`
+
+const reviseSystem = `你是这篇公众号文章的作者，现在对照用户给出的账号设置和范文片段（如果有）检查自己的初稿，只看写法和语气的差距：开头、口吻、称呼读者的方式、用词、节奏、结构习惯、读者能拿走的东西、结尾，是否像这个号自己写的。不按篇幅评判，不为凑字数加内容，也不删减有用的内容。事实、数字、文号和 [编号] 保持不变，不新增没有依据的数据、案例或文号；不照搬范文的内容和事实。有差距就列出差距并给出改好的完整文章；没有差距 article 留空。只输出 JSON：{"gaps":["差距"],"article":{与初稿相同结构的完整修订稿，或 null}}`
 
 type writingContext struct {
 	Rotation    string // what the stats weighting did when picking the column (not given to the model)
@@ -37,9 +43,11 @@ type writingContext struct {
 	Recent      []string
 	Recentnews  string // what a live search found recently, for news-type columns
 	Today       string
-	Layout      string // render template; not part of any prompt
-	FactCheck   bool   // account setting: check concrete claims against the research after writing (not a prompt)
-	Style       string // the user's style traits (from their sample articles), if switched on
+	Layout      string   // render template; not part of any prompt
+	FactCheck   bool     // account setting: check concrete claims against the research after writing (not a prompt)
+	Style       string   // the user's style traits (from their sample articles), if switched on
+	Excerpts    []string // excerpts of the user's own sample articles, kept with their consent
+	Agent       bool     // account setting 智能体写作 (not a prompt)
 }
 
 func (w writingContext) settings() string {
@@ -119,6 +127,9 @@ func writeUser(w writingContext, topic, angle string, ev []Evidence) string {
 			other = append(other, line)
 		}
 	}
+	for i, x := range w.Excerpts {
+		fmt.Fprintf(&b, "\n范文片段 %d（用户提供的范文，只学语气和写法，不抄内容，不照搬其中的事实、数字和做法）：\n%s\n", i+1, x)
+	}
 	if len(official) > 0 {
 		b.WriteString("\n官方依据（用到时句末标注编号）：\n" + strings.Join(official, "\n") + "\n")
 	}
@@ -126,4 +137,33 @@ func writeUser(w writingContext, topic, angle string, ev []Evidence) string {
 		b.WriteString("\n其他资料（不标注编号）：\n" + strings.Join(other, "\n") + "\n")
 	}
 	return b.String()
+}
+
+// planText turns the plan reply into lines for the writer; "" if it is not the agreed JSON.
+func planText(text string) string {
+	var pl struct {
+		ReaderPain string `json:"reader_pain"`
+		Angle      string `json:"angle"`
+		Takeaway   string `json:"takeaway"`
+		Outline    []struct {
+			Heading string `json:"heading"`
+			Point   string `json:"point"`
+		} `json:"outline"`
+		Voice string `json:"voice"`
+	}
+	if decodeJSON(text, &pl) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, kv := range [][2]string{{"读者痛点", pl.ReaderPain}, {"切入角度", pl.Angle}, {"读者能拿走的", pl.Takeaway}, {"口吻和写法", pl.Voice}} {
+		if v := strings.TrimSpace(kv[1]); v != "" {
+			fmt.Fprintf(&b, "%s：%s\n", kv[0], v)
+		}
+	}
+	for i, o := range pl.Outline {
+		if h := strings.TrimSpace(o.Heading); h != "" || strings.TrimSpace(o.Point) != "" {
+			fmt.Fprintf(&b, "第%d部分：%s——%s\n", i+1, h, strings.TrimSpace(o.Point))
+		}
+	}
+	return strings.TrimSpace(b.String())
 }

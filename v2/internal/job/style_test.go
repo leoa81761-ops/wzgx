@@ -19,8 +19,8 @@ func TestStyle(t *testing.T) {
 	}
 	three := []string{sample(1), sample(2), sample(3)}
 
-	if code, _, _ := do(t, e.srv, "POST", acc+"/style", user, map[string]any{"samples": three[:2]}); code != 400 {
-		t.Fatal("two samples accepted")
+	if code, _, _ := do(t, e.srv, "POST", acc+"/style", user, map[string]any{"samples": three[:1]}); code != 400 {
+		t.Fatal("one sample accepted")
 	}
 	if code, _, _ := do(t, e.srv, "POST", acc+"/style", user, map[string]any{"samples": []string{"太短", sample(2), sample(3)}}); code != 400 {
 		t.Fatal("short sample accepted")
@@ -78,6 +78,23 @@ func TestStyle(t *testing.T) {
 	if u := writeUser("文竹怎么养"); strings.Contains(u, "写作风格") {
 		t.Fatal("style used while off")
 	}
+	// with consent, two excerpts are kept and the writer sees them as a style reference
+	_, kp, b := do(t, e.srv, "POST", acc+"/style", user, map[string]any{"samples": three, "keep_excerpts": true})
+	if kp["excerpts"].(float64) != 2 {
+		t.Fatalf("excerpts: %s", b)
+	}
+	if u := writeUser("龟背竹怎么换盆"); !strings.Contains(u, "范文片段 1（用户提供的范文，只学语气和写法，不抄内容") || !strings.Contains(u, "第1篇") || strings.Contains(u, "范文片段 3") {
+		t.Fatalf("excerpts in writer: %.600s", u)
+	}
+	// agent mode: plan -> write -> revise; the revision replaces the draft when it passes the gates
+	e.pool.Exec(ctx, `UPDATE account_profile SET agent_mode=TRUE WHERE account_id=$1`, accID)
+	e.pool.Exec(ctx, `INSERT INTO account_profile (account_id, agent_mode) VALUES ($1, TRUE) ON CONFLICT (account_id) DO UPDATE SET agent_mode=TRUE`, accID)
+	e.fm.set("write", "", `{"reader_pain":"浇水总浇死","angle":"看土不看日历","takeaway":"一张浇水判断表","outline":[{"heading":"先摸土","point":"手指插两节"}],"voice":"像老邻居"}`, article1, `{"gaps":["开头太平"],"article":null}`)
+	u := writeUser("虎皮兰多久浇一次")
+	if !strings.Contains(u, "写作计划") || !strings.Contains(u, "读者能拿走的：一张浇水判断表") || !strings.Contains(u, "初稿：") {
+		t.Fatalf("agent mode: %.300s", u)
+	}
+	e.fm.set("write", "", article1)
 	_, list, _ := do(t, e.srv, "GET", acc+"/style", user, nil)
 	_ = list
 	if code, _, _ := do(t, e.srv, "DELETE", fmt.Sprintf("%s/style/%v", acc, cp["id"]), user, nil); code != 200 {

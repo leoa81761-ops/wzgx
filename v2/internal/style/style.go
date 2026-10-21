@@ -1,6 +1,7 @@
 // Package style learns a personal writing style from 3–5 sample articles the user pastes.
-// One model call extracts style traits only (tone, sentence length, structure habits, vocabulary);
-// only the traits are stored, never the samples, and the writer gets them as user settings.
+// One model call extracts style traits (tone, sentence length, structure habits, vocabulary). By default
+// only the traits are stored. If the user explicitly agrees, up to two excerpts of the samples are kept
+// too and shown to the writer as a style reference (learn the voice, not the content).
 // A profile covers a whole account or one column, and each has its own on/off switch.
 package style
 
@@ -57,6 +58,7 @@ type Profile struct {
 	Column    string    `json:"column_name"`
 	Traits    Traits    `json:"traits"`
 	Samples   int       `json:"samples"`
+	Excerpts  int       `json:"excerpts"` // kept excerpts (only with the user's consent)
 	Enabled   bool      `json:"enabled"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -68,11 +70,35 @@ func (e ValidationError) Error() string { return string(e) }
 var ErrNotFound = errors.New("不存在")
 
 const (
-	minSamples, maxSamples = 3, 5
+	minSamples, maxSamples = 2, 5
 	minRunes, maxRunes     = 200, 20000
 	maxTrait               = 120
 	copyWindow             = 12 // a trait sharing this many consecutive characters with a sample is dropped
+	maxExcerpts            = 2
+	excerptRunes           = 3000
 )
+
+// Excerpts keeps the first maxExcerpts samples, each cut to excerptRunes at a paragraph end when possible.
+func Excerpts(samples []string) []string {
+	out := []string{}
+	for _, x := range samples {
+		if len(out) >= maxExcerpts {
+			break
+		}
+		r := []rune(strings.TrimSpace(x))
+		if len(r) > excerptRunes {
+			cut := excerptRunes
+			if i := strings.LastIndex(string(r[:excerptRunes]), "\n"); i > 0 && utf8.RuneCountInString(string(r[:excerptRunes])[:i]) > excerptRunes/2 {
+				cut = utf8.RuneCountInString(string(r[:excerptRunes])[:i])
+			}
+			r = r[:cut]
+		}
+		if len(r) > 0 {
+			out = append(out, string(r))
+		}
+	}
+	return out
+}
 
 const extractSystem = `你分析几篇文章共同的写作风格。只描述风格特征，不复述内容：不要引用或改写原文句子，不要写出文章里的具体人名、地名、机构、数字、事件或观点。
 只输出 JSON：{"tone":"语气和口吻","sentence":"句子长短和节奏","structure":"开头、分段、小标题、结尾的习惯","vocabulary":"用词习惯，比如口语化程度、称呼读者的方式","other":"其他明显的风格习惯，没有就留空"}
@@ -155,7 +181,8 @@ func (s *Service) owned(ctx context.Context, actor auth.User, accID int64) (stri
 
 // Learn extracts traits from the samples and saves them for the account or one of its columns
 // (replacing that scope's previous profile). The samples are not stored or logged.
-func (s *Service) Learn(ctx context.Context, actor auth.User, accID int64, columnID *int64, samples []string) (Profile, error) {
+// keep: the user agreed to keep up to two excerpts as a style reference for the writer.
+func (s *Service) Learn(ctx context.Context, actor auth.User, accID int64, columnID *int64, samples []string, keep bool) (Profile, error) {
 	tier, err := s.owned(ctx, actor, accID)
 	if err != nil {
 		return Profile{}, err
@@ -172,23 +199,28 @@ func (s *Service) Learn(ctx context.Context, actor auth.User, accID int64, colum
 		return Profile{}, err
 	}
 	tj, _ := json.Marshal(t)
+	ex := []string{}
+	if keep {
+		ex = Excerpts(samples)
+	}
+	ej, _ := json.Marshal(ex)
 	var id int64
-	err = s.DB.QueryRow(ctx, `INSERT INTO style_profile (account_id, column_id, traits, samples) VALUES ($1,$2,$3,$4)
-		ON CONFLICT (account_id, COALESCE(column_id, 0)) DO UPDATE SET traits=$3, samples=$4, enabled=TRUE, updated_at=now() RETURNING id`,
-		accID, columnID, tj, len(samples)).Scan(&id)
+	err = s.DB.QueryRow(ctx, `INSERT INTO style_profile (account_id, column_id, traits, samples, excerpts) VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (account_id, COALESCE(column_id, 0)) DO UPDATE SET traits=$3, samples=$4, excerpts=$5, enabled=TRUE, updated_at=now() RETURNING id`,
+		accID, columnID, tj, len(samples), ej).Scan(&id)
 	if err != nil {
 		return Profile{}, err
 	}
-	s.Audit.Log(ctx, actor.ID, "style.learn", fmt.Sprint(accID), map[string]any{"account_id": accID, "column_id": columnID, "samples": len(samples)})
+	s.Audit.Log(ctx, actor.ID, "style.learn", fmt.Sprint(accID), map[string]any{"account_id": accID, "column_id": columnID, "samples": len(samples), "excerpts_kept": len(ex)})
 	return s.get(ctx, accID, id)
 }
 
-const profCols = `p.id, p.column_id, COALESCE(c.name,''), p.traits, p.samples, p.enabled, p.updated_at`
+const profCols = `p.id, p.column_id, COALESCE(c.name,''), p.traits, p.samples, jsonb_array_length(p.excerpts), p.enabled, p.updated_at`
 
 func scanProfile(r pgx.Row) (Profile, error) {
 	var p Profile
 	var tj []byte
-	err := r.Scan(&p.ID, &p.ColumnID, &p.Column, &tj, &p.Samples, &p.Enabled, &p.UpdatedAt)
+	err := r.Scan(&p.ID, &p.ColumnID, &p.Column, &tj, &p.Samples, &p.Excerpts, &p.Enabled, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrNotFound
 	}
@@ -254,17 +286,19 @@ func (s *Service) Delete(ctx context.Context, actor auth.User, accID, id int64) 
 	return nil
 }
 
-// ForWriter returns the enabled traits for a job: the column's profile wins over the account's.
-func ForWriter(ctx context.Context, db *pgxpool.Pool, accID, columnID int64) string {
-	var tj []byte
-	err := db.QueryRow(ctx, `SELECT traits FROM style_profile WHERE account_id=$1 AND enabled AND (column_id=$2 OR column_id IS NULL)
-		ORDER BY column_id NULLS LAST LIMIT 1`, accID, columnID).Scan(&tj)
+// ForWriter returns the enabled traits and kept excerpts for a job: the column's profile wins over the account's.
+func ForWriter(ctx context.Context, db *pgxpool.Pool, accID, columnID int64) (string, []string) {
+	var tj, ej []byte
+	err := db.QueryRow(ctx, `SELECT traits, excerpts FROM style_profile WHERE account_id=$1 AND enabled AND (column_id=$2 OR column_id IS NULL)
+		ORDER BY column_id NULLS LAST LIMIT 1`, accID, columnID).Scan(&tj, &ej)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	var t Traits
 	json.Unmarshal(tj, &t)
-	return t.Text()
+	var ex []string
+	json.Unmarshal(ej, &ex)
+	return t.Text(), ex
 }
 
 // ---------- HTTP ----------
@@ -312,13 +346,14 @@ func (s *Service) hLearn(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		ColumnID *int64   `json:"column_id"`
 		Samples  []string `json:"samples"`
+		Keep     bool     `json:"keep_excerpts"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 512<<10)
 	if json.NewDecoder(r.Body).Decode(&in) != nil {
 		server.WriteError(w, 400, "请求格式不正确或范文太长")
 		return
 	}
-	p, err := s.Learn(r.Context(), actor(r), pathID(r, "id"), in.ColumnID, in.Samples)
+	p, err := s.Learn(r.Context(), actor(r), pathID(r, "id"), in.ColumnID, in.Samples, in.Keep)
 	if err != nil {
 		fail(w, err)
 		return

@@ -261,7 +261,7 @@ func (s *Service) Export(ctx context.Context, userID int64) (map[string]any, err
 	parts := []struct{ key, sql string }{
 		{"user", `SELECT email, display_name, tier, max_accounts, daily_quota, bonus_articles, tier_expires_at, created_at FROM users WHERE id=$1`},
 		{"accounts", `SELECT id, name, app_id, bind_status, paused, confirm_topic, layout, created_at FROM wx_account WHERE user_id=$1 ORDER BY id`},
-		{"writing_settings", `SELECT p.account_id, p.positioning, p.persona, p.audience, p.tone, p.taboos, p.signature, p.opening, p.ending, p.ai_label, p.self_review
+		{"writing_settings", `SELECT p.account_id, p.positioning, p.persona, p.audience, p.tone, p.taboos, p.signature, p.opening, p.ending, p.ai_label, p.self_review, p.agent_mode
 			FROM account_profile p JOIN wx_account a ON a.id=p.account_id WHERE a.user_id=$1 ORDER BY p.account_id`},
 		{"columns", `SELECT c.id, c.account_id, c.name, t.name AS article_type, c.note, c.length_hint, c.weight, c.enabled
 			FROM account_column c JOIN wx_account a ON a.id=c.account_id JOIN article_type t ON t.id=c.article_type_id WHERE a.user_id=$1 ORDER BY c.id`},
@@ -270,7 +270,7 @@ func (s *Service) Export(ctx context.Context, userID int64) (map[string]any, err
 			FROM article WHERE user_id=$1 ORDER BY id`},
 		{"article_sources", `SELECT s.article_id, s.n, s.kind, s.title, s.issuer, s.doc_number, s.published_on, s.url
 			FROM article_source s JOIN article a ON a.id=s.article_id WHERE a.user_id=$1 ORDER BY s.article_id, s.n`},
-		{"style_profiles", `SELECT p.account_id, p.column_id, p.traits, p.samples, p.enabled, p.updated_at
+		{"style_profiles", `SELECT p.account_id, p.column_id, p.traits, p.samples, p.excerpts, p.enabled, p.updated_at
 			FROM style_profile p JOIN wx_account a ON a.id=p.account_id WHERE a.user_id=$1 ORDER BY p.id`},
 		{"ref_images", `SELECT account_id, source_url, caption, width, height, statement, authorized_at, used, created_at
 			FROM ref_image WHERE user_id=$1 ORDER BY id`},
