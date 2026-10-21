@@ -163,6 +163,7 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	trace := func(s Step) { res.Trace = append(res.Trace, s) }
 
 	wc, tier, colID, selfReview, err := p.load(ctx, j)
+	agent := wc.Agent
 	if err != nil {
 		return res, err
 	}
@@ -286,7 +287,21 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	if err != nil {
 		return res, fmt.Errorf("写作：%w", err)
 	}
-	wr, err := chat("write", wcfgs, writeSystem, writeUser(wc, topic.Topic, topic.Angle, ev))
+	brief := writeUser(wc, topic.Topic, topic.Angle, ev)
+	// agent mode ③a: plan first (reader pain, angle, takeaway, outline). A failed plan just means no plan.
+	if agent {
+		if pr, err := chat("plan", wcfgs, planSystem, brief); err == nil {
+			if plan := planText(pr.Text); plan != "" {
+				brief += "\n写作计划（你自己先做的，照着写，发现更好的写法可以调整）：\n" + plan + "\n"
+				trace(Step{Stage: "plan", Note: "ok"})
+			} else {
+				trace(Step{Stage: "plan", Note: "plan reply not structured, writing without it"})
+			}
+		} else {
+			trace(Step{Stage: "plan", Note: "plan failed, writing without it"})
+		}
+	}
+	wr, err := chat("write", wcfgs, writeSystem, brief)
 	if err != nil {
 		return res, fmt.Errorf("写作：%w", err)
 	}
@@ -296,6 +311,30 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 		block = "空：模型没有返回可解析的文章"
 	} else {
 		block = Gate(art, wr.FinishReason, p.sensitive(ctx))
+	}
+
+	// agent mode ③b: compare the draft with the user's own settings and excerpts, revise once.
+	// The revision replaces the draft only if it is a complete article that passes the gates.
+	if block == "" && agent {
+		orig, _ := json.Marshal(art)
+		rr, err := chat("revise", wcfgs, reviseSystem, brief+"\n初稿：\n"+string(orig))
+		var rv struct {
+			Gaps    []string       `json:"gaps"`
+			Article render.Article `json:"article"`
+		}
+		switch {
+		case err != nil:
+			trace(Step{Stage: "revise", Note: "revise failed, keeping draft"})
+		case decodeJSON(rr.Text, &rv) != nil:
+			trace(Step{Stage: "revise", Note: "revise reply not structured, keeping draft"})
+		case len(rv.Article.Blocks) == 0:
+			trace(Step{Stage: "revise", Note: "no revision: " + strings.Join(rv.Gaps, "；")})
+		case Gate(rv.Article, rr.FinishReason, p.sensitive(ctx)) == "":
+			art = rv.Article
+			trace(Step{Stage: "revise", Note: "revised: " + strings.Join(rv.Gaps, "；")})
+		default:
+			trace(Step{Stage: "revise", Note: "revision rejected by gates, keeping draft"})
+		}
 	}
 
 	// ④ optional self-review: a revision replaces the draft only if it is a complete article that passes the gates
@@ -504,8 +543,8 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	}
 	var pos, persona, aud, tone, taboos, sig, opening, ending string
 	var ai, review bool
-	err = p.DB.QueryRow(ctx, `SELECT positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review, fact_check
-		FROM account_profile WHERE account_id=$1`, j.AccountID).Scan(&pos, &persona, &aud, &tone, &taboos, &sig, &opening, &ending, &ai, &review, &w.FactCheck)
+	err = p.DB.QueryRow(ctx, `SELECT positioning, persona, audience, tone, taboos, signature, opening, ending, ai_label, self_review, fact_check, agent_mode
+		FROM account_profile WHERE account_id=$1`, j.AccountID).Scan(&pos, &persona, &aud, &tone, &taboos, &sig, &opening, &ending, &ai, &review, &w.FactCheck, &w.Agent)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return w, "", 0, false, err
 	}
@@ -609,7 +648,7 @@ func (p *Pipeline) load(ctx context.Context, j Job) (writingContext, string, int
 	}
 	rows.Close()
 	w.Today = p.now().Format("2006-01-02")
-	w.Style = style.ForWriter(ctx, p.DB, j.AccountID, colID)
+	w.Style, w.Excerpts = style.ForWriter(ctx, p.DB, j.AccountID, colID)
 	return w, tier, colID, review, nil
 }
 
