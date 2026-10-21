@@ -40,3 +40,15 @@ func TestSplitNotes(t *testing.T) {
 		t.Errorf("%v %q", n, body)
 	}
 }
+
+func TestParseArticleWrapped(t *testing.T) {
+	for _, in := range []string{`{"content":"标题：T\n\n正文一段。"}`, "```json\n{\"article\":\"标题：T\\n\\n正文一段。\"}\n```"} {
+		a, err := parseArticle(in)
+		if err != nil || a.Title != "T" || len(a.Blocks) != 1 {
+			t.Errorf("%q: %v %+v", in, err, a)
+		}
+	}
+	if !proseStage("write") || proseStage("plan") {
+		t.Error("proseStage")
+	}
+}

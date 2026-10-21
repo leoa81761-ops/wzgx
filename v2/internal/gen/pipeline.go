@@ -174,7 +174,7 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	chat := func(stage string, cfgs []gateway.Config, sys, user string) (gateway.Result, error) {
 		// Search models answer from live search; JSON mode makes them skip searching, so research
 		// and scan ask for plain-text lines (see ParseFacts) without JSON mode.
-		r, err := p.GW.Chat(ctx, cfgs, gateway.Request{Stage: stage, JobID: j.ID, JSON: stage != "research" && stage != "scan",
+		r, err := p.GW.Chat(ctx, cfgs, gateway.Request{Stage: stage, JobID: j.ID, JSON: !proseStage(stage),
 			Messages: []gateway.Message{{Role: "system", Content: sys}, {Role: "user", Content: user}}}, left())
 		var fe *gateway.FailedError
 		if errors.As(err, &fe) {

@@ -44,6 +44,10 @@ func parseArticle(text string) (render.Article, error) {
 		if err := decodeJSON(s, &a); err == nil && len(a.Blocks) > 0 {
 			return a, nil
 		}
+		if inner := wrappedText(s); inner != "" {
+			return parseArticle(inner)
+		}
+		a = render.Article{}
 	}
 	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
 	var para []string
@@ -225,4 +229,27 @@ func jsonPass(s string) bool {
 		Pass *bool `json:"pass"`
 	}
 	return strings.HasPrefix(strings.TrimSpace(s), "{") && decodeJSON(s, &v) == nil && v.Pass != nil && *v.Pass
+}
+
+// proseStage: steps whose reply is free text (Markdown article or research notes), never JSON mode.
+func proseStage(stage string) bool {
+	switch stage {
+	case "research", "scan", "write", "revise", "review":
+		return true
+	}
+	return false
+}
+
+// wrappedText unwraps a JSON shell around a prose reply, e.g. {"content":"标题：…"} or {"article":"…"}.
+func wrappedText(s string) string {
+	var m map[string]any
+	if decodeJSON(s, &m) != nil {
+		return ""
+	}
+	for _, k := range []string{"content", "article", "text", "markdown", "body", "output", "result"} {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
