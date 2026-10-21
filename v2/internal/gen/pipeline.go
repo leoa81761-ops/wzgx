@@ -318,14 +318,11 @@ func (p *Pipeline) Run(ctx context.Context, j Job) (Result, error) {
 	if block == "" && agent {
 		orig, _ := json.Marshal(art)
 		rr, err := chat("revise", wcfgs, reviseSystem, brief+"\n初稿：\n"+string(orig))
-		var rv struct {
-			Gaps    []string       `json:"gaps"`
-			Article render.Article `json:"article"`
-		}
+		var rv reviseReply
 		switch {
 		case err != nil:
 			trace(Step{Stage: "revise", Note: "revise failed, keeping draft"})
-		case decodeJSON(rr.Text, &rv) != nil:
+		case parseRevise(rr.Text, &rv) != nil:
 			trace(Step{Stage: "revise", Note: "revise reply not structured, keeping draft"})
 		case len(rv.Article.Blocks) == 0:
 			trace(Step{Stage: "revise", Note: "no revision: " + strings.Join(rv.Gaps, "；")})
