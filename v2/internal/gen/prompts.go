@@ -18,7 +18,7 @@ const scanSystem = `你是资料检索助手。请立刻联网搜索，先用中
 每条写一行，以「- 」开头：事件内容（来源：来源名称或文件标题｜文号，没有就省略｜日期）
 只有完全没有搜到时，才只写：未检索到可靠来源`
 
-const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。用到标记为【官方依据】的资料（国家标准、政府部门正式文件）时，在该句末标注它的 [编号]；其他资料不标注编号。需要加粗的词句用 **加粗** 标出。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
+const writeSystem = `你为微信公众号撰写一篇完整文章。遵守中国法律法规和平台规范；不编造数据、案例、文号；不写签名、不写给编辑的说明。按用户给出的账号与栏目设置决定写法。用到标记为【官方依据】的资料（国家标准、政府部门正式文件）时，在该句末标注它的 [编号]；其他资料不标注编号。需要加粗的词句用 **加粗** 标出。每个 p 是一个完整的自然段，可以有好几句话，像人写文章那样连着写，不要把一句话拆成一段。只输出 JSON：{"title":"标题","alt_titles":["备选标题"],"summary":"摘要","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}`
 
 const reviewSystem = `你审校一篇公众号文章：只检查事实错误、前后矛盾、没写完、违反用户设置之处。语气和写法以用户设置为准：不要为了稳妥把明确的经验判断改成含糊说法，不要加限定词、免责声明或“仅供参考”之类的话，不要改动没有问题的句子。没有问题输出 {"pass":true}；有问题输出 {"pass":false,"problems":["问题"],"article":{与原文相同结构的完整修订稿}}。只输出 JSON。`
 
@@ -26,7 +26,7 @@ const reviewSystem = `你审校一篇公众号文章：只检查事实错误、�
 // settings and excerpts and revise once. Both prompts carry no tone of their own.
 const planSystem = `你是这篇公众号文章的作者，动笔前先做写作计划，不写正文。按用户给出的账号设置、栏目设置、范文片段和资料来想：这个号的读者卡在哪件具体的事上，这篇从哪个角度切进去，读者读完能直接拿走什么（例如清单、表格、模板、话术、判断方法，按题目需要选，不需要就不写），全文分几部分、每部分讲什么，用什么口吻和写法才像这个号自己写的。不编造数据、案例、文号。只输出 JSON：{"reader_pain":"","angle":"","takeaway":"","outline":[{"heading":"","point":""}],"voice":""}`
 
-const reviseSystem = `你是这篇公众号文章的作者，现在对照用户给出的账号设置和范文片段（如果有）检查自己的初稿，只看写法和语气的差距：开头、口吻、称呼读者的方式、用词、节奏、结构习惯、读者能拿走的东西、结尾，是否像这个号自己写的。不按篇幅评判，不为凑字数加内容，也不删减有用的内容。事实、数字、文号和 [编号] 保持不变，不新增没有依据的数据、案例或文号；不照搬范文的内容和事实。有差距就列出差距并给出改好的完整文章；没有差距 article 留空。只输出 JSON：{"gaps":["差距"],"article":{与初稿相同结构的完整修订稿，或 null}}`
+const reviseSystem = `你是这篇公众号文章的作者，现在对照用户给出的账号设置和范文片段（如果有）检查自己的初稿，只看写法和语气的差距：开头、口吻、称呼读者的方式、用词、节奏、结构习惯、读者能拿走的东西、结尾，是否像这个号自己写的。不按篇幅评判，不为凑字数加内容，也不删减有用的内容。事实、数字、文号和 [编号] 保持不变，不新增没有依据的数据、案例或文号；不照搬范文的内容和事实。有差距就列出差距并给出改好的完整文章；没有差距 article 留空。只输出一个 JSON 对象，不要代码块和其他文字：{"gaps":["差距"],"article":{"title":"","alt_titles":[],"summary":"","blocks":[{"type":"h2|p|list|table|quote|image","text":"","items":[],"rows":[[]],"caption":""}]}}；没有差距时 "article": null`
 
 type writingContext struct {
 	Rotation    string // what the stats weighting did when picking the column (not given to the model)
@@ -103,7 +103,7 @@ func writeUser(w writingContext, topic, angle string, ev []Evidence) string {
 	var b strings.Builder
 	b.WriteString(w.settings())
 	if w.LengthHint != nil {
-		fmt.Fprintf(&b, "篇幅参考：约 %d 字（仅供参考）\n", *w.LengthHint)
+		fmt.Fprintf(&b, "篇幅参考：用户填的大约 %d 字，只是参考，不是目标也不是上限；按题目需要写，要点讲透为准，不为贴近这个数压缩内容，也不注水\n", *w.LengthHint)
 	}
 	fmt.Fprintf(&b, "\n题目：%s\n", topic)
 	if angle != "" {
