@@ -50,6 +50,7 @@ func parseArticle(text string) (render.Article, error) {
 		a = render.Article{}
 	}
 	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	a.Title, lines = titleLine(lines)
 	var para []string
 	flush := func() {
 		if len(para) > 0 {
@@ -252,4 +253,45 @@ func wrappedText(s string) string {
 		}
 	}
 	return ""
+}
+
+var boldLineRe = regexp.MustCompile(`^\*\*(.+?)\*\*$`)
+
+// titleLine: when the reply has no 标题： label, its first non-empty line is the title if it is bold
+// (**…**), a # heading, or a short bare line without sentence-ending punctuation. That line is removed.
+func titleLine(lines []string) (string, []string) {
+	for _, l := range lines {
+		if m := metaRe.FindStringSubmatch(strings.TrimSpace(l)); m != nil && m[1] == "标题" {
+			return "", lines
+		}
+	}
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		var title string
+		switch {
+		case boldLineRe.MatchString(t):
+			title = boldLineRe.FindStringSubmatch(t)[1]
+		case strings.HasPrefix(t, "# "):
+			title = strings.TrimPrefix(t, "# ")
+		case utf8.RuneCountInString(t) <= 40 && !strings.HasPrefix(t, "#") && !strings.HasPrefix(t, "{") && !strings.HasPrefix(t, "|") && !strings.HasPrefix(t, ">") &&
+			!listRe.MatchString(t) && !imageRe.MatchString(t) && !strings.ContainsAny(lastRune(t), "。！？!?；;：:，,"):
+			title = t
+		default:
+			return "", lines
+		}
+		title = strings.Trim(strings.TrimSpace(title), "*《》 ")
+		if title == "" {
+			return "", lines
+		}
+		return title, lines[i+1:]
+	}
+	return "", lines
+}
+
+func lastRune(s string) string {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return string(r)
 }
