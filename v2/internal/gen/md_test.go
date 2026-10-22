@@ -52,3 +52,25 @@ func TestParseArticleWrapped(t *testing.T) {
 		t.Error("proseStage")
 	}
 }
+
+func TestTitleFirstLine(t *testing.T) {
+	cases := map[string]string{
+		"**孙子用剩菜做炒饭**\n\n**备选标题**：A｜B\n\n**摘要**：讲故事。\n\n小凯学会了做饭。": "孙子用剩菜做炒饭",
+		"# 奶奶的小窍门\n\n正文一段。":         "奶奶的小窍门",
+		"剩菜变新菜\n\n正文一段。":            "剩菜变新菜",
+		"标题：带标签\n\n**加粗开头**\n\n正文。": "带标签",
+	}
+	for in, want := range cases {
+		a, err := parseArticle(in)
+		if err != nil || a.Title != want || len(a.Blocks) == 0 {
+			t.Errorf("%q: %v title=%q blocks=%d", in, err, a.Title, len(a.Blocks))
+		}
+	}
+	a, _ := parseArticle("**孙子用剩菜做炒饭**\n\n**备选标题**：A｜B\n\n**摘要**：讲故事。\n\n小凯学会了做饭。")
+	if a.Summary != "讲故事。" || len(a.AltTitles) != 2 || len(a.Blocks) != 1 {
+		t.Errorf("%+v", a)
+	}
+	if _, err := parseArticle("这是一段很长的正文开头，没有标题，模型直接开始讲故事了，而且一句话就超过了四十个字的长度限制。\n\n第二段。"); err == nil {
+		t.Error("long first sentence should not become a title")
+	}
+}
